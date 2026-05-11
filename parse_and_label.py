@@ -179,8 +179,18 @@ def _host_from_nexsci_url(url: str) -> str:
 
 
 def _norm_name(s) -> str:
-    """Whitespace- and case-insensitive name key."""
-    return re.sub(r"\s+", "", str(s)).lower()
+    """Whitespace-, case-, and prefix-insensitive name key.
+
+    SIMBAD returns identifiers with leading sigils (e.g. '* 24 Sex' for
+    Flamsteed names, 'V* TW Hya' for variable stars). We strip those so
+    they normalize the same way as the NASA archive's hostname.
+    """
+    s = str(s).strip()
+    for pfx in ("V* ", "* ", "NAME "):
+        if s.startswith(pfx):
+            s = s[len(pfx):].strip()
+            break
+    return re.sub(r"\s+", "", s).lower()
 
 
 def match_host_rows(host: str, labels: pd.DataFrame) -> pd.DataFrame:
@@ -198,11 +208,99 @@ def match_host_rows(host: str, labels: pd.DataFrame) -> pd.DataFrame:
     return labels[mask]
 
 
-def build_index(rv_dir: Path, labels: pd.DataFrame) -> pd.DataFrame:
+# ----------------------------------------------------------------------
+# SIMBAD alias resolution (fallback when direct match fails)
+# ----------------------------------------------------------------------
+def resolve_simbad_aliases(names: list[str], cache_path: Path) -> dict[str, list[str]]:
+    """
+    For each name not already cached, query SIMBAD for all known identifiers
+    (HD, HIP, TIC, 2MASS, Gaia, Flamsteed, Bayer, Gliese, etc.) and write the
+    result to a JSON cache so subsequent runs are free.
+
+    Returns
+    -------
+    dict mapping every requested name to a list of alias strings; a name
+    that SIMBAD doesn't recognize or that errors out maps to an empty list.
+
+    Notes
+    -----
+    Requires `astroquery` (pip install astroquery). Falls back to the empty
+    cache if astroquery is missing or SIMBAD is unreachable, so the rest of
+    the pipeline still works.
+    """
+    import json
+    cache: dict[str, list[str]] = {}
+    if cache_path.exists():
+        try:
+            cache = json.loads(cache_path.read_text())
+        except Exception:  # noqa: BLE001 — corrupt cache, start over
+            cache = {}
+
+    todo = [n for n in names if n and n not in cache]
+    if not todo:
+        if names:
+            print(f"[simbad] all {len(names)} names already in cache")
+        return cache
+
+    try:
+        from astroquery.simbad import Simbad
+    except ImportError:
+        print("[simbad] astroquery not installed (pip install astroquery); "
+              "skipping SIMBAD fallback")
+        return cache
+
+    import warnings
+    warnings.filterwarnings("ignore", module="astroquery")
+    warnings.filterwarnings("ignore", module="astropy")
+
+    print(f"[simbad] resolving {len(todo)} unmatched names "
+          f"(this takes a few seconds each; cached to {cache_path})...")
+
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+    for i, name in enumerate(todo, 1):
+        try:
+            result = Simbad.query_objectids(name)
+            if result is not None and len(result) > 0:
+                # Column name has historically varied; pick the first column
+                # if 'ID' isn't present.
+                col = "ID" if "ID" in result.colnames else result.colnames[0]
+                cache[name] = [str(row[col]).strip() for row in result]
+            else:
+                cache[name] = []
+        except Exception as e:  # noqa: BLE001 — network/parse error, log and move on
+            cache[name] = []
+            print(f"  [simbad warn] {name!r}: {type(e).__name__}: {e}")
+
+        if i % 25 == 0 or i == len(todo):
+            cache_path.write_text(json.dumps(cache, indent=2, ensure_ascii=False))
+            print(f"  [simbad] {i}/{len(todo)} done")
+
+    resolved = sum(1 for n in todo if cache.get(n))
+    print(f"[simbad] {resolved}/{len(todo)} new names had SIMBAD entries")
+    return cache
+
+
+def match_with_simbad(host: str, labels: pd.DataFrame,
+                      alias_cache: dict[str, list[str]]) -> pd.DataFrame:
+    """Try direct match first, then each SIMBAD alias in turn."""
+    direct = match_host_rows(host, labels)
+    if not direct.empty:
+        return direct
+    for alias in alias_cache.get(host, []):
+        m = match_host_rows(alias, labels)
+        if not m.empty:
+            return m
+    return labels.iloc[0:0]
+
+
+def build_index(rv_dir: Path, labels: pd.DataFrame,
+                use_simbad: bool = True,
+                simbad_cache: Path = Path("data/simbad_cache.json")) -> pd.DataFrame:
     """
     Walk through downloaded .tbl files, extract each one's host name from its
     metadata block, and join against labels using ANY identifier column
-    (hostname, hd_name, hip_name, tic_id).
+    (hostname, hd_name, hip_name, tic_id). For hosts that don't match directly,
+    fall back to SIMBAD alias resolution.
     """
     file_rows = []
     for path in sorted(rv_dir.glob("UID_*_RVC_*.tbl")):
@@ -229,26 +327,58 @@ def build_index(rv_dir: Path, labels: pd.DataFrame) -> pd.DataFrame:
         })
     idx = pd.DataFrame(file_rows)
 
-    # For each file row, look up matching label rows via any identifier column.
-    out = []
-    matched_files = 0
-    unmatched_names: list[str] = []
+    # First pass: direct identifier matching
+    direct: dict[str, pd.DataFrame] = {}
+    unmatched_hosts: list[str] = []
     for row in idx.itertuples(index=False):
-        matches = match_host_rows(row.host_in_file, labels)
-        if matches.empty:
+        m = match_host_rows(row.host_in_file, labels)
+        if m.empty:
+            unmatched_hosts.append(row.host_in_file)
+        else:
+            direct[row.file] = m
+
+    # Second pass: SIMBAD alias resolution for unmatched
+    alias_cache: dict[str, list[str]] = {}
+    if use_simbad and unmatched_hosts:
+        unique_unmatched = sorted({h for h in unmatched_hosts if h})
+        alias_cache = resolve_simbad_aliases(unique_unmatched, simbad_cache)
+
+    via_simbad: dict[str, pd.DataFrame] = {}
+    if alias_cache:
+        for row in idx.itertuples(index=False):
+            if row.file in direct:
+                continue
+            for alias in alias_cache.get(row.host_in_file, []):
+                m = match_host_rows(alias, labels)
+                if not m.empty:
+                    via_simbad[row.file] = m
+                    break
+
+    # Build the final output table
+    out = []
+    still_unmatched: list[str] = []
+    for row in idx.itertuples(index=False):
+        m = direct.get(row.file)
+        if m is None:
+            m = via_simbad.get(row.file)
+        if m is None or m.empty:
             empty = {c: None for c in labels.columns}
             out.append({**row._asdict(), **empty})
-            unmatched_names.append(row.host_in_file)
+            still_unmatched.append(row.host_in_file)
         else:
-            matched_files += 1
-            for _, m in matches.iterrows():
-                out.append({**row._asdict(), **m.to_dict()})
+            for _, lbl in m.iterrows():
+                out.append({**row._asdict(), **lbl.to_dict()})
     merged = pd.DataFrame(out)
-    print(f"[join] matched {matched_files}/{len(idx)} RV files to a known planet host")
-    if unmatched_names:
-        # Sample of what's still missing — usually a clue about further aliasing
-        sample = sorted(set(unmatched_names))[:15]
-        print(f"[join] first {len(sample)} unmatched host names: {sample}")
+
+    n_total = len(idx)
+    n_direct = len(direct)
+    n_simbad = len(via_simbad)
+    n_unmatched = len(still_unmatched)
+    print(f"[join] direct matches: {n_direct}/{n_total}   "
+          f"via SIMBAD: {n_simbad}   still unmatched: {n_unmatched}")
+    if still_unmatched:
+        sample = sorted(set(still_unmatched))[:15]
+        print(f"[join] first {len(sample)} still-unmatched host names: {sample}")
     return merged
 
 
@@ -258,6 +388,11 @@ def main() -> None:
     p.add_argument("--out", type=Path, default=Path("data/labels.csv"))
     p.add_argument("--all-rows", action="store_true",
                    help="Include every published row, not just default_flag=1")
+    p.add_argument("--no-simbad", action="store_true",
+                   help="Skip SIMBAD alias-resolution fallback (offline mode)")
+    p.add_argument("--simbad-cache", type=Path,
+                   default=Path("data/simbad_cache.json"),
+                   help="Path to the SIMBAD alias JSON cache")
     args = p.parse_args()
 
     labels = fetch_labels(default_only=not args.all_rows)
@@ -266,7 +401,9 @@ def main() -> None:
     print(f"[done] labels -> {args.out}")
 
     if args.rv_dir.exists():
-        idx = build_index(args.rv_dir, labels)
+        idx = build_index(args.rv_dir, labels,
+                          use_simbad=not args.no_simbad,
+                          simbad_cache=args.simbad_cache)
         idx_path = args.out.with_name("rv_index.csv")
         idx.to_csv(idx_path, index=False)
         print(f"[done] index -> {idx_path}")
