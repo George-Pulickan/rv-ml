@@ -48,6 +48,7 @@ LABEL_COLS = [
     "pl_orbincl",  "pl_orbinclerr1",  "pl_orbinclerr2",
     "pl_orblper",  "pl_orblpererr1",  "pl_orblpererr2",  # argument of periastron
     "pl_orbtper",  "pl_orbtpererr1",  "pl_orbtpererr2",  # time of periastron
+    "pl_tranmid",  "pl_tranmiderr1",  "pl_tranmiderr2",  # time of conjunction (T_peri fallback for transit planets)
     # planet mass — note for RV we usually only have m*sin(i)
     "pl_bmassj",   "pl_bmassjerr1",   "pl_bmassjerr2",
     "pl_msinij",   "pl_msinijerr1",   "pl_msinijerr2",
@@ -129,7 +130,16 @@ def parse_tbl(path: str | Path) -> tuple[dict, np.ndarray, np.ndarray, np.ndarra
 # ----------------------------------------------------------------------
 def fetch_labels(default_only: bool = True) -> pd.DataFrame:
     """
-    Query the Planetary Systems table for all confirmed RV-discovered planets.
+    Query the Planetary Systems table for every confirmed exoplanet.
+
+    We deliberately do NOT filter on discoverymethod: the bulk RADIAL set
+    contains RV time series for every confirmed exoplanet host star,
+    regardless of which technique originally discovered the planet
+    (transit follow-up like HD 209458 b, direct imaging like HR 8799,
+    microlensing, etc. all have RV data in the archive). Filtering to
+    'Radial Velocity' here drops ~50% of the available labels for files
+    we've already downloaded. The discoverymethod column is still
+    returned as metadata.
 
     Parameters
     ----------
@@ -139,9 +149,7 @@ def fetch_labels(default_only: bool = True) -> pd.DataFrame:
         which is useful for comparing literature values against each other.
     """
     cols = ",".join(LABEL_COLS)
-    where = "discoverymethod like 'Radial%20Velocity'"
-    if default_only:
-        where += "+and+default_flag=1"
+    where = "default_flag=1" if default_only else "1=1"
     query = f"select+{cols}+from+ps+where+{where}"
     url = f"{TAP}?query={query}&format=csv"
     print(f"[tap] GET {url[:120]}...")
@@ -170,12 +178,33 @@ def _host_from_nexsci_url(url: str) -> str:
     return name
 
 
+def _norm_name(s) -> str:
+    """Whitespace- and case-insensitive name key."""
+    return re.sub(r"\s+", "", str(s)).lower()
+
+
+def match_host_rows(host: str, labels: pd.DataFrame) -> pd.DataFrame:
+    """Return label rows whose hostname OR hd_name OR hip_name OR tic_id
+    matches the given host string. Handles cases like a .tbl file saying
+    'HIP 108859' while the labels table primary hostname is 'HD 209458'."""
+    if not host or not str(host).strip():
+        return labels.iloc[0:0]
+    key = _norm_name(host)
+    mask = pd.Series(False, index=labels.index)
+    for col in ("hostname", "hd_name", "hip_name", "tic_id"):
+        if col in labels.columns:
+            s = labels[col]
+            mask = mask | (s.notna() & (s.astype(str).map(_norm_name) == key))
+    return labels[mask]
+
+
 def build_index(rv_dir: Path, labels: pd.DataFrame) -> pd.DataFrame:
     """
     Walk through downloaded .tbl files, extract each one's host name from its
-    metadata block, and inner-join against the labels table on hostname.
+    metadata block, and join against labels using ANY identifier column
+    (hostname, hd_name, hip_name, tic_id).
     """
-    rows = []
+    file_rows = []
     for path in sorted(rv_dir.glob("UID_*_RVC_*.tbl")):
         try:
             meta, t, rv, err = parse_tbl(path)
@@ -190,24 +219,36 @@ def build_index(rv_dir: Path, labels: pd.DataFrame) -> pd.DataFrame:
             or _host_from_nexsci_url(meta.get("NEXSCI_URL", ""))
             or ""
         ).strip()
-        rows.append(
-            {
-                "file": path.name,
-                "host_in_file": host,
-                "n_obs": len(t),
-                "t_baseline_days": float(t.max() - t.min()) if len(t) else 0.0,
-                "telescope": meta.get("TELESCOPE", ""),
-                "reference": meta.get("REFERENCE", ""),
-            }
-        )
-    idx = pd.DataFrame(rows)
-    # Loose name match: tolerant of "HD 209458" vs "HD209458"
-    norm = lambda s: re.sub(r"\s+", "", str(s)).lower()
-    labels = labels.assign(_key=labels["hostname"].map(norm))
-    idx = idx.assign(_key=idx["host_in_file"].map(norm))
-    merged = idx.merge(labels, on="_key", how="left").drop(columns=["_key"])
-    matched = merged["pl_name"].notna().sum()
-    print(f"[join] matched {matched}/{len(idx)} RV files to a known planet host")
+        file_rows.append({
+            "file": path.name,
+            "host_in_file": host,
+            "n_obs": len(t),
+            "t_baseline_days": float(t.max() - t.min()) if len(t) else 0.0,
+            "telescope": meta.get("TELESCOPE", ""),
+            "reference": meta.get("REFERENCE", ""),
+        })
+    idx = pd.DataFrame(file_rows)
+
+    # For each file row, look up matching label rows via any identifier column.
+    out = []
+    matched_files = 0
+    unmatched_names: list[str] = []
+    for row in idx.itertuples(index=False):
+        matches = match_host_rows(row.host_in_file, labels)
+        if matches.empty:
+            empty = {c: None for c in labels.columns}
+            out.append({**row._asdict(), **empty})
+            unmatched_names.append(row.host_in_file)
+        else:
+            matched_files += 1
+            for _, m in matches.iterrows():
+                out.append({**row._asdict(), **m.to_dict()})
+    merged = pd.DataFrame(out)
+    print(f"[join] matched {matched_files}/{len(idx)} RV files to a known planet host")
+    if unmatched_names:
+        # Sample of what's still missing — usually a clue about further aliasing
+        sample = sorted(set(unmatched_names))[:15]
+        print(f"[join] first {len(sample)} unmatched host names: {sample}")
     return merged
 
 
