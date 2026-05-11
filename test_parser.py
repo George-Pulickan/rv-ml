@@ -59,7 +59,7 @@ print(f"  rvdb HD 209458 -> nexsci_url objname = {_host_from_nexsci_url(meta.get
 
 print("=" * 60)
 import re
-# Simulated wget script line (this is exactly the form the .bat uses)
+
 sample = (
     'wget -q -nv -nH --cut-dirs=2 -np "https://exoplanetarchive.ipac.caltech.edu'
     '/data/ExoData/0079/0079248/data/UID_0079248_RVC_002.tbl"\n'
