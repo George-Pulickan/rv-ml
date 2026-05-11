@@ -28,8 +28,12 @@ published observations:
     python kepler_check.py            # canonical test (51 Peg b)
     python kepler_check.py --all      # corpus-wide summary
 
-51 Peg b serves as the gold-standard test, with χ²_reduced = 1.31 and
-RMS/σ = 1.19 — the Kepler model traces the data within measurement noise.
-Across the corpus, 391 quality-filtered systems validate with a median
-RMS/σ of 3.5, consistent with the well-known stellar-activity floor that
-catalog uncertainties do not include.
+51 Peg b is the gold-standard test (χ²_reduced = 1.31, RMS/σ = 1.19); the
+Kepler model traces the data within measurement noise. Across the full
+corpus, 432 quality-filtered systems validate with a median RMS/σ of 3.7,
+consistent with the stellar-activity floor that catalog uncertainties do
+not include. The pipeline matches 857 of 1,071 files to known planet
+hosts (766 by direct identifier matching, plus 91 recovered via SIMBAD
+alias resolution); the remaining 214 unmatched files are predominantly
+2MASS-designated survey candidates that don't appear in NASA's confirmed-
+planet table.
