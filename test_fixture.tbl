@@ -1,0 +1,17 @@
+\ STAR_ID = 'HD 209458'
+\ TELESCOPE = '3.6M ESO'
+\ INSTRUMENT = 'CORALIE'
+\ OBSERVATORY = 'LA SILLA'
+\ REFERENCE = 'NAEF ET AL. 2004 (A&A, 414, 351)'
+\ BIBCODE = '2004A&A...414..351N'
+\ value_units = 'M/S'
+\ fixedvalue = 'No'
+|       JD         |      MNVEL    |   ERRVEL  |
+|      double      |     double    |   double  |
+|       day        |      m/s      |    m/s    |
+|       null       |     null      |    null   |
+2450681.527700     -52.000000      10.000000
+2451027.541000      35.000000      11.000000
+2451027.553600      40.000000       9.000000
+2451056.514900      64.000000       9.000000
+2451087.411000      24.000000      10.000000
