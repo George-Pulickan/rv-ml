@@ -46,7 +46,8 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
-from parse_and_label import _host_from_nexsci_url, match_host_rows, parse_tbl
+from parse_and_label import (_host_from_nexsci_url, match_host_rows,
+                              match_with_simbad, parse_tbl)
 
 
 # ---------------------------------------------------------------------------
@@ -216,11 +217,16 @@ def evaluate_model(planets: list[Planet], t: np.ndarray) -> np.ndarray:
 
 def validate_one(tbl_path: Path, labels: pd.DataFrame, mode: str = "anchor",
                  plot: bool = True, save: Path | None = None,
-                 verbose: bool = True) -> dict:
+                 verbose: bool = True,
+                 simbad_cache: dict[str, list[str]] | None = None) -> dict:
     """
     Run the full validation on one RV file. Always returns a dict with a
     'status' field; 'ok' means metrics were computed, anything else means
     the file was skipped for the given reason.
+
+    If `simbad_cache` is supplied, host-name lookups fall back to SIMBAD
+    aliases when the direct identifier match fails (matches the behaviour
+    of parse_and_label.build_index).
     """
     meta, t, rv, err = parse_tbl(tbl_path)
     base = {"file": tbl_path.name, "n_obs": len(t)}
@@ -230,7 +236,10 @@ def validate_one(tbl_path: Path, labels: pd.DataFrame, mode: str = "anchor",
         if verbose: print(f"[{tbl_path.name}] no host found in metadata")
         return {**base, "status": "no_host_in_metadata", "host": ""}
 
-    rows = match_host_rows(host, labels)
+    if simbad_cache is not None:
+        rows = match_with_simbad(host, labels, simbad_cache)
+    else:
+        rows = match_host_rows(host, labels)
     if rows.empty:
         if verbose: print(f"[{tbl_path.name}] no labels for host {host!r}")
         return {**base, "status": "no_labels_for_host", "host": host}
@@ -391,10 +400,14 @@ def pick_default_file(rv_dir: Path) -> Path | None:
 
 
 def main() -> None:
+    import json
     p = argparse.ArgumentParser(description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--rv-dir", type=Path, default=Path("data/rv_raw"))
     p.add_argument("--labels", type=Path, default=Path("data/labels.csv"))
+    p.add_argument("--simbad-cache", type=Path,
+                   default=Path("data/simbad_cache.json"),
+                   help="SIMBAD alias JSON written by parse_and_label.py")
     p.add_argument("--file", type=str, help="specific .tbl filename")
     p.add_argument("--host", type=str, help="match by host name")
     p.add_argument("--mode", choices=("anchor", "fit"), default="anchor",
@@ -407,9 +420,22 @@ def main() -> None:
 
     labels = pd.read_csv(args.labels)
 
+    # Load the SIMBAD alias cache if available so we use the same matching
+    # logic as parse_and_label.build_index. Without this, files whose host
+    # was only recovered via SIMBAD would be wrongly classified as
+    # 'no_labels_for_host' here.
+    simbad_cache: dict[str, list[str]] = {}
+    if args.simbad_cache.exists():
+        try:
+            simbad_cache = json.loads(args.simbad_cache.read_text())
+            print(f"[simbad] loaded {len(simbad_cache)} cached aliases")
+        except Exception as e:  # noqa: BLE001
+            print(f"[simbad warn] could not read {args.simbad_cache}: {e}")
+
     if args.all:
         files = sorted(args.rv_dir.glob("UID_*_RVC_*.tbl"))
-        rows = [validate_one(f, labels, mode=args.mode, plot=False, verbose=False)
+        rows = [validate_one(f, labels, mode=args.mode, plot=False, verbose=False,
+                             simbad_cache=simbad_cache)
                 for f in files]
         df = pd.DataFrame(rows)
         out = Path("data/validation_summary.csv")
@@ -464,7 +490,8 @@ def main() -> None:
         if tbl is None:
             raise SystemExit("No RV files found; run download_rv.py first")
 
-    validate_one(tbl, labels, mode=args.mode, plot=True, save=args.save)
+    validate_one(tbl, labels, mode=args.mode, plot=True, save=args.save,
+                 simbad_cache=simbad_cache)
 
 
 if __name__ == "__main__":
