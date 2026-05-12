@@ -32,7 +32,8 @@ from kepler_check import validate_one
 # Gallery: pick representative systems and save per-system plots
 # ---------------------------------------------------------------------------
 def make_gallery(rv_dir: Path, labels_path: Path, summary_path: Path,
-                 simbad_cache_path: Path, out_dir: Path, n: int = 12) -> None:
+                 simbad_cache_path: Path, out_dir: Path, n: int = 12,
+                 mode: str = "anchor", auto_sign: bool = False) -> None:
     labels = pd.read_csv(labels_path)
     summary = pd.read_csv(summary_path)
     simbad_cache: dict[str, list[str]] = {}
@@ -53,8 +54,6 @@ def make_gallery(rv_dir: Path, labels_path: Path, summary_path: Path,
     best = clean.head(k)
     mid_start = max(0, (len(clean) - k) // 2)
     typical = clean.iloc[mid_start: mid_start + k]
-    # "Worst that's still physical" = trim the very top extremes (those are
-    # stellar binaries etc., not informative for validation quality)
     upper_cut = int(len(clean) * 0.97)
     worst = clean.iloc[max(0, upper_cut - k): upper_cut]
 
@@ -65,9 +64,11 @@ def make_gallery(rv_dir: Path, labels_path: Path, summary_path: Path,
     for _, row in picks.iterrows():
         tbl = rv_dir / row["file"]
         save_path = out_dir / f"{row['_band']}_{Path(row['file']).stem}.png"
-        validate_one(tbl, labels, mode="anchor", plot=True, save=save_path,
-                     verbose=False, simbad_cache=simbad_cache)
-    print(f"[gallery] wrote {len(picks)} plots to {out_dir}/")
+        validate_one(tbl, labels, mode=mode, plot=True, save=save_path,
+                     verbose=False, simbad_cache=simbad_cache,
+                     auto_sign=auto_sign)
+    print(f"[gallery] wrote {len(picks)} plots to {out_dir}/  "
+          f"(mode={mode}, auto_sign={auto_sign})")
 
 
 # ---------------------------------------------------------------------------
@@ -149,6 +150,10 @@ def main() -> None:
                    default=Path("data/simbad_cache.json"))
     p.add_argument("--gallery", type=int, default=0,
                    help="Save N validation plots (best/typical/worst mix)")
+    p.add_argument("--mode", choices=("anchor", "fit"), default="anchor",
+                   help="γ-mode for the gallery: anchor at t_0, or LS fit")
+    p.add_argument("--auto-sign", action="store_true",
+                   help="for each planet, try ω and ω+π and keep the better fit")
     p.add_argument("--out-dir", type=Path, default=Path("figures/gallery"))
     p.add_argument("--scatter", action="store_true",
                    help="Plot RMS/σ versus orbital params")
@@ -157,7 +162,8 @@ def main() -> None:
 
     if args.gallery:
         make_gallery(args.rv_dir, args.labels, args.summary,
-                     args.simbad_cache, args.out_dir, n=args.gallery)
+                     args.simbad_cache, args.out_dir, n=args.gallery,
+                     mode=args.mode, auto_sign=args.auto_sign)
     if args.scatter:
         make_scatter(args.summary, args.index, args.out)
     if not args.gallery and not args.scatter:

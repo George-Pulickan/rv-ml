@@ -215,11 +215,57 @@ def evaluate_model(planets: list[Planet], t: np.ndarray) -> np.ndarray:
                start=np.zeros_like(t))
 
 
+def _gamma_for(planets: list[Planet], t: np.ndarray, rv: np.ndarray,
+               err: np.ndarray, mode: str) -> tuple[float, np.ndarray]:
+    """Compute γ and the full model V_model+γ for a given planet list."""
+    v = evaluate_model(planets, t)
+    if mode == "anchor":
+        gamma = float(rv[0] - v[0])
+    elif mode == "fit":
+        w = 1.0 / np.maximum(err, 1e-6) ** 2
+        gamma = float(np.sum(w * (rv - v)) / np.sum(w))
+    else:
+        raise ValueError(f"unknown mode {mode!r}")
+    return gamma, v
+
+
+def auto_sign_planets(planets: list[Planet], t: np.ndarray, rv: np.ndarray,
+                      err: np.ndarray, mode: str = "anchor",
+                      ) -> tuple[list[Planet], tuple[int, ...], float]:
+    """
+    Try every combination of ω and ω+π across the planets and return the
+    combination with the smallest residual RMS, the corresponding flip
+    pattern, and the resulting γ.
+
+    Astrophysical motivation: the RV formula has the symmetry ω → ω+π
+    ⇔ K → −K, so a catalog entry that uses the opposite convention from
+    ours produces a perfectly inverted model. With n planets we have 2ⁿ
+    combinations, fast for any realistic system (we cap at n ≤ 8).
+    """
+    import dataclasses
+    from itertools import product
+    n = len(planets)
+    if n == 0 or n > 8:
+        gamma, _ = _gamma_for(planets, t, rv, err, mode)
+        return planets, tuple([0] * n), gamma
+
+    best = (planets, tuple([0] * n), 0.0, float("inf"))
+    for flips in product((0, 1), repeat=n):
+        cand = [dataclasses.replace(p, omega=p.omega + (np.pi if f else 0.0))
+                for p, f in zip(planets, flips)]
+        gamma, v = _gamma_for(cand, t, rv, err, mode)
+        rms = float(np.sqrt(np.mean((rv - (v + gamma)) ** 2)))
+        if rms < best[3]:
+            best = (cand, flips, gamma, rms)
+    return best[0], best[1], best[2]
+
+
 def validate_one(tbl_path: Path, labels: pd.DataFrame, mode: str = "anchor",
                  plot: bool = True, save: Path | None = None,
                  verbose: bool = True,
                  simbad_cache: dict[str, list[str]] | None = None,
-                 return_residuals: bool = False) -> dict:
+                 return_residuals: bool = False,
+                 auto_sign: bool = False) -> dict:
     """
     Run the full validation on one RV file. Always returns a dict with a
     'status' field; 'ok' means metrics were computed, anything else means
@@ -227,6 +273,11 @@ def validate_one(tbl_path: Path, labels: pd.DataFrame, mode: str = "anchor",
 
     If `simbad_cache` is supplied, host-name lookups fall back to SIMBAD
     aliases when the direct identifier match fails.
+
+    If `auto_sign=True`, for each planet we try both ω and ω+π and pick
+    the combination minimizing residual RMS. The returned dict includes
+    `omega_flips`, a tuple of 0/1 per planet, indicating which were
+    flipped from the catalog value. Detects ω-convention mismatches.
 
     If `return_residuals=True`, the dict additionally contains 'residuals',
     'times', and 'sigmas' arrays (only for status='ok'). Useful for
@@ -257,15 +308,12 @@ def validate_one(tbl_path: Path, labels: pd.DataFrame, mode: str = "anchor",
         if verbose: print(f"[{tbl_path.name}] {host}: no usable planets ({dominant})")
         return {**base, "status": f"no_planets:{dominant}", "host": host}
 
-    v_model = evaluate_model(planets, t)
-
-    if mode == "anchor":
-        gamma = float(rv[0] - v_model[0])
-    elif mode == "fit":
-        w = 1.0 / np.maximum(err, 1e-6) ** 2
-        gamma = float(np.sum(w * (rv - v_model)) / np.sum(w))
+    if auto_sign:
+        planets, omega_flips, gamma = auto_sign_planets(planets, t, rv, err, mode)
+        v_model = evaluate_model(planets, t)
     else:
-        raise ValueError(f"unknown mode {mode!r}")
+        omega_flips = tuple([0] * len(planets))
+        gamma, v_model = _gamma_for(planets, t, rv, err, mode)
 
     residuals = rv - (v_model + gamma)
     rms = float(np.sqrt(np.mean(residuals ** 2)))
@@ -276,11 +324,14 @@ def validate_one(tbl_path: Path, labels: pd.DataFrame, mode: str = "anchor",
         print(f"\n{'=' * 70}")
         print(f"{tbl_path.name}  →  host: {host}  ({len(planets)} planet(s))")
         print(f"{'=' * 70}")
-        for p in planets:
+        for p, flip in zip(planets, omega_flips):
+            tag = "  [ω-flipped]" if flip else ""
             print(f"  {p.name:20s}  P={p.P:>10.4f} d   K={p.K:>7.2f} m/s   "
-                  f"e={p.e:.3f}   ω={np.degrees(p.omega):6.1f}°   ({p.K_source})")
+                  f"e={p.e:.3f}   ω={np.degrees(p.omega):6.1f}°   "
+                  f"({p.K_source}){tag}")
         print(f"  N_obs={len(t)}   baseline={t.max() - t.min():.0f} d   "
-              f"γ-mode={mode}   γ={gamma:+.2f} m/s")
+              f"γ-mode={mode}   γ={gamma:+.2f} m/s"
+              + (f"   auto-sign flips={omega_flips}" if any(omega_flips) else ""))
         print(f"  RMS(residual) = {rms:.2f} m/s   "
               f"median σ_obs = {median_err:.2f} m/s   "
               f"RMS/σ = {rms / median_err:.2f}   "
@@ -300,6 +351,7 @@ def validate_one(tbl_path: Path, labels: pd.DataFrame, mode: str = "anchor",
         "median_sigma_ms": median_err,
         "rms_over_sigma": rms / median_err,
         "chi2_red": chi2_red,
+        "omega_flips": "".join(str(f) for f in omega_flips),
         **({"residuals": residuals, "times": t, "sigmas": err}
            if return_residuals else {}),
     }
@@ -420,6 +472,8 @@ def main() -> None:
                    help="how to fix γ: anchor at t_0 (Nicolò's spec) or LS fit")
     p.add_argument("--all", action="store_true",
                    help="run over every .tbl and write data/validation_summary.csv")
+    p.add_argument("--auto-sign", action="store_true",
+                   help="for each planet, try ω and ω+π and keep the better fit")
     p.add_argument("--save", type=Path, default=None,
                    help="save figure here instead of showing interactively")
     args = p.parse_args()
@@ -441,7 +495,7 @@ def main() -> None:
     if args.all:
         files = sorted(args.rv_dir.glob("UID_*_RVC_*.tbl"))
         rows = [validate_one(f, labels, mode=args.mode, plot=False, verbose=False,
-                             simbad_cache=simbad_cache)
+                             simbad_cache=simbad_cache, auto_sign=args.auto_sign)
                 for f in files]
         df = pd.DataFrame(rows)
         out = Path("data/validation_summary.csv")
@@ -497,7 +551,7 @@ def main() -> None:
             raise SystemExit("No RV files found; run download_rv.py first")
 
     validate_one(tbl, labels, mode=args.mode, plot=True, save=args.save,
-                 simbad_cache=simbad_cache)
+                 simbad_cache=simbad_cache, auto_sign=args.auto_sign)
 
 
 if __name__ == "__main__":
