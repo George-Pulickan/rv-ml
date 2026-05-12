@@ -218,15 +218,19 @@ def evaluate_model(planets: list[Planet], t: np.ndarray) -> np.ndarray:
 def validate_one(tbl_path: Path, labels: pd.DataFrame, mode: str = "anchor",
                  plot: bool = True, save: Path | None = None,
                  verbose: bool = True,
-                 simbad_cache: dict[str, list[str]] | None = None) -> dict:
+                 simbad_cache: dict[str, list[str]] | None = None,
+                 return_residuals: bool = False) -> dict:
     """
     Run the full validation on one RV file. Always returns a dict with a
     'status' field; 'ok' means metrics were computed, anything else means
     the file was skipped for the given reason.
 
     If `simbad_cache` is supplied, host-name lookups fall back to SIMBAD
-    aliases when the direct identifier match fails (matches the behaviour
-    of parse_and_label.build_index).
+    aliases when the direct identifier match fails.
+
+    If `return_residuals=True`, the dict additionally contains 'residuals',
+    'times', and 'sigmas' arrays (only for status='ok'). Useful for
+    downstream noise modelling.
     """
     meta, t, rv, err = parse_tbl(tbl_path)
     base = {"file": tbl_path.name, "n_obs": len(t)}
@@ -296,6 +300,8 @@ def validate_one(tbl_path: Path, labels: pd.DataFrame, mode: str = "anchor",
         "median_sigma_ms": median_err,
         "rms_over_sigma": rms / median_err,
         "chi2_red": chi2_red,
+        **({"residuals": residuals, "times": t, "sigmas": err}
+           if return_residuals else {}),
     }
 
 
