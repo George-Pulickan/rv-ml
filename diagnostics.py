@@ -33,7 +33,8 @@ from kepler_check import validate_one
 # ---------------------------------------------------------------------------
 def make_gallery(rv_dir: Path, labels_path: Path, summary_path: Path,
                  simbad_cache_path: Path, out_dir: Path, n: int = 12,
-                 mode: str = "anchor", auto_sign: bool = False) -> None:
+                 mode: str = "anchor", auto_sign: bool = False,
+                 fit_tperi: bool = False, trend_order: int = 0) -> None:
     labels = pd.read_csv(labels_path)
     summary = pd.read_csv(summary_path)
     simbad_cache: dict[str, list[str]] = {}
@@ -66,9 +67,11 @@ def make_gallery(rv_dir: Path, labels_path: Path, summary_path: Path,
         save_path = out_dir / f"{row['_band']}_{Path(row['file']).stem}.png"
         validate_one(tbl, labels, mode=mode, plot=True, save=save_path,
                      verbose=False, simbad_cache=simbad_cache,
-                     auto_sign=auto_sign)
+                     auto_sign=auto_sign, fit_tperi=fit_tperi,
+                     trend_order=trend_order)
     print(f"[gallery] wrote {len(picks)} plots to {out_dir}/  "
-          f"(mode={mode}, auto_sign={auto_sign})")
+          f"(mode={mode}, auto_sign={auto_sign}, "
+          f"fit_tperi={fit_tperi}, trend_order={trend_order})")
 
 
 # ---------------------------------------------------------------------------
@@ -154,6 +157,10 @@ def main() -> None:
                    help="γ-mode for the gallery: anchor at t_0, or LS fit")
     p.add_argument("--auto-sign", action="store_true",
                    help="for each planet, try ω and ω+π and keep the better fit")
+    p.add_argument("--fit-tperi", action="store_true",
+                   help="LS-refit T_peri per planet (fixes phase offsets)")
+    p.add_argument("--trend", type=int, default=0, metavar="N", choices=(0, 1, 2),
+                   help="add polynomial trend of order N=1 (linear) or 2 (quadratic)")
     p.add_argument("--out-dir", type=Path, default=Path("figures/gallery"))
     p.add_argument("--scatter", action="store_true",
                    help="Plot RMS/σ versus orbital params")
@@ -163,7 +170,8 @@ def main() -> None:
     if args.gallery:
         make_gallery(args.rv_dir, args.labels, args.summary,
                      args.simbad_cache, args.out_dir, n=args.gallery,
-                     mode=args.mode, auto_sign=args.auto_sign)
+                     mode=args.mode, auto_sign=args.auto_sign,
+                     fit_tperi=args.fit_tperi, trend_order=args.trend)
     if args.scatter:
         make_scatter(args.summary, args.index, args.out)
     if not args.gallery and not args.scatter:

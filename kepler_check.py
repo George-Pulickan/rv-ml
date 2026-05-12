@@ -215,6 +215,92 @@ def evaluate_model(planets: list[Planet], t: np.ndarray) -> np.ndarray:
                start=np.zeros_like(t))
 
 
+def _eval_trend(t: np.ndarray, t_ref: float, coefs: list[float]) -> np.ndarray:
+    """Evaluate γ̇(t-t_ref) + γ̈(t-t_ref)² + … for the given coefficients."""
+    out = np.zeros_like(t, dtype=float)
+    for k, c in enumerate(coefs, start=1):
+        out = out + c * (t - t_ref) ** k
+    return out
+
+
+def least_squares_refit(planets: list[Planet], t: np.ndarray, rv: np.ndarray,
+                         err: np.ndarray, fit_tperi: bool = False,
+                         trend_order: int = 0, auto_sign: bool = False,
+                         ) -> tuple[list[Planet], float, list[float], tuple[int, ...], float]:
+    """
+    Locally refit *nuisance* parameters via Levenberg-Marquardt while keeping
+    the physical orbital parameters (P, K, e, ω) at their catalog values.
+
+    Free parameters:
+      γ                       always
+      γ̇, γ̈, …                 if trend_order >= 1, 2, …  (polynomial trend
+                                 in (t - t_mean), absorbs unmodelled drifts
+                                 such as a binary companion)
+      T_peri for each planet  if fit_tperi=True  (fixes orbital phase
+                                 mismatches between catalog and data)
+
+    With `auto_sign=True`, the LM solver is run for each 2ⁿ combination of
+    ω flips and the best result is returned.
+
+    Returns (refit_planets, gamma, trend_coefs, omega_flips, t_ref).
+    """
+    import dataclasses
+    from itertools import product
+    from scipy.optimize import least_squares
+
+    n = len(planets)
+    t_ref = float(t.mean())
+    w = 1.0 / np.maximum(err, 1e-6)
+    flip_grid = (list(product((0, 1), repeat=n))
+                  if auto_sign and 0 < n <= 8 else [tuple([0] * n)])
+
+    best = None
+    best_rms = float("inf")
+    for flips in flip_grid:
+        flipped = [dataclasses.replace(p, omega=p.omega + (np.pi if f else 0.0))
+                    for p, f in zip(planets, flips)]
+        # Initial γ from inverse-variance LS with no trend, no T_peri shift
+        v0 = evaluate_model(flipped, t)
+        gamma0 = float(np.sum((rv - v0) / np.maximum(err, 1e-6) ** 2)
+                        / np.sum(1.0 / np.maximum(err, 1e-6) ** 2))
+        p0 = [gamma0] + [0.0] * trend_order
+        if fit_tperi:
+            p0 += [p.t_peri for p in flipped]
+        p0 = np.array(p0, dtype=float)
+
+        def make_model(params):
+            i = 1 + trend_order
+            v_planet = np.zeros_like(t, dtype=float)
+            for j, pl in enumerate(flipped):
+                tp = params[i + j] if fit_tperi else pl.t_peri
+                v_planet = v_planet + rv_keplerian(t, pl.P, pl.K, pl.e, pl.omega, tp)
+            trend = _eval_trend(t, t_ref, list(params[1:1 + trend_order]))
+            return params[0] + trend + v_planet
+
+        def residuals_w(params):
+            return (rv - make_model(params)) * w
+
+        try:
+            res = least_squares(residuals_w, p0, method="lm", max_nfev=200)
+        except Exception:  # noqa: BLE001 — degenerate fit, skip
+            continue
+        rms_here = float(np.sqrt(np.mean((rv - make_model(res.x)) ** 2)))
+        if rms_here < best_rms:
+            new_planets = list(flipped)
+            if fit_tperi:
+                istart = 1 + trend_order
+                new_planets = [dataclasses.replace(p, t_peri=float(tp))
+                                for p, tp in zip(flipped, res.x[istart:])]
+            best = (new_planets, float(res.x[0]),
+                     list(map(float, res.x[1:1 + trend_order])), flips)
+            best_rms = rms_here
+
+    if best is None:
+        return planets, 0.0, [0.0] * trend_order, tuple([0] * n), t_ref
+    new_planets, gamma, trend_coefs, flips = best
+    return new_planets, gamma, trend_coefs, flips, t_ref
+
+
 def _gamma_for(planets: list[Planet], t: np.ndarray, rv: np.ndarray,
                err: np.ndarray, mode: str) -> tuple[float, np.ndarray]:
     """Compute γ and the full model V_model+γ for a given planet list."""
@@ -265,7 +351,9 @@ def validate_one(tbl_path: Path, labels: pd.DataFrame, mode: str = "anchor",
                  verbose: bool = True,
                  simbad_cache: dict[str, list[str]] | None = None,
                  return_residuals: bool = False,
-                 auto_sign: bool = False) -> dict:
+                 auto_sign: bool = False,
+                 fit_tperi: bool = False,
+                 trend_order: int = 0) -> dict:
     """
     Run the full validation on one RV file. Always returns a dict with a
     'status' field; 'ok' means metrics were computed, anything else means
@@ -275,13 +363,17 @@ def validate_one(tbl_path: Path, labels: pd.DataFrame, mode: str = "anchor",
     aliases when the direct identifier match fails.
 
     If `auto_sign=True`, for each planet we try both ω and ω+π and pick
-    the combination minimizing residual RMS. The returned dict includes
-    `omega_flips`, a tuple of 0/1 per planet, indicating which were
-    flipped from the catalog value. Detects ω-convention mismatches.
+    the combination minimizing residual RMS.
+
+    If `fit_tperi=True` or `trend_order>0`, a constrained least-squares
+    refit is run: physical orbital parameters (P, K, e, ω) are held at
+    catalog values, but T_peri per planet (if fit_tperi) and polynomial
+    trend coefficients (γ̇, γ̈, ... up to order `trend_order`) are
+    optimized. Diagnostic for separating phase/offset/drift issues from
+    real catalog disagreements.
 
     If `return_residuals=True`, the dict additionally contains 'residuals',
-    'times', and 'sigmas' arrays (only for status='ok'). Useful for
-    downstream noise modelling.
+    'times', and 'sigmas' arrays (only for status='ok').
     """
     meta, t, rv, err = parse_tbl(tbl_path)
     base = {"file": tbl_path.name, "n_obs": len(t)}
@@ -302,13 +394,24 @@ def validate_one(tbl_path: Path, labels: pd.DataFrame, mode: str = "anchor",
     built = [build_planet(r) for _, r in rows.iterrows()]
     planets = [p for p, _ in built if p is not None]
     if not planets:
-        # All catalog rows dropped — report the dominant reason
         reasons = [r for _, r in built if r]
         dominant = max(set(reasons), key=reasons.count) if reasons else "unknown"
         if verbose: print(f"[{tbl_path.name}] {host}: no usable planets ({dominant})")
         return {**base, "status": f"no_planets:{dominant}", "host": host}
 
-    if auto_sign:
+    # Catalog values (pre-refit) — record initial T_peri to report any shifts
+    initial_tperi = [p.t_peri for p in planets]
+
+    do_refit = fit_tperi or trend_order > 0
+    trend_coefs: list[float] = []
+    t_ref = float(t.mean())
+    if do_refit:
+        planets, gamma, trend_coefs, omega_flips, t_ref = least_squares_refit(
+            planets, t, rv, err,
+            fit_tperi=fit_tperi, trend_order=trend_order, auto_sign=auto_sign,
+        )
+        v_model = evaluate_model(planets, t) + _eval_trend(t, t_ref, trend_coefs)
+    elif auto_sign:
         planets, omega_flips, gamma = auto_sign_planets(planets, t, rv, err, mode)
         v_model = evaluate_model(planets, t)
     else:
@@ -324,14 +427,22 @@ def validate_one(tbl_path: Path, labels: pd.DataFrame, mode: str = "anchor",
         print(f"\n{'=' * 70}")
         print(f"{tbl_path.name}  →  host: {host}  ({len(planets)} planet(s))")
         print(f"{'=' * 70}")
-        for p, flip in zip(planets, omega_flips):
+        for p, flip, tp0 in zip(planets, omega_flips, initial_tperi):
             tag = "  [ω-flipped]" if flip else ""
+            dtp = p.t_peri - tp0
+            shift = f"   ΔT_peri={dtp:+.3f}d" if abs(dtp) > 1e-6 else ""
             print(f"  {p.name:20s}  P={p.P:>10.4f} d   K={p.K:>7.2f} m/s   "
                   f"e={p.e:.3f}   ω={np.degrees(p.omega):6.1f}°   "
-                  f"({p.K_source}){tag}")
+                  f"({p.K_source}){tag}{shift}")
+        mode_label = ("LS-refit" if do_refit else f"γ-mode={mode}")
+        trend_str = ""
+        if trend_coefs:
+            units = ("m/s/d", "m/s/d²", "m/s/d³")
+            parts = [f"{c:+.3g} {u}" for c, u in zip(trend_coefs, units)]
+            trend_str = f"   trend=({', '.join(parts)})"
         print(f"  N_obs={len(t)}   baseline={t.max() - t.min():.0f} d   "
-              f"γ-mode={mode}   γ={gamma:+.2f} m/s"
-              + (f"   auto-sign flips={omega_flips}" if any(omega_flips) else ""))
+              f"{mode_label}   γ={gamma:+.2f} m/s{trend_str}"
+              + (f"   ω-flips={omega_flips}" if any(omega_flips) else ""))
         print(f"  RMS(residual) = {rms:.2f} m/s   "
               f"median σ_obs = {median_err:.2f} m/s   "
               f"RMS/σ = {rms / median_err:.2f}   "
@@ -339,7 +450,8 @@ def validate_one(tbl_path: Path, labels: pd.DataFrame, mode: str = "anchor",
 
     if plot:
         plot_validation(t, rv, err, v_model + gamma, residuals, host, planets,
-                        rms, median_err, mode, save, gamma=gamma)
+                        rms, median_err, mode, save, gamma=gamma,
+                        trend_coefs=trend_coefs, t_ref=t_ref)
 
     return {
         "file": tbl_path.name,
@@ -352,22 +464,27 @@ def validate_one(tbl_path: Path, labels: pd.DataFrame, mode: str = "anchor",
         "rms_over_sigma": rms / median_err,
         "chi2_red": chi2_red,
         "omega_flips": "".join(str(f) for f in omega_flips),
+        "tperi_shifts_d": ",".join(f"{p.t_peri - tp0:+.4f}"
+                                    for p, tp0 in zip(planets, initial_tperi)),
+        "trend_coefs": ",".join(f"{c:.6g}" for c in trend_coefs),
         **({"residuals": residuals, "times": t, "sigmas": err}
            if return_residuals else {}),
     }
 
 
 def plot_validation(t, rv, err, model, residuals, host, planets,
-                    rms, median_err, mode, save, gamma=0.0):
+                    rms, median_err, mode, save, gamma=0.0,
+                    trend_coefs=None, t_ref=0.0):
     """
     Three-panel layout: full time series (top), phase-folded view on the
     shortest-period planet (middle, only if multiple cycles are observed),
     and residuals vs time (bottom).
     """
+    trend_coefs = trend_coefs or []
     # Decide whether to include a phase-folded subplot
     shortest = min(planets, key=lambda p: p.P)
     n_cycles = (t.max() - t.min()) / shortest.P
-    show_phase = n_cycles >= 3  # only useful when the planet has wrapped a few times
+    show_phase = n_cycles >= 3
 
     if show_phase:
         fig, axes = plt.subplots(3, 1, figsize=(11, 10),
@@ -379,26 +496,34 @@ def plot_validation(t, rv, err, model, residuals, host, planets,
     # ---- (a) full time series ----
     span = t.max() - t.min()
     t_fine = np.linspace(t.min() - 0.02 * span, t.max() + 0.02 * span, 4000)
-    v_fine = evaluate_model(planets, t_fine) + gamma
-    axes[0].plot(t_fine, v_fine, "C0-", lw=1.0, alpha=0.7,
-                 label=f"Kepler model — {len(planets)} planet(s)")
+    trend_fine = _eval_trend(t_fine, t_ref, trend_coefs)
+    v_fine = evaluate_model(planets, t_fine) + gamma + trend_fine
+
+    label = f"Kepler model — {len(planets)} planet(s)"
+    if trend_coefs:
+        label += f" + trend (order {len(trend_coefs)})"
+    axes[0].plot(t_fine, v_fine, "C0-", lw=1.0, alpha=0.7, label=label)
+    if trend_coefs:
+        axes[0].plot(t_fine, gamma + trend_fine, "C3--", lw=1.0, alpha=0.7,
+                     label="γ + trend (planet signal removed)")
     axes[0].errorbar(t, rv, yerr=err, fmt="ko", ms=3.5, capsize=2, lw=0.7,
                      label="RV data")
     axes[0].set_ylabel("RV  [m/s]")
+    title_mode = "LS-refit" if trend_coefs or any(p.t_peri != tp for p, tp in
+                                                    zip(planets, [p.t_peri for p in planets])) else f"γ: {mode}"
     axes[0].set_title(
         f"{host}   |   RMS={rms:.1f} m/s, median σ={median_err:.1f} m/s, "
-        f"ratio={rms / median_err:.2f}   |   γ-mode: {mode}"
+        f"ratio={rms / median_err:.2f}   |   {title_mode}"
     )
     axes[0].legend(loc="best", fontsize=9)
     axes[0].grid(alpha=0.3)
 
     # ---- (b) phase-folded on the shortest-period planet ----
     if show_phase:
-        # Subtract the contributions of all OTHER planets from the data, so
-        # what remains is the signal of the shortest-period planet alone.
         other = [p for p in planets if p is not shortest]
         v_other_at_t = evaluate_model(other, t) if other else np.zeros_like(t)
-        rv_iso = rv - gamma - v_other_at_t        # isolated signal of `shortest`
+        trend_at_t = _eval_trend(t, t_ref, trend_coefs)
+        rv_iso = rv - gamma - v_other_at_t - trend_at_t
         phase = ((t - shortest.t_peri) / shortest.P) % 1.0
 
         ph_fine = np.linspace(0, 1, 1000)
@@ -411,7 +536,7 @@ def plot_validation(t, rv, err, model, residuals, host, planets,
         axes[1].plot(ph_fine[order], v_shortest_fine[order], "C0-", lw=1.5,
                      label=f"Kepler model — {shortest.name}")
         axes[1].errorbar(phase, rv_iso, yerr=err, fmt="ko", ms=3.5, capsize=2,
-                         lw=0.7, label="data (other planets removed)")
+                         lw=0.7, label="data (other planets & trend removed)")
         axes[1].set_xlabel(f"Orbital phase (P = {shortest.P:.4f} d)")
         axes[1].set_ylabel("RV  [m/s]")
         axes[1].set_xlim(0, 1)
@@ -474,6 +599,10 @@ def main() -> None:
                    help="run over every .tbl and write data/validation_summary.csv")
     p.add_argument("--auto-sign", action="store_true",
                    help="for each planet, try ω and ω+π and keep the better fit")
+    p.add_argument("--fit-tperi", action="store_true",
+                   help="LS-refit T_peri per planet (fixes phase offsets)")
+    p.add_argument("--trend", type=int, default=0, metavar="N", choices=(0, 1, 2),
+                   help="add polynomial trend of order N=1 (linear) or 2 (quadratic)")
     p.add_argument("--save", type=Path, default=None,
                    help="save figure here instead of showing interactively")
     args = p.parse_args()
@@ -495,7 +624,8 @@ def main() -> None:
     if args.all:
         files = sorted(args.rv_dir.glob("UID_*_RVC_*.tbl"))
         rows = [validate_one(f, labels, mode=args.mode, plot=False, verbose=False,
-                             simbad_cache=simbad_cache, auto_sign=args.auto_sign)
+                             simbad_cache=simbad_cache, auto_sign=args.auto_sign,
+                             fit_tperi=args.fit_tperi, trend_order=args.trend)
                 for f in files]
         df = pd.DataFrame(rows)
         out = Path("data/validation_summary.csv")
@@ -551,7 +681,8 @@ def main() -> None:
             raise SystemExit("No RV files found; run download_rv.py first")
 
     validate_one(tbl, labels, mode=args.mode, plot=True, save=args.save,
-                 simbad_cache=simbad_cache, auto_sign=args.auto_sign)
+                 simbad_cache=simbad_cache, auto_sign=args.auto_sign,
+                 fit_tperi=args.fit_tperi, trend_order=args.trend)
 
 
 if __name__ == "__main__":
