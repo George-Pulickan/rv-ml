@@ -134,13 +134,19 @@ class Planet:
     omega: float      # arg. of periastron [radians]
     t_peri: float     # time of periastron passage [BJD]
     K_source: str     # "catalog" or "derived"
+    tperi_known: bool = True   # False if t_peri is a placeholder to be fit
 
 
 def build_planet(row: pd.Series) -> tuple[Planet | None, str]:
     """Convert one row of the labels DataFrame into a Planet.
 
-    Returns (Planet, "") on success or (None, reason) on failure, where
-    `reason` is one of: 'no_period', 'no_tperi_or_tranmid', 'no_K_and_no_msini'.
+    Returns (Planet, "") on success or (None, reason) on failure.
+
+    Failure reasons: 'no_period', 'no_K_and_no_msini'.
+
+    Planets that lack both pl_orbtper and pl_tranmid are still returned
+    (with tperi_known=False); validate_one only includes them when
+    fit_tperi=True, since otherwise t_peri would be a placeholder.
 
     For transit-discovered planets the catalog usually tabulates `pl_tranmid`
     (time of conjunction) rather than `pl_orbtper` (time of periastron).
@@ -155,20 +161,24 @@ def build_planet(row: pd.Series) -> tuple[Planet | None, str]:
     omega_deg = float(row["pl_orblper"]) if pd.notna(row.get("pl_orblper")) else 90.0
     omega = np.radians(omega_deg)
 
-    t_peri = row.get("pl_orbtper")
-    if pd.isna(t_peri):
-        # Fall back to time of conjunction: convert T_c -> T_peri via the
-        # eccentric anomaly at conjunction. f_c = π/2 - ω → E_c → M_c.
+    t_peri_raw = row.get("pl_orbtper")
+    tperi_known = True
+    if pd.isna(t_peri_raw):
         t_c = row.get("pl_tranmid")
-        if pd.isna(t_c):
-            return None, "no_tperi_or_tranmid"
-        f_c = np.pi / 2.0 - omega
-        E_c = 2.0 * np.arctan2(np.sqrt(1.0 - e) * np.sin(f_c / 2.0),
-                                np.sqrt(1.0 + e) * np.cos(f_c / 2.0))
-        M_c = E_c - e * np.sin(E_c)
-        t_peri = float(t_c) - float(P) * M_c / (2.0 * np.pi)
+        if pd.notna(t_c):
+            # Convert T_c -> T_peri via the eccentric anomaly at conjunction.
+            f_c = np.pi / 2.0 - omega
+            E_c = 2.0 * np.arctan2(np.sqrt(1.0 - e) * np.sin(f_c / 2.0),
+                                    np.sqrt(1.0 + e) * np.cos(f_c / 2.0))
+            M_c = E_c - e * np.sin(E_c)
+            t_peri = float(t_c) - float(P) * M_c / (2.0 * np.pi)
+        else:
+            # No timing info in the catalog. Keep the planet but flag it;
+            # least_squares_refit will grid-search T_peri from the data.
+            t_peri = 0.0  # placeholder
+            tperi_known = False
     else:
-        t_peri = float(t_peri)
+        t_peri = float(t_peri_raw)
 
     K = row.get("pl_rvamp")
     K_source = "catalog"
@@ -187,6 +197,7 @@ def build_planet(row: pd.Series) -> tuple[Planet | None, str]:
         omega=omega,
         t_peri=float(t_peri),
         K_source=K_source,
+        tperi_known=tperi_known,
     ), ""
 
 
@@ -254,11 +265,37 @@ def least_squares_refit(planets: list[Planet], t: np.ndarray, rv: np.ndarray,
     flip_grid = (list(product((0, 1), repeat=n))
                   if auto_sign and 0 < n <= 8 else [tuple([0] * n)])
 
+    def gridsearch_tperi(target_planet, other_planets):
+        """For a planet with unknown T_peri, find the best starting value by
+        evaluating the residuals on a coarse grid spanning one full period."""
+        v_other = evaluate_model(other_planets, t) if other_planets else np.zeros_like(t)
+        grid_n = 40
+        grid = np.linspace(t.min(), t.min() + target_planet.P, grid_n, endpoint=False)
+        best_tp = float(target_planet.t_peri)
+        best_rms = float("inf")
+        for tp in grid:
+            v_test = v_other + rv_keplerian(t, target_planet.P, target_planet.K,
+                                             target_planet.e, target_planet.omega, tp)
+            gamma_test = float(np.sum((rv - v_test) * w * w) / np.sum(w * w))
+            rms = float(np.sqrt(np.mean((rv - v_test - gamma_test) ** 2)))
+            if rms < best_rms:
+                best_rms = rms
+                best_tp = float(tp)
+        return best_tp
+
     best = None
     best_rms = float("inf")
     for flips in flip_grid:
         flipped = [dataclasses.replace(p, omega=p.omega + (np.pi if f else 0.0))
                     for p, f in zip(planets, flips)]
+        # Seed any unknown-T_peri planets via a one-period grid search so LM
+        # has a reasonable initial value instead of an arbitrary placeholder.
+        for i, p in enumerate(flipped):
+            if not p.tperi_known:
+                others = [q for j, q in enumerate(flipped) if j != i]
+                tp_init = gridsearch_tperi(p, others)
+                flipped[i] = dataclasses.replace(p, t_peri=tp_init, tperi_known=True)
+
         # Initial γ from inverse-variance LS with no trend, no T_peri shift
         v0 = evaluate_model(flipped, t)
         gamma0 = float(np.sum((rv - v0) / np.maximum(err, 1e-6) ** 2)
@@ -392,10 +429,25 @@ def validate_one(tbl_path: Path, labels: pd.DataFrame, mode: str = "anchor",
         return {**base, "status": "no_labels_for_host", "host": host}
 
     built = [build_planet(r) for _, r in rows.iterrows()]
-    planets = [p for p, _ in built if p is not None]
+    all_planets = [p for p, _ in built if p is not None]
+    # Planets without a catalog T_peri are only usable when fit_tperi=True,
+    # because their t_peri is a placeholder that must be inferred from data.
+    if fit_tperi:
+        planets = all_planets
+    else:
+        planets = [p for p in all_planets if p.tperi_known]
+    n_recovered = sum(1 for p in planets if not p.tperi_known)
+
     if not planets:
         reasons = [r for _, r in built if r]
-        dominant = max(set(reasons), key=reasons.count) if reasons else "unknown"
+        # If we have *any* built planets that just lack T_peri, report that;
+        # else fall back to whatever other reason dominated.
+        any_no_tperi = any((p is not None) and (not p.tperi_known)
+                            for p, _ in built)
+        if any_no_tperi and not fit_tperi:
+            dominant = "no_tperi_use_--fit-tperi"
+        else:
+            dominant = max(set(reasons), key=reasons.count) if reasons else "unknown"
         if verbose: print(f"[{tbl_path.name}] {host}: no usable planets ({dominant})")
         return {**base, "status": f"no_planets:{dominant}", "host": host}
 
@@ -425,7 +477,8 @@ def validate_one(tbl_path: Path, labels: pd.DataFrame, mode: str = "anchor",
 
     if verbose:
         print(f"\n{'=' * 70}")
-        print(f"{tbl_path.name}  →  host: {host}  ({len(planets)} planet(s))")
+        rec = f"  [{n_recovered} T_peri-recovered]" if n_recovered else ""
+        print(f"{tbl_path.name}  →  host: {host}  ({len(planets)} planet(s)){rec}")
         print(f"{'=' * 70}")
         for p, flip, tp0 in zip(planets, omega_flips, initial_tperi):
             tag = "  [ω-flipped]" if flip else ""
@@ -464,6 +517,7 @@ def validate_one(tbl_path: Path, labels: pd.DataFrame, mode: str = "anchor",
         "rms_over_sigma": rms / median_err,
         "chi2_red": chi2_red,
         "omega_flips": "".join(str(f) for f in omega_flips),
+        "n_tperi_recovered": n_recovered,
         "tperi_shifts_d": ",".join(f"{p.t_peri - tp0:+.4f}"
                                     for p, tp0 in zip(planets, initial_tperi)),
         "trend_coefs": ",".join(f"{c:.6g}" for c in trend_coefs),
