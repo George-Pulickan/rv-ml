@@ -541,8 +541,14 @@ def validate_one(tbl_path: Path, labels: pd.DataFrame, mode: str = "anchor",
         "chi2_red": chi2_red,
         "omega_flips": "".join(str(f) for f in omega_flips),
         "n_tperi_recovered": n_recovered,
-        "tperi_shifts_d": ",".join(f"{p.t_peri - tp0:+.4f}"
-                                    for p, tp0 in zip(planets, initial_tperi)),
+        # T_peri shifts are reported modulo one period, mapped into (-P/2, P/2].
+        # Raw differences would be cycle-wrap contaminated since T_peri+kP is
+        # the same orbital phase for any integer k.
+        "tperi_shifts_d": ",".join(
+            f"{(((p.t_peri - tp0) + p.P / 2.0) % p.P) - p.P / 2.0:+.4f}"
+            for p, tp0 in zip(planets, initial_tperi)
+        ),
+        "periods_d": ",".join(f"{p.P:.4f}" for p in planets),
         "trend_coefs": ",".join(f"{c:.6g}" for c in trend_coefs),
         **({"residuals": residuals, "times": t, "sigmas": err}
            if return_residuals else {}),
@@ -680,6 +686,11 @@ def main() -> None:
                    help="LS-refit T_peri per planet (fixes phase offsets)")
     p.add_argument("--trend", type=int, default=0, metavar="N", choices=(0, 1, 2),
                    help="add polynomial trend of order N=1 (linear) or 2 (quadratic)")
+    p.add_argument("--random-init", action="store_true",
+                   help="initialize T_peri uniformly over [0, P] instead of catalog "
+                        "(diagnostic for measuring catalog informativeness)")
+    p.add_argument("--seed", type=int, default=0,
+                   help="random seed when --random-init is used")
     p.add_argument("--save", type=Path, default=None,
                    help="save figure here instead of showing interactively")
     args = p.parse_args()
@@ -702,7 +713,8 @@ def main() -> None:
         files = sorted(args.rv_dir.glob("UID_*_RVC_*.tbl"))
         rows = [validate_one(f, labels, mode=args.mode, plot=False, verbose=False,
                              simbad_cache=simbad_cache, auto_sign=args.auto_sign,
-                             fit_tperi=args.fit_tperi, trend_order=args.trend)
+                             fit_tperi=args.fit_tperi, trend_order=args.trend,
+                             random_init=args.random_init, random_seed=args.seed)
                 for f in files]
         df = pd.DataFrame(rows)
         out = Path("data/validation_summary.csv")
@@ -759,7 +771,8 @@ def main() -> None:
 
     validate_one(tbl, labels, mode=args.mode, plot=True, save=args.save,
                  simbad_cache=simbad_cache, auto_sign=args.auto_sign,
-                 fit_tperi=args.fit_tperi, trend_order=args.trend)
+                 fit_tperi=args.fit_tperi, trend_order=args.trend,
+                 random_init=args.random_init, random_seed=args.seed)
 
 
 if __name__ == "__main__":
