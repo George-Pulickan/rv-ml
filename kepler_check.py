@@ -237,6 +237,8 @@ def _eval_trend(t: np.ndarray, t_ref: float, coefs: list[float]) -> np.ndarray:
 def least_squares_refit(planets: list[Planet], t: np.ndarray, rv: np.ndarray,
                          err: np.ndarray, fit_tperi: bool = False,
                          trend_order: int = 0, auto_sign: bool = False,
+                         random_init: bool = False,
+                         rng: np.random.Generator | None = None,
                          ) -> tuple[list[Planet], float, list[float], tuple[int, ...], float]:
     """
     Locally refit *nuisance* parameters via Levenberg-Marquardt while keeping
@@ -244,14 +246,18 @@ def least_squares_refit(planets: list[Planet], t: np.ndarray, rv: np.ndarray,
 
     Free parameters:
       γ                       always
-      γ̇, γ̈, …                 if trend_order >= 1, 2, …  (polynomial trend
-                                 in (t - t_mean), absorbs unmodelled drifts
-                                 such as a binary companion)
-      T_peri for each planet  if fit_tperi=True  (fixes orbital phase
-                                 mismatches between catalog and data)
+      γ̇, γ̈, …                 if trend_order >= 1, 2, …
+      T_peri for each planet  if fit_tperi=True
 
-    With `auto_sign=True`, the LM solver is run for each 2ⁿ combination of
+    With `auto_sign=True`, the LM solver runs for each 2ⁿ combination of
     ω flips and the best result is returned.
+
+    With `random_init=True`, T_peri for every planet is replaced with a
+    uniform sample over [t_min, t_min + P] before optimization, ignoring
+    catalog values and disabling the grid search. This is a diagnostic for
+    measuring how much the catalog T_peri values actually constrain the
+    fit — if LM converges to the same answer regardless of init, the
+    catalog isn't providing useful prior information.
 
     Returns (refit_planets, gamma, trend_coefs, omega_flips, t_ref).
     """
@@ -264,6 +270,7 @@ def least_squares_refit(planets: list[Planet], t: np.ndarray, rv: np.ndarray,
     w = 1.0 / np.maximum(err, 1e-6)
     flip_grid = (list(product((0, 1), repeat=n))
                   if auto_sign and 0 < n <= 8 else [tuple([0] * n)])
+    rng = rng or np.random.default_rng()
 
     def gridsearch_tperi(target_planet, other_planets):
         """For a planet with unknown T_peri, find the best starting value by
@@ -288,13 +295,22 @@ def least_squares_refit(planets: list[Planet], t: np.ndarray, rv: np.ndarray,
     for flips in flip_grid:
         flipped = [dataclasses.replace(p, omega=p.omega + (np.pi if f else 0.0))
                     for p, f in zip(planets, flips)]
-        # Seed any unknown-T_peri planets via a one-period grid search so LM
-        # has a reasonable initial value instead of an arbitrary placeholder.
-        for i, p in enumerate(flipped):
-            if not p.tperi_known:
-                others = [q for j, q in enumerate(flipped) if j != i]
-                tp_init = gridsearch_tperi(p, others)
-                flipped[i] = dataclasses.replace(p, t_peri=tp_init, tperi_known=True)
+        if random_init:
+            # Replace every T_peri with a uniform draw over [t_min, t_min+P).
+            # Catalog values are ignored; grid search is skipped.
+            flipped = [dataclasses.replace(
+                          p,
+                          t_peri=float(rng.uniform(t.min(), t.min() + p.P)),
+                          tperi_known=True)
+                       for p in flipped]
+        else:
+            # Seed any unknown-T_peri planets via a one-period grid search so LM
+            # has a reasonable initial value instead of an arbitrary placeholder.
+            for i, p in enumerate(flipped):
+                if not p.tperi_known:
+                    others = [q for j, q in enumerate(flipped) if j != i]
+                    tp_init = gridsearch_tperi(p, others)
+                    flipped[i] = dataclasses.replace(p, t_peri=tp_init, tperi_known=True)
 
         # Initial γ from inverse-variance LS with no trend, no T_peri shift
         v0 = evaluate_model(flipped, t)
@@ -390,7 +406,9 @@ def validate_one(tbl_path: Path, labels: pd.DataFrame, mode: str = "anchor",
                  return_residuals: bool = False,
                  auto_sign: bool = False,
                  fit_tperi: bool = False,
-                 trend_order: int = 0) -> dict:
+                 trend_order: int = 0,
+                 random_init: bool = False,
+                 random_seed: int = 0) -> dict:
     """
     Run the full validation on one RV file. Always returns a dict with a
     'status' field; 'ok' means metrics were computed, anything else means
@@ -454,13 +472,16 @@ def validate_one(tbl_path: Path, labels: pd.DataFrame, mode: str = "anchor",
     # Catalog values (pre-refit) — record initial T_peri to report any shifts
     initial_tperi = [p.t_peri for p in planets]
 
-    do_refit = fit_tperi or trend_order > 0
+    do_refit = fit_tperi or trend_order > 0 or random_init
     trend_coefs: list[float] = []
     t_ref = float(t.mean())
     if do_refit:
+        rng = np.random.default_rng(random_seed)
         planets, gamma, trend_coefs, omega_flips, t_ref = least_squares_refit(
             planets, t, rv, err,
-            fit_tperi=fit_tperi, trend_order=trend_order, auto_sign=auto_sign,
+            fit_tperi=fit_tperi or random_init,
+            trend_order=trend_order, auto_sign=auto_sign,
+            random_init=random_init, rng=rng,
         )
         v_model = evaluate_model(planets, t) + _eval_trend(t, t_ref, trend_coefs)
     elif auto_sign:
@@ -488,6 +509,8 @@ def validate_one(tbl_path: Path, labels: pd.DataFrame, mode: str = "anchor",
                   f"e={p.e:.3f}   ω={np.degrees(p.omega):6.1f}°   "
                   f"({p.K_source}){tag}{shift}")
         mode_label = ("LS-refit" if do_refit else f"γ-mode={mode}")
+        if random_init:
+            mode_label += " [random-init]"
         trend_str = ""
         if trend_coefs:
             units = ("m/s/d", "m/s/d²", "m/s/d³")

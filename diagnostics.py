@@ -141,6 +141,58 @@ def make_scatter(summary_path: Path, index_path: Path, out_path: Path) -> None:
     print(f"[scatter] wrote {out_path}")
 
 
+def make_param_histograms(labels_path: Path, out_path: Path) -> None:
+    """
+    Histograms of catalog parameters used for synthetic-data sampling
+    (per Nicolò's request: 'Get histograms of the parameters using the
+    tabulated values, this would help us when we sample the fake parameters').
+
+    Six panels: log10(P), log10(K), log10(M sin i), e, ω, M_*.
+    """
+    labels = pd.read_csv(labels_path)
+
+    fig, axes = plt.subplots(2, 3, figsize=(14, 8))
+    specs = [
+        ("pl_orbper",   "log",    "Orbital period $P$  [days]"),
+        ("pl_rvamp",    "log",    "RV semi-amplitude $K$  [m/s]"),
+        ("pl_msinij",   "log",    "Minimum mass $M\\sin i$  [$M_{\\mathrm{Jup}}$]"),
+        ("pl_orbeccen", "linear", "Eccentricity $e$"),
+        ("pl_orblper",  "linear", "Argument of periastron $\\omega$  [°]"),
+        ("st_mass",     "linear", "Stellar mass  [$M_\\odot$]"),
+    ]
+    for ax, (col, scale, lbl) in zip(axes.flat, specs):
+        if col not in labels.columns:
+            ax.text(0.5, 0.5, f"column not present: {col}",
+                    ha="center", va="center", transform=ax.transAxes)
+            continue
+        data = labels[col].dropna()
+        if scale == "log":
+            data = data[data > 0]
+            if len(data) == 0:
+                continue
+            bins = np.geomspace(data.min(), data.max(), 40)
+            ax.set_xscale("log")
+        else:
+            bins = 40
+        ax.hist(data, bins=bins, alpha=0.75, edgecolor="black", linewidth=0.4)
+        ax.set_xlabel(lbl)
+        ax.set_ylabel("Count")
+        ax.grid(alpha=0.3, which="both")
+        ax.text(0.97, 0.95, f"N = {len(data):,}\nmedian = "
+                f"{float(np.median(data)):.3g}",
+                transform=ax.transAxes, ha="right", va="top",
+                fontsize=9,
+                bbox=dict(facecolor="white", alpha=0.7, edgecolor="none"))
+
+    fig.suptitle("Catalog parameter distributions (used as priors for synthetic pretraining)",
+                 y=1.01)
+    plt.tight_layout()
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    plt.savefig(out_path, dpi=130, bbox_inches="tight")
+    plt.close(fig)
+    print(f"[hists] wrote {out_path}")
+
+
 def main() -> None:
     p = argparse.ArgumentParser(description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -164,7 +216,11 @@ def main() -> None:
     p.add_argument("--out-dir", type=Path, default=Path("figures/gallery"))
     p.add_argument("--scatter", action="store_true",
                    help="Plot RMS/σ versus orbital params")
+    p.add_argument("--param-hists", action="store_true",
+                   help="Plot catalog parameter histograms for synthetic sampling")
     p.add_argument("--out", type=Path, default=Path("figures/rms_vs_params.png"))
+    p.add_argument("--hists-out", type=Path,
+                   default=Path("figures/param_histograms.png"))
     args = p.parse_args()
 
     if args.gallery:
@@ -174,8 +230,10 @@ def main() -> None:
                      fit_tperi=args.fit_tperi, trend_order=args.trend)
     if args.scatter:
         make_scatter(args.summary, args.index, args.out)
-    if not args.gallery and not args.scatter:
-        p.error("Specify --gallery N or --scatter (or both)")
+    if args.param_hists:
+        make_param_histograms(args.labels, args.hists_out)
+    if not args.gallery and not args.scatter and not args.param_hists:
+        p.error("Specify --gallery N, --scatter, or --param-hists")
 
 
 if __name__ == "__main__":
