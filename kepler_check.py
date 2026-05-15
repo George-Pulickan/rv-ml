@@ -430,6 +430,7 @@ def validate_one(tbl_path: Path, labels: pd.DataFrame, mode: str = "anchor",
     If `return_residuals=True`, the dict additionally contains 'residuals',
     'times', and 'sigmas' arrays (only for status='ok').
     """
+    tbl_path = Path(tbl_path)
     meta, t, rv, err = parse_tbl(tbl_path)
     base = {"file": tbl_path.name, "n_obs": len(t)}
 
