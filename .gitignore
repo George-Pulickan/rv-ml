@@ -4,4 +4,5 @@ __pycache__/
 data/
 .vscode/
 .DS_Store
-.ipynb_checkpoints/
+.ipynb_checkpoints/handover.md
+nicolo_reply_draft.md
