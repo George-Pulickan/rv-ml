@@ -190,7 +190,7 @@ def _norm_name(s) -> str:
         if s.startswith(pfx):
             s = s[len(pfx):].strip()
             break
-    return re.sub(r"\s+", "", s).lower()
+    return re.sub(r"[\s\-]+", "", s).lower()
 
 
 def match_host_rows(host: str, labels: pd.DataFrame) -> pd.DataFrame:
