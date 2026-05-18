@@ -353,6 +353,14 @@ class RVDataset:
         t_norm, rv_norm, sig_norm, mask = pad_series(t, rv, sigma, T_MAX)
         x = np.stack([t_norm, rv_norm, sig_norm, mask])   # (4, T_MAX)
 
+        # Recompute scaling metadata needed for the reconstruction loss.
+        t_sorted = np.sort(t)[:T_MAX]
+        n_use    = len(t_sorted)
+        t_span_days = float(t_sorted[-1] - t_sorted[0]) if n_use > 1 else 1.0
+        t_min_days  = float(t_sorted[0])
+        rv_std_ms   = float(np.std(rv[:T_MAX], ddof=1)) if n_use > 1 else 1.0
+        rv_std_ms   = max(rv_std_ms, 1e-6)
+
         omega_rad = float(np.deg2rad(float(row['omega_deg'])))
         theta_raw = np.array([
             np.log10(max(float(row['P_d']),  1e-3)),
@@ -366,11 +374,14 @@ class RVDataset:
             theta_raw = normalize_theta(theta_raw[None], self.stats)[0].astype(np.float32)
 
         info = {
-            'host':      row['host'],
-            'file':      fname,
-            'n_obs':     int(row['n_obs']),
-            'n_planets': int(row['n_planets']),
-            'valid':     True,
+            'host':         row['host'],
+            'file':         fname,
+            'n_obs':        int(row['n_obs']),
+            'n_planets':    int(row['n_planets']),
+            'valid':        True,
+            't_span_days':  t_span_days,
+            't_min_days':   t_min_days,
+            'rv_std_ms':    rv_std_ms,
         }
         return x, theta_raw, info
 

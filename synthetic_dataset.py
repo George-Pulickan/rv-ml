@@ -145,7 +145,9 @@ def _inject_noise(t: np.ndarray, sigma: np.ndarray,
 
     if _GP_LIBRARY is not None:
         try:
-            return _GP_LIBRARY.sample(t, rng=rng).astype(np.float64)
+            s = _GP_LIBRARY.sample(t, rng=rng).astype(np.float64)
+            if not np.isnan(s).any():
+                return s
         except Exception:
             pass  # fall through to white noise
     return rng.normal(0.0, sigma).astype(np.float64)
@@ -216,6 +218,11 @@ def generate_one(
         "t_peri": t_peri, "n_obs": n_real,
         "baseline_d": t_span, "snr": K / float(np.median(sigma)),
         "t_min": t_min, "rv_std": rv_std,
+        # Canonical keys matching RVDataset (used by train.py collate_fn)
+        "t_span_days": t_span,
+        "t_min_days":  t_min,
+        "rv_std_ms":   rv_std,
+        "valid":       True,
     }
     return x, theta, info
 
