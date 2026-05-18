@@ -82,6 +82,35 @@ VAL_FRAC   = 0.15
 THETA_NAMES = ['log10_P', 'log10_K', 'e', 'cos_omega', 'sin_omega']
 THETA_DIM   = len(THETA_NAMES)
 
+# Lomb-Scargle periodogram grid — fixed log-spaced periods shared by all systems
+# so the encoder always sees the same "period axis" (Scargle 1982, ApJ 263, 835).
+# Range 0.5–5000 d covers our full prior; 512 points gives ~1% frequency resolution.
+LSP_N       = 512
+LSP_PERIODS = np.geomspace(0.5, 5000.0, LSP_N).astype(np.float64)  # days
+LSP_FREQS   = (1.0 / LSP_PERIODS)                                    # cycles/day
+
+
+def compute_lsp(t: np.ndarray, rv: np.ndarray,
+                sigma: np.ndarray) -> np.ndarray:
+    """
+    Compute the generalised Lomb-Scargle power spectrum at the fixed LSP_PERIODS
+    grid.  Uses the floating-mean (GLS) formulation of Zechmeister & Kürster
+    (2009, A&A 496, 577) as implemented in astropy, which correctly handles
+    heteroscedastic errors and a non-zero mean.
+
+    Power is normalised to [0, 1] where 1 corresponds to a perfect sinusoidal
+    fit (standard normalisation, Scargle 1982).
+
+    Returns
+    -------
+    power : (LSP_N,) float32
+    """
+    from astropy.timeseries import LombScargle
+    ls    = LombScargle(t, rv, sigma, normalization='standard',
+                        fit_mean=True, center_data=True)
+    power = ls.power(LSP_FREQS, assume_regular_frequency=False)
+    return np.clip(power, 0.0, 1.0).astype(np.float32)
+
 
 # --------------------------------------------------------------------------- #
 # Host-grouped split                                                            #
@@ -334,22 +363,24 @@ class RVDataset:
             import torch
         except ImportError:
             raise ImportError("PyTorch required for __getitem__; use get_numpy()")
-        x, theta, info = self.get_numpy(idx)
-        return torch.from_numpy(x), torch.from_numpy(theta), info
+        x, lsp, theta, info = self.get_numpy(idx)
+        return torch.from_numpy(x), torch.from_numpy(lsp), torch.from_numpy(theta), info
 
     def get_numpy(self, idx: int):
-        """Return (x, theta, info) as numpy float32 arrays."""
+        """Return (x, lsp, theta, info) as numpy float32 arrays."""
         row = self.df.iloc[idx]
         fname = str(row['file'])
 
         try:
             t, rv, sigma = load_raw_rv(fname)
         except Exception as e:
-            x     = np.zeros((4, T_MAX), dtype=np.float32)
-            theta = np.zeros(THETA_DIM,  dtype=np.float32)
-            return x, theta, {'host': row['host'], 'file': fname,
-                               'valid': False, 'error': str(e)}
+            x     = np.zeros((4, T_MAX),  dtype=np.float32)
+            lsp   = np.zeros(LSP_N,       dtype=np.float32)
+            theta = np.zeros(THETA_DIM,   dtype=np.float32)
+            return x, lsp, theta, {'host': row['host'], 'file': fname,
+                                   'valid': False, 'error': str(e)}
 
+        lsp = compute_lsp(t, rv, sigma)
         t_norm, rv_norm, sig_norm, mask = pad_series(t, rv, sigma, T_MAX)
         x = np.stack([t_norm, rv_norm, sig_norm, mask])   # (4, T_MAX)
 
@@ -383,7 +414,7 @@ class RVDataset:
             't_min_days':   t_min_days,
             'rv_std_ms':    rv_std_ms,
         }
-        return x, theta_raw, info
+        return x, lsp, theta_raw, info
 
 
 # --------------------------------------------------------------------------- #

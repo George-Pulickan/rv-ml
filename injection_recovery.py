@@ -84,22 +84,26 @@ def _chi2(params: np.ndarray, t: np.ndarray, rv: np.ndarray,
     P     = 10.0 ** log10_P
     K     = 10.0 ** log10_K
     omega = np.arctan2(sin_w, cos_w)
-    # Quick T_peri grid search (16 points) to seed the phase
-    tp_grid = np.linspace(t.min(), t.min() + P, 17)[:-1]
+    # Phase grid: enough points to sample < 0.05 P spacing in phase.
+    # With n=40, each step = P/40; at P=1000 d that is 25 d, appropriate.
+    n_tp    = 40
+    tp_grid = np.linspace(t.min(), t.min() + P, n_tp + 1)[:-1]
     best_chi2 = np.inf
     best_tp   = tp_grid[0]
     for tp in tp_grid:
         v  = rv_np(t, P, K, e, omega, tp)
-        gm = float(np.mean(rv - v))
+        gm = float(np.sum((rv - v) / np.maximum(sigma, 1e-10) ** 2)
+                   / np.sum(1.0 / np.maximum(sigma, 1e-10) ** 2))
         r  = rv - v - gm
-        c  = float(np.mean((r / np.maximum(sigma, 1e-9)) ** 2))
+        c  = float(np.mean((r / np.maximum(sigma, 1e-10)) ** 2))
         if c < best_chi2:
             best_chi2 = c
             best_tp   = tp
     v  = rv_np(t, P, K, e, omega, best_tp)
-    gm = float(np.mean(rv - v))
+    gm = float(np.sum((rv - v) / np.maximum(sigma, 1e-10) ** 2)
+               / np.sum(1.0 / np.maximum(sigma, 1e-10) ** 2))
     r  = rv - v - gm
-    return float(np.mean((r / np.maximum(sigma, 1e-9)) ** 2))
+    return float(np.mean((r / np.maximum(sigma, 1e-10)) ** 2))
 
 
 def _recover_classical(
@@ -137,13 +141,14 @@ def _recover_classical(
 
     for k in range(n_restarts):
         if k == 0:
-            # Start near truth (±5% log-scale for P, K; small noise for e, ω)
+            # Seed #0: start near truth (perturbation in log-scale for P, K)
             p0 = true_p0 + rng.normal(0, 0.05, size=5)
         else:
+            # Random restarts: e uniform on [0, 0.99] (full prior range)
             p0 = np.array([
                 rng.uniform(*bounds[0]),
                 rng.uniform(*bounds[1]),
-                rng.uniform(0.0, 0.6),
+                rng.uniform(0.0, 0.99),
                 rng.uniform(-1, 1),
                 rng.uniform(-1, 1),
             ])
@@ -211,19 +216,20 @@ def _recover_single_param(
         e     = val     if param == "e" else e_true
         omega = omega_true
 
-        # Phase search over one period
-        n_tp = 20
+        # Phase grid: 40 points per period; at least 40.
+        n_tp = 40
         for phase in np.linspace(0, 1, n_tp, endpoint=False):
             tp = t.min() + phase * P
             v  = rv_np(t, P, K, e, omega, tp)
-            gm = float(np.mean(rv - v))
+            gm = float(np.sum((rv - v) / np.maximum(sigma, 1e-10) ** 2)
+                       / np.sum(1.0 / np.maximum(sigma, 1e-10) ** 2))
             r  = rv - v - gm
-            c  = float(np.mean((r / np.maximum(sigma, 1e-9)) ** 2))
+            c  = float(np.mean((r / np.maximum(sigma, 1e-10)) ** 2))
             if c < best_val:
                 best_val = c
                 best_rec = val
 
-    # Prediction error: RMS at the recovered value
+    # Prediction error: RMS at the recovered value (inverse-variance gamma)
     P     = best_rec if param == "P" else P_true
     K     = best_rec if param == "K" else K_true
     e     = best_rec if param == "e" else e_true
@@ -232,7 +238,8 @@ def _recover_single_param(
     for phase in np.linspace(0, 1, n_tp, endpoint=False):
         tp = t.min() + phase * P
         v  = rv_np(t, P, K, e, omega_true, tp)
-        gm = float(np.mean(rv - v))
+        gm = float(np.sum((rv - v) / np.maximum(sigma, 1e-10) ** 2)
+                   / np.sum(1.0 / np.maximum(sigma, 1e-10) ** 2))
         rms = float(np.sqrt(np.mean((rv - v - gm) ** 2)))
         if rms < best_rms:
             best_rms = rms
@@ -246,27 +253,53 @@ def _recover_single_param(
 
 def _recover_encoder(
     x: np.ndarray,
+    lsp: np.ndarray,
     encoder,
     stats: dict,
+    t: np.ndarray,
+    rv: np.ndarray,
+    sigma: np.ndarray,
 ) -> dict[str, float]:
     """
-    Recover (P, K, e) from a (4, 256) numpy array using the trained encoder.
+    Recover orbital parameters from (x, lsp) using the trained encoder,
+    then refit T_peri and γ analytically so the comparison with the
+    classical LS baseline is fair.
 
-    Returns dict with P_rec, K_rec, e_rec.
+    Returns dict with P_rec, K_rec, e_rec, chi2.
     """
     import torch
     from models.encoder import un_normalise_theta
 
-    x_t    = torch.from_numpy(x).unsqueeze(0).float()     # (1, 4, 256)
+    x_t   = torch.from_numpy(x).unsqueeze(0).float()
+    lsp_t = torch.from_numpy(lsp).unsqueeze(0).float()
     with torch.no_grad():
-        theta_norm = encoder(x_t)                          # (1, 5)
+        theta_norm = encoder(x_t, lsp_t)
     theta_phys = un_normalise_theta(theta_norm, stats).squeeze(0).numpy()
 
     log10_P, log10_K, e_raw, cos_w, sin_w = theta_phys
+    P_rec = float(10.0 ** log10_P)
+    K_rec = float(10.0 ** log10_K)
+    e_rec = float(np.clip(e_raw, 0.0, 0.99))
+    omega_rec = float(np.arctan2(sin_w, cos_w))
+
+    # Refit T_peri analytically (same as classical baseline)
+    n_tp = 40
+    best_chi2 = np.inf
+    best_tp   = t.min()
+    for phase in np.linspace(0, 1, n_tp, endpoint=False):
+        tp = t.min() + phase * P_rec
+        v  = rv_np(t, P_rec, K_rec, e_rec, omega_rec, tp)
+        gm = float(np.sum((rv - v) / np.maximum(sigma, 1e-10) ** 2)
+                   / np.sum(1.0 / np.maximum(sigma, 1e-10) ** 2))
+        r  = rv - v - gm
+        c  = float(np.mean((r / np.maximum(sigma, 1e-10)) ** 2))
+        if c < best_chi2:
+            best_chi2 = c
+            best_tp   = tp
+
     return {
-        "P_rec": float(10.0 ** log10_P),
-        "K_rec": float(10.0 ** log10_K),
-        "e_rec": float(np.clip(e_raw, 0.0, 0.99)),
+        "P_rec": P_rec, "K_rec": K_rec, "e_rec": e_rec,
+        "chi2": best_chi2,
     }
 
 
@@ -308,13 +341,13 @@ def _run_cell(
                                      n_restarts=n_restarts, rng=rng)
             row.update(rec)
         else:
-            # encoder mode — need (4, 256) input tensor
-            from preprocess import T_MAX
+            # encoder mode — need (4, 256) tensor + LSP periodogram
+            from preprocess import T_MAX, compute_lsp
             n_real_obs = len(t)
             t_min  = float(t.min())
-            t_span = float(t.max() - t.min()) or 1.0
+            t_span = float(t.max() - t.min()) if n_real_obs > 1 else 1.0
             rv_med = float(np.median(rv_obs))
-            rv_std = float(np.std(rv_obs)) or 1.0
+            rv_std = max(float(np.std(rv_obs, ddof=1)) if n_real_obs > 1 else 1.0, 1e-6)
 
             x = np.zeros((4, T_MAX), dtype=np.float32)
             n = min(n_real_obs, T_MAX)
@@ -323,7 +356,9 @@ def _run_cell(
             x[2, :n] = (sigma / rv_std)[:n]
             x[3, :n] = 1.0
 
-            enc_rec = _recover_encoder(x, encoder, stats)
+            lsp = compute_lsp(t, rv_obs, sigma)
+
+            enc_rec = _recover_encoder(x, lsp, encoder, stats, t, rv_obs, sigma)
             P_rec = enc_rec["P_rec"]
             K_rec = enc_rec["K_rec"]
             e_rec = enc_rec["e_rec"]

@@ -139,73 +139,85 @@ def rv_model(
 def fit_t_peri(
     t: torch.Tensor,
     rv_obs: torch.Tensor,
+    mask: torch.Tensor,
     P: torch.Tensor,
     K: torch.Tensor,
     e: torch.Tensor,
     omega: torch.Tensor,
-    n_grid: int = 32,
-    n_refine: int = 10,
-    tol: float = 1e-8,
+    n_grid: int = 64,
+    n_refine: int = 8,
+    tol: float = 1e-7,
 ) -> torch.Tensor:
     """
-    Analytically refit T_peri given (P, K, e, ω) from encoder output.
-
-    Implements Option A: differentiable 1-D inner-loop solve so the decoder
-    can be used in train.py without T_peri in the encoder's theta.
+    Analytically refit T_peri given (P, K, e, ω) — Option A inner-loop solve.
 
     Phase convention: T_peri ∈ [t_min, t_min + P).
 
     Algorithm
     ---------
-    1. Coarse grid over one period to locate the basin.
-    2. Newton steps on dχ²/dT_peri to refine (fully differentiable).
+    1. Coarse grid (n_grid points over one period): locate the χ² basin,
+       with γ marginalised analytically at each grid point.
+    2. Newton–Raphson refinement using the exact first and second derivatives
+       of χ² w.r.t. T_peri (via double-backward through the Kepler solve).
+       Step is clipped to P/4 to prevent overshooting.
+
+    The mask is required to exclude padding zeros from the γ estimate and
+    the χ² sum: without masking, padding inflates χ² and biases γ.
 
     Parameters
     ----------
-    t       : (B, N)
-    rv_obs  : (B, N)
+    t              : (B, N)  — observation times [days]
+    rv_obs         : (B, N)  — RV [m/s], zero-median, padding zeros
+    mask           : (B, N)  — 1.0 for real obs, 0.0 for padding
     P, K, e, omega : (B,)
 
     Returns
     -------
-    t_peri : (B,)  — best-fit T_peri, no gradient (used as a constant in
-                     the surrounding forward pass; gradients flow through
-                     P/K/e/ω, not through the argmin itself)
+    t_peri : (B,) — best-fit T_peri, detached (no gradient carried forward;
+                    gradients w.r.t. P/K/e/ω flow through rv_keplerian,
+                    not through the argmin)
     """
     B = t.shape[0]
-    t_min = t.min(dim=1).values  # (B,)
+    t_min  = t.min(dim=1).values               # (B,)
+    n_obs  = mask.sum(dim=1).clamp(min=1.0)    # (B,)
+
+    def _masked_chi2(tp_cand: torch.Tensor) -> torch.Tensor:
+        """Return per-system χ²/N for a candidate T_peri vector (B,)."""
+        rv_pred   = rv_keplerian(t, P, K, e, omega, tp_cand)  # (B, N)
+        gamma     = ((rv_obs - rv_pred) * mask).sum(dim=1, keepdim=True) / n_obs.unsqueeze(1)
+        resid     = (rv_obs - rv_pred - gamma) * mask         # (B, N)
+        return (resid ** 2).sum(dim=1) / n_obs                # (B,)
 
     # ---- coarse grid ----
-    phases = torch.linspace(0.0, 1.0, n_grid + 1, device=t.device)[:-1]  # (G,)
-    # t_peri candidates: (B, G)
-    tp_grid = t_min.unsqueeze(1) + phases.unsqueeze(0) * P.unsqueeze(1)
+    phases  = torch.linspace(0.0, 1.0, n_grid + 1, device=t.device)[:-1]   # (G,)
+    tp_grid = t_min.unsqueeze(1) + phases.unsqueeze(0) * P.unsqueeze(1)     # (B, G)
 
     best_tp   = t_min.clone()
     best_chi2 = torch.full((B,), float("inf"), device=t.device)
 
-    for g in range(n_grid):
-        tp_cand = tp_grid[:, g]                              # (B,)
-        rv_pred = rv_keplerian(t, P, K, e, omega, tp_cand)  # (B, N)
-        # γ from closed-form LS (mean offset)
-        gamma_cand = (rv_obs - rv_pred).mean(dim=1)          # (B,)
-        resid = rv_obs - rv_pred - gamma_cand.unsqueeze(1)   # (B, N)
-        chi2 = (resid ** 2).mean(dim=1)                      # (B,)
-        better = chi2 < best_chi2
-        best_tp   = torch.where(better, tp_cand,   best_tp)
-        best_chi2 = torch.where(better, chi2,       best_chi2)
+    with torch.no_grad():
+        for g in range(n_grid):
+            chi2 = _masked_chi2(tp_grid[:, g])
+            better    = chi2 < best_chi2
+            best_tp   = torch.where(better, tp_grid[:, g], best_tp)
+            best_chi2 = torch.where(better, chi2,           best_chi2)
 
-    # ---- Newton refinement — gradient w.r.t. tp only, result detached ----
+    # ---- Newton–Raphson with exact 2nd derivative ----
+    # d(χ²_sum)/dtp and d²(χ²_sum)/dtp² via double backward.
+    # Cross-system terms vanish (each χ²_b depends only on tp_b),
+    # so the per-element gradient and Hessian are well-defined.
     tp = best_tp.clone().requires_grad_(True)
     for _ in range(n_refine):
         with torch.enable_grad():
-            rv_pred = rv_keplerian(t, P, K, e, omega, tp)
-            gamma   = (rv_obs - rv_pred).mean(dim=1, keepdim=True)
-            resid   = rv_obs - rv_pred - gamma
-            chi2    = (resid ** 2).mean(dim=1).sum()
-            (grad,) = torch.autograd.grad(chi2, tp)
-        if grad.abs().max() < tol:
+            chi2_sum = _masked_chi2(tp).sum()
+            (grad,)  = torch.autograd.grad(chi2_sum, tp, create_graph=True)
+        if grad.detach().abs().max().item() < tol:
             break
-        tp = (tp - 0.1 * grad).detach().requires_grad_(True)
+        with torch.enable_grad():
+            (hess,)  = torch.autograd.grad(grad.sum(), tp)
+        step = grad.detach() / hess.detach().abs().clamp(min=1e-8)
+        step = step.clamp(-P.detach() / 4.0, P.detach() / 4.0)
+        tp   = (tp.detach() - step).requires_grad_(True)
 
     return tp.detach()
 
@@ -264,10 +276,8 @@ class KeplerDecoder(nn.Module):
         # (median was removed; std is rv_std)
         rv_ms = rv_obs * rv_std.unsqueeze(1)    # (B, N), zero-median in m/s
 
-        # Refit T_peri analytically (no gradient)
-        # Mask padding out before the refit
-        rv_masked = rv_ms * mask
-        t_peri = fit_t_peri(t_days, rv_masked, P, K, e, omega)
+        # Refit T_peri analytically using masked χ² (Option A)
+        t_peri = fit_t_peri(t_days, rv_ms, mask, P, K, e, omega)
 
         # Predict RV in m/s
         rv_pred_ms = rv_keplerian(t_days, P, K, e, omega, t_peri)
