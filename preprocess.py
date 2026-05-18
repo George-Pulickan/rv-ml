@@ -404,12 +404,13 @@ class RVDataset:
         if self.normalize and self.stats is not None:
             theta_raw = normalize_theta(theta_raw[None], self.stats)[0].astype(np.float32)
 
+        n_obs = int(row['n_obs'])
         info = {
             'host':         row['host'],
             'file':         fname,
-            'n_obs':        int(row['n_obs']),
+            'n_obs':        n_obs,
             'n_planets':    int(row['n_planets']),
-            'valid':        True,
+            'valid':        n_obs >= 10,   # need ≥10 obs to constrain 5 orbital params
             't_span_days':  t_span_days,
             't_min_days':   t_min_days,
             'rv_std_ms':    rv_std_ms,
