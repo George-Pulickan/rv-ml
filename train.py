@@ -207,6 +207,7 @@ def train(
     pretrain_cache: Path | None = None,
     arch: str = "resnet",
     single_planet: bool = True,
+    f_multi: float = 0.30,
 ) -> None:
     torch.manual_seed(seed)
     np.random.seed(seed)
@@ -241,7 +242,8 @@ def train(
         if pretrain_cache is not None:
             if not Path(pretrain_cache).exists():
                 print(f"Cache not found — generating {pretrain_n:,} samples → {pretrain_cache}")
-                generate_cache(pretrain_n, pretrain_cache, seed=seed, stats=stats)
+                generate_cache(pretrain_n, pretrain_cache, seed=seed, stats=stats,
+                               f_multi=f_multi)
             print(f"Loading pretrain cache from {pretrain_cache}")
             syn_ds = PregenSyntheticDataset(pretrain_cache)
             # If cache is larger than pretrain_n, sample without replacement each
@@ -257,7 +259,8 @@ def train(
                 syn_loader = DataLoader(syn_ds, batch_size=batch_size, shuffle=True,
                                         num_workers=num_workers, collate_fn=collate_rv)
         else:
-            syn_ds     = SyntheticRVDataset(n_samples=pretrain_n, seed=seed, stats=stats)
+            syn_ds     = SyntheticRVDataset(n_samples=pretrain_n, seed=seed, stats=stats,
+                                            f_multi=f_multi)
             syn_loader = DataLoader(syn_ds, batch_size=batch_size, shuffle=True,
                                     num_workers=num_workers, collate_fn=collate_rv)
 
@@ -363,6 +366,9 @@ def _parse():
     p.add_argument("--no-single-planet", action="store_true",
                    help="Include multi-planet systems (encoder trained on dominant "
                         "planet; companion signals treated as noise)")
+    p.add_argument("--f-multi",          type=float, default=0.30,
+                   help="Fraction of synthetic pre-training samples with companion "
+                        "injection (default: 0.30, following Howard et al. 2010)")
     return p.parse_args()
 
 
@@ -383,4 +389,5 @@ if __name__ == "__main__":
         pretrain_cache      = args.pretrain_cache,
         arch                = args.arch,
         single_planet       = not args.no_single_planet,
+        f_multi             = args.f_multi,
     )

@@ -2,17 +2,37 @@
 synthetic_dataset.py — Synthetic RV generator for encoder pre-training.
 
 Samples (P, K, e, ω) from physically motivated priors, generates a Keplerian
-RV curve via models/kepler_torch.py, injects GP noise from GPNoiseLibrary, and
-returns the same (4×256, LSP_N) tensor format as RVDataset in preprocess.py.
+RV curve, injects GP noise, and returns the same (4×256, LSP_N) tensor format
+as RVDataset in preprocess.py.
 
-Priors
-------
+Priors (applied to every planet, primary and companion alike)
+-----
     P      ~ LogUniform(1, 3000) d
     K      ~ LogUniform(1, 300) m/s
     e      ~ Beta(2, 5)   low-eccentricity prior (Kipping 2013, MNRAS 434, L51)
     ω      ~ Uniform(0, 2π)
     T_peri ~ Uniform(t_min, t_min + P)   (random orbital phase)
     γ = 0  (median-subtracted in normalised tensor)
+
+Multi-planet injection
+----------------------
+With probability f_multi=0.30, one or two companion planets are drawn from
+the same priors and their Keplerian signals are added to the primary signal
+before noise injection.  The label always corresponds to the dominant planet
+— the one with the highest RV semi-amplitude K — consistent with the
+definition in preprocess._usable_systems.  This trains the encoder to be
+robust to companion contamination without requiring explicit signal separation.
+
+Multiplicity distribution (following Howard et al. 2010, Science 330, 653,
+which found ~30% of planet-hosting stars have multiple detected companions):
+    P(0 companions) = 1 - f_multi           ≈ 0.70
+    P(1 companion)  = f_multi × 0.75        ≈ 0.225
+    P(2 companions) = f_multi × 0.25        ≈ 0.075
+→ E[N_planets] ≈ 1.4, consistent with the observed RV multiplicity function.
+
+The single noise realisation (GP or white) is shared across all planets.
+Orbital stability (Hill stability) is not enforced; period near-degeneracy
+has measure zero under continuous priors and is an acknowledged limitation.
 
 Time grids
 ----------
@@ -28,12 +48,13 @@ Noise
 
 Usage
 -----
-    from synthetic_dataset import SyntheticRVDataset, make_synthetic_batch
+    from synthetic_dataset import SyntheticRVDataset, generate_cache
 
-    ds = SyntheticRVDataset(n_samples=50_000, seed=42)
+    ds = SyntheticRVDataset(n_samples=50_000, seed=42, f_multi=0.30)
     x, lsp, theta, info = ds[0]     # x:(4,256) lsp:(LSP_N,) theta:(5,)
 
-    X, Lsp, Theta = make_synthetic_batch(batch_size=64, rng=np.random.default_rng(0))
+    # Pre-generate cache for fast training
+    generate_cache(500_000, "data/pretrain_cache.pt", seed=42, f_multi=0.30)
 """
 
 from __future__ import annotations
@@ -45,29 +66,35 @@ import numpy as np
 import torch
 from torch.utils.data import Dataset
 
-from preprocess import LSP_N, LSP_PERIODS, T_MAX, THETA_NAMES, compute_lsp
+from preprocess import LSP_N, T_MAX, THETA_NAMES, compute_lsp
 
 _GP_LIB_PATH = Path("data/gp_fits.json")
 _STATS_PATH  = Path("data/dataset_stats.json")
 _SPLITS_CSV  = Path("data/splits.csv")
 _RV_DIR      = Path("data/rv_raw")
 
-# σ distribution fit to 146 real systems: ln(σ) ~ N(μ, σ²)
+# σ distribution fit to 146 real systems: ln(σ) ~ N(μ, s)
 # Calibrated: median σ ≈ 4.6 m/s, p5 ≈ 0.9 m/s, p95 ≈ 16 m/s
 _SIGMA_LOG_MEAN = np.log(4.62)
 _SIGMA_LOG_STD  = 0.75
 
 
 # ---------------------------------------------------------------------------
-# Prior samplers
+# Prior sampler (identical for primary and companion planets)
 # ---------------------------------------------------------------------------
 
 def _sample_orbital_params(rng: np.random.Generator, n: int) -> dict[str, np.ndarray]:
     """
-    Sample n sets of (P, K, e, ω, phase) from the prior.
+    Sample n independent sets of (P, K, e, ω, phase) from the prior.
 
-    e ~ Beta(2, 5) following Kipping (2013, MNRAS 434, L51), which provides
-    an informative prior from the observed exoplanet eccentricity distribution.
+    P and K use log-uniform priors, appropriate for parameters whose
+    uncertainty spans orders of magnitude (Jeffreys prior).  e follows
+    Beta(2, 5) from Kipping (2013, MNRAS 434, L51), which is fit to the
+    observed exoplanet eccentricity distribution from radial-velocity surveys.
+    ω and phase are uniform — no preferred orientation or epoch.
+
+    The same function is called for both primary and companion planets,
+    ensuring all planets are drawn from the same marginal prior.
     """
     P     = np.exp(rng.uniform(np.log(1.0),    np.log(3000.0), size=n))
     K     = np.exp(rng.uniform(np.log(1.0),    np.log(300.0),  size=n))
@@ -89,6 +116,8 @@ def _load_real_time_grids() -> list[np.ndarray]:
     Load sorted observation time arrays from the training split.
 
     Times are shifted to t_min = 0 for portability.  Cached after first call.
+    Only training-split files are used — val/test grids are excluded to
+    prevent cadence leakage.
     """
     global _REAL_TIME_GRIDS
     if _REAL_TIME_GRIDS is not None:
@@ -114,7 +143,7 @@ def _load_real_time_grids() -> list[np.ndarray]:
                 _, t, _, _ = parse_tbl(path)
                 t = np.sort(np.asarray(t, dtype=np.float64))
                 if len(t) >= 10:
-                    grids.append(t - t.min())   # start at 0
+                    grids.append(t - t.min())   # shift to t_min = 0
             except Exception:
                 continue
 
@@ -142,17 +171,16 @@ def _sample_time_grid(rng: np.random.Generator) -> np.ndarray:
 
 def _sample_time_grid_heuristic(rng: np.random.Generator) -> np.ndarray:
     """
-    Heuristic time grid for testing / offline use (no .tbl files needed).
+    Heuristic time grid: seasonal observing campaign (no real .tbl files needed).
 
-    Generates a seasonal observing campaign: ~3 seasons/year, each ~90 d long.
+    Generates ~3 observing seasons per year, each ~90 d long, with uniform
+    random observation times within each season.
     """
-    baseline = float(np.exp(rng.uniform(np.log(100.0), np.log(4000.0))))
-    n_obs    = int(rng.integers(15, 201))
-
+    baseline  = float(np.exp(rng.uniform(np.log(100.0), np.log(4000.0))))
+    n_obs     = int(rng.integers(15, 201))
     season_len = 90.0
     n_seasons  = max(1, round(baseline / 365.25 * 3))
-    # Ensure season starts fit within the baseline
-    s_max = max(0.0, baseline - season_len)
+    s_max      = max(0.0, baseline - season_len)
     season_starts = np.sort(rng.uniform(0.0, s_max + 1e-6, size=n_seasons))
 
     pts_list: list[np.ndarray] = []
@@ -162,12 +190,10 @@ def _sample_time_grid_heuristic(rng: np.random.Generator) -> np.ndarray:
         pts_list.append(rng.uniform(s0, s1, size=k))
 
     t = np.sort(np.concatenate(pts_list)) if pts_list else np.array([0.0])
-
     if len(t) >= n_obs:
         t = t[np.sort(rng.choice(len(t), size=n_obs, replace=False))]
     else:
         t = np.sort(np.concatenate([t, rng.uniform(0, baseline, size=n_obs - len(t))]))
-
     return t.astype(np.float64)
 
 
@@ -197,8 +223,12 @@ def _load_gp_library():
 def _inject_noise(t: np.ndarray, sigma: np.ndarray,
                   rng: np.random.Generator) -> np.ndarray:
     """
-    GP noise from GPNoiseLibrary (Matérn-3/2 or SHO).
-    Falls back to white N(0, σ²) if GP sample fails or is NaN.
+    GP noise from GPNoiseLibrary (Matérn-3/2 or SHO kernel).
+    Falls back to i.i.d. N(0, σ²) white noise if GP sample fails or is NaN.
+
+    A single noise draw is shared across all planets in a multi-planet system
+    — the noise process is a property of the instrument and stellar activity,
+    independent of the planetary configuration.
     """
     global _GP_LIBRARY
     if _GP_LIBRARY is None:
@@ -215,39 +245,85 @@ def _inject_noise(t: np.ndarray, sigma: np.ndarray,
 
 
 # ---------------------------------------------------------------------------
-# Single-sample generator
+# Single-sample generator with companion injection
 # ---------------------------------------------------------------------------
 
 def generate_one(
     params: dict[str, float],
     rng: np.random.Generator,
+    f_multi: float = 0.30,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, dict]:
     """
-    Generate one synthetic RV sample.
+    Generate one synthetic RV sample with optional companion injection.
+
+    With probability f_multi, 1 or 2 companion planets are added to the
+    primary Keplerian signal.  All planets are drawn from the same (P, K, e, ω)
+    prior via _sample_orbital_params.  The label theta corresponds to the
+    dominant planet — the one with the highest K — consistent with the
+    definition in preprocess._usable_systems.
+
+    The RV curve is the linear superposition of all Keplerian signals plus
+    a single shared noise realisation.  Normalisation (rv_med, rv_std) is
+    computed on the combined observed signal so the encoder receives the same
+    representation it would see for a real multi-planet system.
+
+    Companion count given has_companions:
+        P(1 companion | has_companions) = 3/4   (dominant case in RV surveys)
+        P(2 companions | has_companions) = 1/4
+
+    Parameters
+    ----------
+    params   : primary planet parameters (P, K, e, omega, phase)
+    rng      : per-sample RNG (seeded with seed + idx for reproducibility)
+    f_multi  : probability of injecting companions (default 0.30)
 
     Returns
     -------
     x     : (4, T_MAX) float32  — [t_norm, rv_norm, sig_norm, mask]
     lsp   : (LSP_N,) float32    — GLS power spectrum (Zechmeister & Kürster 2009)
-    theta : (5,) float32        — [log10_P, log10_K, e, cos_ω, sin_ω]
+    theta : (5,) float32        — dominant planet [log10_P, log10_K, e, cos_ω, sin_ω]
     info  : dict
     """
     from kepler_check import rv_keplerian as rv_np
 
-    P, K, e, omega = params["P"], params["K"], params["e"], params["omega"]
+    # ---- Build planet list: primary + optional companions ----
+    all_planets: list[dict[str, float]] = [params]
+    if rng.random() < f_multi:
+        # 1 companion with prob 3/4, 2 companions with prob 1/4
+        # (Mayor et al. 2011 found ~75% of multi-planet RV systems have exactly 2 planets)
+        n_comp = 1 if rng.random() < 0.75 else 2
+        comp   = _sample_orbital_params(rng, n_comp)
+        for i in range(n_comp):
+            all_planets.append({k: float(v[i]) for k, v in comp.items()})
 
-    t       = _sample_time_grid(rng)
-    sigma   = _sample_sigma(rng, len(t))
-    t_peri  = float(t.min()) + params["phase"] * P
+    # Dominant planet = highest K (consistent with preprocess._usable_systems)
+    dom_idx = int(np.argmax([pl["K"] for pl in all_planets]))
+    dom     = all_planets[dom_idx]
 
-    rv_clean = rv_np(t, P, K, e, omega, t_peri)
-    noise    = _inject_noise(t, sigma, rng)
-    rv_obs   = rv_clean + noise
+    # ---- Shared time grid and per-observation errors ----
+    t     = _sample_time_grid(rng)
+    sigma = _sample_sigma(rng, len(t))
 
-    # Compute GLS periodogram on the same fixed grid as RVDataset
-    lsp = compute_lsp(t, rv_obs, sigma)   # (LSP_N,)
+    # ---- Sum Keplerian signals (linear superposition, test-particle limit) ----
+    rv_clean = np.zeros(len(t), dtype=np.float64)
+    for pl in all_planets:
+        # t_peri is set to within one period of the first observation so that
+        # the orbital phase is uniformly distributed at t[0], independent of P.
+        t_peri    = float(t.min()) + pl["phase"] * pl["P"]
+        rv_clean += rv_np(t, pl["P"], pl["K"], pl["e"], pl["omega"], t_peri)
 
-    # Pack into (4, T_MAX) tensor
+    # ---- Single noise draw, shared across all planet signals ----
+    noise  = _inject_noise(t, sigma, rng)
+    rv_obs = rv_clean + noise
+
+    # ---- GLS periodogram on the combined multi-planet + noise signal ----
+    # The LSP will show peaks from all planets; the encoder must learn to
+    # focus on the dominant one during training.
+    lsp = compute_lsp(t, rv_obs, sigma)
+
+    # ---- Normalise on the combined signal and pack into (4, T_MAX) tensor ----
+    # rv_med and rv_std are computed on the combined signal, matching what the
+    # encoder will receive for real multi-planet systems.
     n_real  = len(t)
     t_min   = float(t.min())
     t_span  = float(t.max() - t.min()) if n_real > 1 else 1.0
@@ -266,22 +342,29 @@ def generate_one(
     x[2, :n] = sig_norm[:n]
     x[3, :n] = 1.0
 
+    # ---- Label: dominant planet's parameters ----
     theta = np.array([
-        np.log10(P),
-        np.log10(K),
-        e,
-        np.cos(omega),
-        np.sin(omega),
+        np.log10(dom["P"]),
+        np.log10(dom["K"]),
+        dom["e"],
+        np.cos(dom["omega"]),
+        np.sin(dom["omega"]),
     ], dtype=np.float32)
 
-    # SNR here is K / σ_GP (measurement noise), NOT K / total noise amplitude.
-    snr_meas = K / float(np.median(sigma))
+    n_companions = len(all_planets) - 1
     info = {
-        "P": P, "K": K, "e": e, "omega_deg": np.degrees(omega),
-        "t_peri": t_peri, "n_obs": n_real,
-        "baseline_d": t_span, "snr_meas": snr_meas,
-        "t_span_days": t_span, "t_min_days": t_min, "rv_std_ms": rv_std,
-        "valid": True,
+        "P": dom["P"], "K": dom["K"], "e": dom["e"],
+        "omega_deg":   np.degrees(dom["omega"]),
+        "n_obs":       n_real,
+        "baseline_d":  t_span,
+        "snr_meas":    dom["K"] / float(np.median(sigma)),
+        "t_span_days": t_span,
+        "t_min_days":  t_min,
+        "rv_std_ms":   rv_std,
+        "n_planets":   len(all_planets),
+        "n_companions": n_companions,
+        "has_ecc":     True,   # synthetic e always sampled from prior, never imputed
+        "valid":       True,
     }
     return x, lsp, theta, info
 
@@ -300,14 +383,15 @@ class SyntheticRVDataset(Dataset):
     ----------
     n_samples : total samples per epoch
     seed      : base RNG seed (item i uses seed + i for reproducibility)
-    stats     : normalisation dict from data/dataset_stats.json;
-                loaded automatically if not supplied
+    stats     : normalisation dict from data/dataset_stats.json
+    f_multi   : fraction of samples with companion planets (default 0.30)
     """
 
     def __init__(self, n_samples: int = 100_000, seed: int = 42,
-                 stats: dict | None = None) -> None:
+                 stats: dict | None = None, f_multi: float = 0.30) -> None:
         self.n_samples = n_samples
         self.seed      = seed
+        self.f_multi   = f_multi
         self.stats     = stats or _load_stats()
 
         rng = np.random.default_rng(seed)
@@ -322,7 +406,7 @@ class SyntheticRVDataset(Dataset):
     def __getitem__(self, idx: int) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, dict]:
         params = {k: float(v[idx]) for k, v in self._params.items()}
         rng    = np.random.default_rng(self.seed + idx)
-        x, lsp, theta, info = generate_one(params, rng)
+        x, lsp, theta, info = generate_one(params, rng, f_multi=self.f_multi)
 
         if self.stats is not None:
             theta = _normalise_theta(theta, self.stats)
@@ -347,13 +431,150 @@ def _normalise_theta(theta: np.ndarray, stats: dict) -> np.ndarray:
 
 
 # ---------------------------------------------------------------------------
-# Batch helper
+# Pre-generated cache
+# ---------------------------------------------------------------------------
+
+class PregenSyntheticDataset(Dataset):
+    """
+    Torch Dataset backed by a pre-generated .pt cache file.
+
+    Identical interface to SyntheticRVDataset but reads from disk instead of
+    generating on-the-fly.  After initial load (~1 s for 500K samples), each
+    __getitem__ is a tensor slice with no CPU overhead during training.
+
+    The cache stores n_companions per sample so the multi-planet mix can be
+    verified at load time.  Old caches without n_companions are accepted
+    (treated as all-single-planet).
+    """
+
+    def __init__(self, path: str | Path) -> None:
+        data = torch.load(path, map_location="cpu", weights_only=True)
+        self._x            = data["x"]          # (N, 4, T_MAX)
+        self._lsp          = data["lsp"]         # (N, LSP_N)
+        self._theta        = data["theta"]       # (N, 5) — already normalised
+        self._t_span       = data["t_span"]      # (N,)
+        self._t_min        = data["t_min"]       # (N,)
+        self._rv_std       = data["rv_std"]      # (N,)
+        self._n_companions = data.get("n_companions", None)  # (N,) int8 or None
+
+        n = len(self._x)
+        f_multi_stored = float(data.get("f_multi", 0.0))
+        if self._n_companions is not None:
+            frac = float((self._n_companions > 0).float().mean())
+            print(f"[PregenSyntheticDataset] {n:,} samples  "
+                  f"multi-planet fraction: {frac:.3f} "
+                  f"(cache f_multi={f_multi_stored:.2f})")
+        else:
+            print(f"[PregenSyntheticDataset] {n:,} samples  "
+                  f"(legacy cache — companion metadata absent)")
+
+    def __len__(self) -> int:
+        return len(self._x)
+
+    def __getitem__(self, idx: int) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, dict]:
+        n_comp = (int(self._n_companions[idx])
+                  if self._n_companions is not None else 0)
+        info = {
+            "t_span_days":  float(self._t_span[idx]),
+            "t_min_days":   float(self._t_min[idx]),
+            "rv_std_ms":    float(self._rv_std[idx]),
+            "n_companions": n_comp,
+            "n_planets":    1 + n_comp,
+            "has_ecc":      True,
+            "valid":        True,
+        }
+        return self._x[idx], self._lsp[idx], self._theta[idx], info
+
+
+def generate_cache(
+    n_samples: int,
+    path: str | Path,
+    seed: int = 42,
+    stats: dict | None = None,
+    f_multi: float = 0.30,
+) -> None:
+    """
+    Generate n_samples synthetic RV samples and save to a .pt cache file.
+
+    The cache is deterministic: sample i is generated with
+    np.random.default_rng(seed + i), so any subset of samples can be
+    regenerated identically.  f_multi and n_companions are stored in the
+    cache for verification at load time.
+
+    Parameters
+    ----------
+    n_samples : number of samples to generate
+    path      : output .pt file path
+    seed      : master RNG seed
+    stats     : normalisation dict; loaded from disk if None
+    f_multi   : fraction of samples with companion injection (default 0.30)
+    """
+    import time
+
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    stats = stats or _load_stats()
+
+    rng    = np.random.default_rng(seed)
+    params = _sample_orbital_params(rng, n_samples)
+    _load_real_time_grids()   # warm module cache before the loop
+
+    X_list, L_list, T_list    = [], [], []
+    ts_list, tm_list, rs_list = [], [], []
+    nc_list: list[int]        = []
+
+    t0 = time.perf_counter()
+    for i in range(n_samples):
+        p = {k: float(v[i]) for k, v in params.items()}
+        r = np.random.default_rng(seed + i)
+        x, lsp, theta, info = generate_one(p, r, f_multi=f_multi)
+        if stats is not None:
+            theta = _normalise_theta(theta, stats)
+        X_list.append(x)
+        L_list.append(lsp)
+        T_list.append(theta)
+        ts_list.append(info["t_span_days"])
+        tm_list.append(info["t_min_days"])
+        rs_list.append(info["rv_std_ms"])
+        nc_list.append(info["n_companions"])
+        if (i + 1) % 5_000 == 0 or i == n_samples - 1:
+            elapsed  = time.perf_counter() - t0
+            rate     = (i + 1) / elapsed
+            n_multi  = sum(1 for c in nc_list if c > 0)
+            frac     = n_multi / len(nc_list)
+            print(f"  {i+1:>7,}/{n_samples:,}  {elapsed:5.0f}s  "
+                  f"({rate:.0f} samp/s)  multi-planet: {frac:.2%}")
+
+    data = {
+        "x":           torch.from_numpy(np.stack(X_list)),
+        "lsp":         torch.from_numpy(np.stack(L_list)),
+        "theta":       torch.from_numpy(np.stack(T_list)),
+        "t_span":      torch.tensor(ts_list,  dtype=torch.float32),
+        "t_min":       torch.tensor(tm_list,  dtype=torch.float32),
+        "rv_std":      torch.tensor(rs_list,  dtype=torch.float32),
+        "n_companions": torch.tensor(nc_list, dtype=torch.int8),
+        "n_samples":   n_samples,
+        "seed":        seed,
+        "f_multi":     f_multi,
+    }
+    torch.save(data, path)
+
+    elapsed = time.perf_counter() - t0
+    size_mb = path.stat().st_size / 1e6
+    n_multi = sum(1 for c in nc_list if c > 0)
+    print(f"\nSaved {n_samples:,} samples → {path}  ({size_mb:.0f} MB, {elapsed:.0f}s)")
+    print(f"Multi-planet fraction: {n_multi/n_samples:.3f} (target {f_multi:.2f})")
+
+
+# ---------------------------------------------------------------------------
+# Batch helper (for use without a DataLoader)
 # ---------------------------------------------------------------------------
 
 def make_synthetic_batch(
     batch_size: int = 64,
     rng: np.random.Generator | None = None,
     stats: dict | None = None,
+    f_multi: float = 0.30,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """
     Generate a batch without a DataLoader.
@@ -369,9 +590,9 @@ def make_synthetic_batch(
     p     = _sample_orbital_params(rng, batch_size)
     X_l, L_l, T_l = [], [], []
     for i in range(batch_size):
-        pm = {k: float(v[i]) for k, v in p.items()}
+        pm  = {k: float(v[i]) for k, v in p.items()}
         sub = np.random.default_rng(rng.integers(0, 2**31))
-        x, lsp, theta, _ = generate_one(pm, sub)
+        x, lsp, theta, _ = generate_one(pm, sub, f_multi=f_multi)
         if stats is not None:
             theta = _normalise_theta(theta, stats)
         X_l.append(x); L_l.append(lsp); T_l.append(theta)
@@ -379,28 +600,51 @@ def make_synthetic_batch(
 
 
 # ---------------------------------------------------------------------------
-# CLI smoke-test
+# CLI smoke-test / cache generation
 # ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
+    import argparse
     import time
 
-    print("Generating 200 synthetic samples …")
-    t0 = time.perf_counter()
-    ds = SyntheticRVDataset(n_samples=200, seed=0)
-    dt = time.perf_counter() - t0
+    ap = argparse.ArgumentParser(description=__doc__,
+                                 formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--generate-cache", metavar="PATH",
+                    help="Generate a .pt cache file at PATH and exit")
+    ap.add_argument("--n-samples", type=int, default=500_000,
+                    help="Number of samples to generate (default: 500,000)")
+    ap.add_argument("--seed",      type=int, default=42)
+    ap.add_argument("--f-multi",   type=float, default=0.30,
+                    help="Companion injection probability (default: 0.30)")
+    args = ap.parse_args()
 
-    x0, lsp0, th0, info0 = ds[0]
-    print(f"  Construction: {dt:.2f} s")
-    print(f"  x shape:   {tuple(x0.shape)}")
-    print(f"  lsp shape: {tuple(lsp0.shape)}")
-    print(f"  theta:     {th0.numpy().round(3)}")
-    print(f"  lsp range: [{lsp0.min().item():.3f}, {lsp0.max().item():.3f}]")
+    if args.generate_cache:
+        print(f"Generating {args.n_samples:,} synthetic samples → {args.generate_cache}")
+        print(f"  f_multi = {args.f_multi}  (companion injection probability)")
+        print(f"  seed    = {args.seed}")
+        generate_cache(args.n_samples, args.generate_cache,
+                       seed=args.seed, f_multi=args.f_multi)
+    else:
+        print("Smoke-testing SyntheticRVDataset (200 samples, f_multi=0.30) …")
+        t0 = time.perf_counter()
+        ds = SyntheticRVDataset(n_samples=200, seed=0, f_multi=0.30)
+        dt = time.perf_counter() - t0
 
-    nan_x   = sum(1 for i in range(200) if ds[i][0].isnan().any())
-    nan_lsp = sum(1 for i in range(200) if ds[i][1].isnan().any())
-    print(f"  NaN x: {nan_x}/200   NaN lsp: {nan_lsp}/200   (want 0/0)")
+        x0, lsp0, th0, info0 = ds[0]
+        print(f"  Construction: {dt:.2f} s")
+        print(f"  x shape:       {tuple(x0.shape)}")
+        print(f"  lsp shape:     {tuple(lsp0.shape)}")
+        print(f"  theta:         {th0.numpy().round(3)}")
+        print(f"  n_planets:     {info0['n_planets']}  "
+              f"n_companions: {info0['n_companions']}")
+        print(f"  lsp range:     [{lsp0.min().item():.3f}, {lsp0.max().item():.3f}]")
 
-    X, Lsp, Theta = make_synthetic_batch(batch_size=8)
-    print(f"  batch: X {X.shape}  Lsp {Lsp.shape}  Theta {Theta.shape}")
-    print("Done.")
+        nan_x   = sum(1 for i in range(200) if ds[i][0].isnan().any())
+        nan_lsp = sum(1 for i in range(200) if ds[i][1].isnan().any())
+        n_multi = sum(1 for i in range(200) if ds[i][3]["n_companions"] > 0)
+        print(f"  NaN x: {nan_x}/200   NaN lsp: {nan_lsp}/200   (want 0/0)")
+        print(f"  Multi-planet: {n_multi}/200  ({n_multi/2:.1f}%, target ~30%)")
+
+        X, Lsp, Theta = make_synthetic_batch(batch_size=8, f_multi=0.30)
+        print(f"  batch: X {X.shape}  Lsp {Lsp.shape}  Theta {Theta.shape}")
+        print("Done.")
