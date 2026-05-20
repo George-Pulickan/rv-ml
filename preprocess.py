@@ -155,8 +155,9 @@ def make_splits(out_path: Path = SPLITS_CSV, seed: int = 42) -> pd.DataFrame:
     print(f"  Files: train {counts.get('train',0)}, "
           f"val {counts.get('val',0)}, test {counts.get('test',0)}")
 
-    # Compute and save normalization stats from training split
-    stats = compute_stats(usable)
+    # Compute and save normalization stats from training split.
+    # Restricted to single-planet systems; e/ω stats computed on known-ecc only.
+    stats = compute_stats(usable, single_planet=True)
     print(f"Stats saved → {STATS_JSON}")
     return usable
 
@@ -187,7 +188,8 @@ def _usable_systems(resid: pd.DataFrame, labels: pd.DataFrame) -> pd.DataFrame:
         dom = pl_k.loc[pl_k['pl_rvamp'].idxmax()]
         if pd.isna(dom['pl_orbper']) or dom['pl_orbper'] <= 0:
             continue
-        e       = float(dom['pl_orbeccen']) if pd.notna(dom['pl_orbeccen']) else 0.0
+        has_ecc = pd.notna(dom['pl_orbeccen'])
+        e       = float(dom['pl_orbeccen']) if has_ecc else 0.0
         omega   = float(dom['pl_orblper'])  if pd.notna(dom['pl_orblper'])  else 0.0
         rows.append({
             'file':          str(r['file']),
@@ -198,6 +200,7 @@ def _usable_systems(resid: pd.DataFrame, labels: pd.DataFrame) -> pd.DataFrame:
             'K_ms':          float(dom['pl_rvamp']),
             'e':             float(np.clip(e, 0.0, 0.99)),
             'omega_deg':     omega,
+            'has_ecc':       bool(has_ecc),
             'n_planets':     int(pl['pl_name'].nunique()),
         })
     df = pd.DataFrame(rows)
@@ -208,18 +211,34 @@ def _usable_systems(resid: pd.DataFrame, labels: pd.DataFrame) -> pd.DataFrame:
 # Parameter normalization                                                       #
 # --------------------------------------------------------------------------- #
 
-def compute_stats(splits_df: pd.DataFrame) -> dict:
+def compute_stats(splits_df: pd.DataFrame, single_planet: bool = True) -> dict:
     """
     Compute per-parameter mean and std on the training split only.
     Normalizing with training stats prevents data leakage.
+
+    single_planet : restrict to single-planet systems to avoid multi-planet
+                    contamination biasing the normalization constants.
+
+    For e, cos_ω, sin_ω: statistics are computed on systems with a catalogued
+    eccentricity measurement only.  Imputed e=0 values (has_ecc=False) are
+    excluded so the normalization reflects the true eccentricity distribution
+    rather than a distribution inflated by circular-orbit assumptions.
     """
     train = splits_df[splits_df['split'] == 'train']
-    theta = _rows_to_theta(train)
+    if single_planet and 'n_planets' in train.columns:
+        train = train[train['n_planets'] == 1]
+
+    theta   = _rows_to_theta(train)
+    has_ecc = train['has_ecc'].to_numpy(bool) if 'has_ecc' in train.columns \
+              else np.ones(len(train), dtype=bool)
 
     stats = {}
     for i, name in enumerate(THETA_NAMES):
         col = theta[:, i]
-        col = col[np.isfinite(col)]
+        if name in ('e', 'cos_omega', 'sin_omega'):
+            col = col[has_ecc & np.isfinite(col)]
+        else:
+            col = col[np.isfinite(col)]
         stats[name] = {'mean': float(col.mean()), 'std': float(col.std())}
 
     STATS_JSON.write_text(json.dumps(stats, indent=2))
@@ -331,26 +350,34 @@ class RVDataset:
     Dataset of real RV observations with known dominant-planet parameters.
 
     Loads raw RV from .tbl files (not post-Keplerian residuals).
-    Items are (x, theta, info) where:
+    Items are (x, lsp, theta, info) where:
         x     : float32 (4, T_MAX) — [t_norm, rv_norm, sig_norm, mask]
+        lsp   : float32 (LSP_N,)   — GLS periodogram power
         theta : float32 (5,)        — normalized parameter vector
-        info  : dict               — metadata
+        info  : dict               — metadata including has_ecc and n_planets
 
     Parameters
     ----------
-    split     : 'train' | 'val' | 'test' | 'all'
-    normalize : standardize theta using training-split stats (default True)
+    split         : 'train' | 'val' | 'test' | 'all'
+    normalize     : standardize theta using training-split stats (default True)
+    single_planet : restrict to single-planet systems (default True).
+                    Multi-planet systems contain unmodelled companions whose
+                    signal contaminates the RV curve, inflating the
+                    reconstruction loss and biasing orbital parameter estimates.
     """
 
     def __init__(self,
                  split: Literal['train', 'val', 'test', 'all'] = 'train',
                  splits_path: Path = SPLITS_CSV,
-                 normalize: bool = True):
+                 normalize: bool = True,
+                 single_planet: bool = True):
         if not splits_path.exists():
             raise FileNotFoundError(f"{splits_path} — run make_splits() first")
         df = pd.read_csv(splits_path)
         if split != 'all':
             df = df[df['split'] == split].reset_index(drop=True)
+        if single_planet and 'n_planets' in df.columns:
+            df = df[df['n_planets'] == 1].reset_index(drop=True)
         self.df        = df
         self.normalize = normalize
         self.stats     = load_stats() if normalize else None
@@ -410,6 +437,7 @@ class RVDataset:
             'file':         fname,
             'n_obs':        n_obs,
             'n_planets':    int(row['n_planets']),
+            'has_ecc':      bool(row.get('has_ecc', True)),
             'valid':        n_obs >= 10,   # need ≥10 obs to constrain 5 orbital params
             't_span_days':  t_span_days,
             't_min_days':   t_min_days,
@@ -454,7 +482,7 @@ if __name__ == '__main__':
     print("\nSanity check (first 3 items, raw RV):")
     ds = RVDataset(split='train', normalize=False)
     for i in range(min(3, len(ds))):
-        x, theta, info = ds.get_numpy(i)
+        x, lsp, theta, info = ds.get_numpy(i)
         rv_obs = x[1][x[3] == 1]   # unpadded rv_norm
         print(f"  [{i}] {info['host']:20s}  n={info['n_obs']:3d}  "
               f"rv_norm std={rv_obs.std():.3f}  "
