@@ -37,3 +37,7 @@ hosts (766 by direct identifier matching, plus 91 recovered via SIMBAD
 alias resolution); the remaining 214 unmatched files are predominantly
 2MASS-designated survey candidates that don't appear in NASA's confirmed-
 planet table.
+
+## Overleaf draft
+
+A work-in-progress draft about the methodology and related work is here: https://www.overleaf.com/8188483955gysdcwmjrwhq#ac30a1
