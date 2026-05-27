@@ -66,8 +66,8 @@ from synthetic_dataset import (
 )
 
 # Grid defaults
-P_GRID   = np.array([3.0, 10.0, 30.0, 100.0, 300.0, 1000.0])
-SNR_GRID = np.array([0.5, 1.0, 2.0, 5.0, 10.0, 20.0])
+P_GRID   = np.array([1.0, 3.0, 10.0, 30.0, 100.0, 300.0])
+SNR_GRID = np.array([2.0, 5.0, 10.0, 20.0, 50.0])
 
 ALIAS_THRESH = 0.4   # |log2(P_rec/P_true)| > this → period alias
 
@@ -78,19 +78,33 @@ ALIAS_THRESH = 0.4   # |log2(P_rec/P_true)| > this → period alias
 
 def _chi2(params: np.ndarray, t: np.ndarray, rv: np.ndarray,
            sigma: np.ndarray) -> float:
-    """χ² / N for a Kepler + γ model (no e < 0 or e > 0.99 guard needed:
-    scipy bounds handle it)."""
-    log10_P, log10_K, e, cos_w, sin_w = params
-    P     = 10.0 ** log10_P
-    K     = 10.0 ** log10_K
-    omega = np.arctan2(sin_w, cos_w)
-    # Phase grid: enough points to sample < 0.05 P spacing in phase.
-    # With n=40, each step = P/40; at P=1000 d that is 25 d, appropriate.
-    n_tp    = 40
-    tp_grid = np.linspace(t.min(), t.min() + P, n_tp + 1)[:-1]
+    """χ² / N for a Kepler + γ model.
+
+    T_peri is parameterised as a phase fraction φ ∈ [0, 1]:
+        t_peri = t.min() + φ × P
+    so the bound [0, 1] is independent of P.  γ is marginalised
+    analytically at each evaluation via inverse-variance LS.
+    """
+    log10_P, log10_K, e, cos_w, sin_w, phase = params
+    P      = 10.0 ** log10_P
+    K      = 10.0 ** log10_K
+    omega  = np.arctan2(sin_w, cos_w)
+    t_peri = t.min() + phase * P
+    v  = rv_np(t, P, K, e, omega, t_peri)
+    gm = float(np.sum((rv - v) / np.maximum(sigma, 1e-10) ** 2)
+               / np.sum(1.0 / np.maximum(sigma, 1e-10) ** 2))
+    r  = rv - v - gm
+    return float(np.mean((r / np.maximum(sigma, 1e-10)) ** 2))
+
+
+def _seed_phase(t: np.ndarray, rv: np.ndarray, sigma: np.ndarray,
+                P: float, K: float, e: float, omega: float,
+                n_grid: int = 40) -> float:
+    """Coarse 40-point phase grid search — run once to seed the optimizer."""
     best_chi2 = np.inf
-    best_tp   = tp_grid[0]
-    for tp in tp_grid:
+    best_phase = 0.0
+    for phase in np.linspace(0.0, 1.0, n_grid, endpoint=False):
+        tp = t.min() + phase * P
         v  = rv_np(t, P, K, e, omega, tp)
         gm = float(np.sum((rv - v) / np.maximum(sigma, 1e-10) ** 2)
                    / np.sum(1.0 / np.maximum(sigma, 1e-10) ** 2))
@@ -98,12 +112,8 @@ def _chi2(params: np.ndarray, t: np.ndarray, rv: np.ndarray,
         c  = float(np.mean((r / np.maximum(sigma, 1e-10)) ** 2))
         if c < best_chi2:
             best_chi2 = c
-            best_tp   = tp
-    v  = rv_np(t, P, K, e, omega, best_tp)
-    gm = float(np.sum((rv - v) / np.maximum(sigma, 1e-10) ** 2)
-               / np.sum(1.0 / np.maximum(sigma, 1e-10) ** 2))
-    r  = rv - v - gm
-    return float(np.mean((r / np.maximum(sigma, 1e-10)) ** 2))
+            best_phase = phase
+    return best_phase
 
 
 def _recover_classical(
@@ -118,22 +128,29 @@ def _recover_classical(
     rng: np.random.Generator | None = None,
 ) -> dict[str, float]:
     """
-    Recover (P, K, e, ω) via L-BFGS-B with multiple restarts.
+    Recover (P, K, e, ω, φ) via L-BFGS-B with multiple restarts.
 
-    One restart seeds near the true values; the rest are random draws from
-    the prior.  Returns the best-χ² result.
+    T_peri is the 6th free parameter, expressed as a phase fraction
+    φ = (t_peri - t.min()) / P ∈ [0, 1].  A single 40-point grid
+    search seeds φ for restart #0; subsequent restarts draw φ randomly.
+    This avoids the ~40× overhead of re-gridding inside every objective
+    call while keeping the search space well-initialised.
     """
     rng = rng or np.random.default_rng()
     bounds = [
         (np.log10(0.5), np.log10(5000.0)),   # log10_P
         (np.log10(0.1), np.log10(2000.0)),   # log10_K
         (0.0, 0.99),                          # e
-        (-2.0, 2.0),                          # cos_ω (not unit-constrained; atan2 handles it)
+        (-2.0, 2.0),                          # cos_ω
         (-2.0, 2.0),                          # sin_ω
+        (0.0, 1.0),                           # phase φ
     ]
+
+    # Seed phase once at the true (P, K, e, ω) values
+    phase0 = _seed_phase(t, rv, sigma, P_true, K_true, e_true, omega_true)
     true_p0 = np.array([
         np.log10(P_true), np.log10(K_true), e_true,
-        np.cos(omega_true), np.sin(omega_true),
+        np.cos(omega_true), np.sin(omega_true), phase0,
     ])
 
     best_val = np.inf
@@ -141,17 +158,23 @@ def _recover_classical(
 
     for k in range(n_restarts):
         if k == 0:
-            # Seed #0: start near truth (perturbation in log-scale for P, K)
-            p0 = true_p0 + rng.normal(0, 0.05, size=5)
+            p5 = true_p0[:5] + rng.normal(0, 0.05, size=5)
         else:
-            # Random restarts: e uniform on [0, 0.99] (full prior range)
-            p0 = np.array([
+            p5 = np.array([
                 rng.uniform(*bounds[0]),
                 rng.uniform(*bounds[1]),
                 rng.uniform(0.0, 0.99),
                 rng.uniform(-1, 1),
                 rng.uniform(-1, 1),
             ])
+        # Seed phase via grid search at this restart's (P, K, e, ω) — once per
+        # restart, not per function call.  Avoids locking onto harmonics.
+        P_k     = 10.0 ** float(np.clip(p5[0], *bounds[0]))
+        K_k     = 10.0 ** float(np.clip(p5[1], *bounds[1]))
+        e_k     = float(np.clip(p5[2], 0.0, 0.99))
+        omega_k = float(np.arctan2(p5[4], p5[3]))
+        phase_k = _seed_phase(t, rv, sigma, P_k, K_k, e_k, omega_k)
+        p0 = np.append(p5, phase_k)
 
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
