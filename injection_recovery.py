@@ -21,8 +21,8 @@ Two modes:
 
 Grid axes
 ---------
-  P_grid   : [3, 10, 30, 100, 300, 1000] d
-  snr_grid : [0.5, 1, 2, 5, 10, 20]       K / median(σ_obs)
+  P_grid   : [1, 3, 10, 30, 100, 300] d
+  snr_grid : [2, 5, 10, 20, 50]         K / median(σ_obs)
 
 Per cell
 --------
@@ -30,11 +30,37 @@ Per cell
   For each: generate → recover → compute ΔP/P, ΔK/K, Δe
   Period aliases (|log2(P_rec/P_true)| > 0.4) are flagged separately.
 
+LS baseline regime summary
+--------------------------
+  P=1d:      fully degenerate — orbital period coincides with the 1d sidereal
+             sampling alias (Earth rotation, not nightly cadence). MAD ≈ median
+             across all SNR; the cell median has no stable central tendency.
+             Excluded from the headline benchmark figure; shown separately as a
+             failure-mode demonstration.
+  P=3–30d:   window-function-limited. Alias rate flat ~50–70% regardless of SNR.
+             Dominant aliases: 1d sidereal day, 14.8d lunar fortnight (half the
+             29.5d synodic month), 29.5d synodic month.  False χ² minima are
+             structural, not noise-driven — higher SNR does not help.
+  P=100–300d: signal-limited. Alias rate decreases with SNR (P=300d: 36%→26%).
+             SNR lifts the true minimum above window-function false minima.
+
+Headline benchmark figure: P ∈ {3,10,30,100,300} d (P=1 excluded; shown in
+text as "below the sidereal-day alias, LS is uninformative regardless of SNR").
+
+Encoder eval checklist (run after training)
+-------------------------------------------
+  (a) Match this exact grid: P ∈ {1,3,10,30,100,300}, SNR ∈ {2,5,10,20,50},
+      N=200/cell for the headline encoder-vs-LS figure.
+  (b) Compute ΔK/K vs CRLB: LS sits 5–10× above CRLB at high SNR. If encoder
+      reaches CRLB and LS doesn't, that is its own headline result.
+  (c) e-conditioning on Δe: check Δe vs true e — short-period cells may be
+      hitting an e≈0 prior floor. Encoder calibration on circular-orbit systems.
+
 Outputs
 -------
-  data/ir_decoder.csv          — per-realisaton recovery errors (decoder mode)
+  data/ir_decoder.csv          — per-realisation recovery errors (decoder mode)
   data/ir_encoder.csv          — same for encoder mode
-  figures/ir_decoder_grid.png  — 6×6 grid heat-map (decoder)
+  figures/ir_decoder_grid.png  — 5×5 grid heat-map (decoder, P≥3d)
   figures/ir_encoder_grid.png  — same for encoder
 
 Usage
@@ -42,6 +68,7 @@ Usage
     python injection_recovery.py                          # decoder validation
     python injection_recovery.py --n-real 20 --jobs 4    # faster debug run
     python injection_recovery.py --mode encoder --checkpoint checkpoints/best.pt
+    python injection_recovery.py --n-real 200            # headline figure run
 """
 
 from __future__ import annotations
