@@ -73,6 +73,7 @@ plt.title(
     f"SNR={info_best['snr_meas']:.2f}, "
     f"P={info_best['P']:.1f} d"
 )
+plt.savefig("figures/synthetic_plots/Best_candidate_RV.png")
 plt.show()
 
 # ---------------------------------------------------
@@ -96,6 +97,7 @@ plt.title(
     f"SNR={info_worst['snr_meas']:.2f}, "
     f"P={info_worst['P']:.1f} d"
 )
+plt.savefig("figures/synthetic_plots/Worst_candidate_RV.png")
 plt.show()
 
 
@@ -113,6 +115,7 @@ plt.xlabel("K (m/s)")
 plt.ylabel("Count")
 plt.title("Synthetic RV Amplitude Histogram")
 
+plt.savefig("figures/synthetic_plots/Synthetic_RV_histogram.png")
 plt.show()
 
 
@@ -126,6 +129,7 @@ plt.xlabel("P (days)")
 plt.ylabel("Count")
 plt.title("Synthetic Orbital Period Histogram")
 
+plt.savefig("figures/synthetic_plots/Synthetic_period_histogram.png")
 plt.show()
 
 
@@ -139,6 +143,7 @@ plt.xlabel("Eccentricity")
 plt.ylabel("Count")
 plt.title("Synthetic Eccentricity Histogram")
 
+plt.savefig("figures/synthetic_plots/Synthetic_eccentricity_histogram.png")
 plt.show()
 
 
@@ -152,6 +157,7 @@ plt.xlabel("SNR")
 plt.ylabel("Count")
 plt.title("Synthetic SNR Histogram")
 
+plt.savefig("figures/synthetic_plots/SNR_histogram.png")
 plt.show()
 
 
@@ -195,6 +201,7 @@ plt.ylabel("Count")
 plt.title("Real vs Synthetic Orbital Period Distribution")
 
 plt.legend()
+plt.savefig("figures/synthetic_plots/Period_comparison.png")
 plt.show()
 
 # ---------------------------------------------------
@@ -224,6 +231,7 @@ plt.ylabel("Count")
 plt.title("Real vs Synthetic RV Amplitude Distribution")
 
 plt.legend()
+plt.savefig("figures/synthetic_plots/RV_comparison.png")
 plt.show()
 
 # ---------------------------------------------------
@@ -252,4 +260,5 @@ plt.ylabel("Count")
 plt.title("Real vs Synthetic Eccentricity Distribution")
 
 plt.legend()
+plt.savefig("figures/synthetic_plots/Eccentricity_comparison.png")
 plt.show()
