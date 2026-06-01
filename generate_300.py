@@ -197,7 +197,7 @@ plt.hist(
 
 plt.xscale("log")
 plt.xlabel("P (days)")
-plt.ylabel("Count")
+plt.ylabel("Probability Density")
 plt.title("Real vs Synthetic Orbital Period Distribution")
 
 plt.legend()
@@ -227,7 +227,7 @@ plt.hist(
 
 plt.xscale("log")
 plt.xlabel("K (m/s)")
-plt.ylabel("Count")
+plt.ylabel("Probability Density")
 plt.title("Real vs Synthetic RV Amplitude Distribution")
 
 plt.legend()
@@ -256,7 +256,7 @@ plt.hist(
 )
 
 plt.xlabel("Eccentricity")
-plt.ylabel("Count")
+plt.ylabel("Probability Density")
 plt.title("Real vs Synthetic Eccentricity Distribution")
 
 plt.legend()
