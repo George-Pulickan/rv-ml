@@ -1,6 +1,7 @@
 from synthetic_dataset import SyntheticRVDataset
 import pandas as pd
 import matplotlib.pyplot as plt
+import numpy as np
 
 # ---------------------------------------------------
 # Generate 300 synthetic RV systems
@@ -151,4 +152,104 @@ plt.xlabel("SNR")
 plt.ylabel("Count")
 plt.title("Synthetic SNR Histogram")
 
+plt.show()
+
+
+# ---------------------------------------------------
+# COMPARE WITH NASA
+# ---------------------------------------------------
+real_df = pd.read_csv("data/labels.csv")
+print(real_df.columns)
+
+# Spacing for Period and RV
+bins = np.logspace(
+    np.log10(1),
+    np.log10(1e5),
+    30
+)
+
+# ---------------------------------------------------
+#  Period Comparison 
+# ---------------------------------------------------
+plt.figure(figsize=(8,4))
+
+plt.hist(
+    real_df["pl_orbper"].dropna(),
+    bins=bins,
+    alpha=0.5,
+    density=True,
+    label="NASA"
+)
+
+plt.hist(
+    df["P_days"],
+    bins=bins,
+    alpha=0.5,
+    density=True,
+    label="Synthetic"
+)
+
+plt.xscale("log")
+plt.xlabel("P (days)")
+plt.ylabel("Count")
+plt.title("Real vs Synthetic Orbital Period Distribution")
+
+plt.legend()
+plt.show()
+
+# ---------------------------------------------------
+# RV comparison
+# ---------------------------------------------------
+plt.figure(figsize=(8,4))
+
+plt.hist(
+    real_df["pl_rvamp"].dropna(),
+    bins=bins,
+    alpha=0.5,
+    density=True,
+    label="NASA"
+)
+
+plt.hist(
+    df["K_ms"],
+    bins=bins,
+    alpha=0.5,
+    density=True,
+    label="Synthetic"
+)
+
+plt.xscale("log")
+plt.xlabel("K (m/s)")
+plt.ylabel("Count")
+plt.title("Real vs Synthetic RV Amplitude Distribution")
+
+plt.legend()
+plt.show()
+
+# ---------------------------------------------------
+# Eccentricity comparison
+# ---------------------------------------------------
+plt.figure(figsize=(8,4))
+
+plt.hist(
+    real_df["pl_orbeccen"].dropna(),
+    bins=30,
+    alpha=0.5,
+    density=True,
+    label="NASA"
+)
+
+plt.hist(
+    df["eccentricity"],
+    bins=30,
+    alpha=0.5,
+    density=True,
+    label="Synthetic"
+)
+
+plt.xlabel("Eccentricity")
+plt.ylabel("Count")
+plt.title("Real vs Synthetic Eccentricity Distribution")
+
+plt.legend()
 plt.show()
