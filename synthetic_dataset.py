@@ -9,7 +9,7 @@ Priors (applied to every planet, primary and companion alike)
 -----
     P      ~ LogUniform(1, 3000) d
     K      ~ LogUniform(1, 300) m/s
-    e      ~ Beta(0.867, 3.03)   eccentricity prior (Kipping 2013, MNRAS 434, L51)
+    e      ~ empirical histogram from known catalog eccentricities
     ω      ~ Uniform(0, 2π)
     T_peri ~ Uniform(t_min, t_min + P)   (random orbital phase)
     γ = 0  (median-subtracted in normalised tensor)
@@ -72,29 +72,100 @@ _GP_LIB_PATH = Path("data/gp_fits.json")
 _STATS_PATH  = Path("data/dataset_stats.json")
 _SPLITS_CSV  = Path("data/splits.csv")
 _RV_DIR      = Path("data/rv_raw")
+_LABELS_CSV  = Path("data/labels.csv")
 
 # σ distribution fit to 146 real systems: ln(σ) ~ N(μ, s)
 # Calibrated: median σ ≈ 4.6 m/s, p5 ≈ 0.9 m/s, p95 ≈ 16 m/s
 _SIGMA_LOG_MEAN = np.log(4.62)
 _SIGMA_LOG_STD  = 0.75
 
+_ECC_HIST_BINS = 30
+_ECC_CACHE: dict[str, np.ndarray | float] | None = None
+
 
 # ---------------------------------------------------------------------------
 # Prior sampler (identical for primary and companion planets)
 # ---------------------------------------------------------------------------
+
+def _load_eccentricity_prior() -> dict[str, np.ndarray | float] | None:
+    """Load a zero-preserving empirical eccentricity prior from labels.csv."""
+    global _ECC_CACHE
+    if _ECC_CACHE is not None:
+        return _ECC_CACHE
+
+    if not _LABELS_CSV.exists():
+        return None
+
+    try:
+        import pandas as pd
+
+        labels = pd.read_csv(_LABELS_CSV)
+        if "pl_orbeccen" not in labels.columns:
+            return None
+
+        e = labels["pl_orbeccen"].dropna().astype(float).to_numpy()
+        e = e[np.isfinite(e)]
+        e = np.clip(e, 0.0, 0.99)
+        if len(e) == 0:
+            return None
+
+        p_zero = float(np.mean(e == 0.0))
+        nonzero = e[e > 0.0]
+        if len(nonzero) == 0:
+            _ECC_CACHE = {"p_zero": 1.0, "edges": np.array([0.0, 0.99]), "probs": np.array([1.0])}
+            return _ECC_CACHE
+
+        counts, edges = np.histogram(nonzero, bins=_ECC_HIST_BINS, range=(0.0, 0.99))
+        keep = counts > 0
+        probs = counts[keep].astype(np.float64)
+        probs /= probs.sum()
+
+        # Store the non-empty bin edges as paired left/right boundaries.
+        left_edges = edges[:-1][keep]
+        right_edges = edges[1:][keep]
+        _ECC_CACHE = {
+            "p_zero": p_zero,
+            "left_edges": left_edges,
+            "right_edges": right_edges,
+            "probs": probs,
+        }
+        return _ECC_CACHE
+    except Exception as exc:
+        print(f"[synthetic_dataset] could not load empirical eccentricity prior ({exc}); using beta fallback")
+        return None
+
+
+def _sample_eccentricity(rng: np.random.Generator, n: int) -> np.ndarray:
+    """Sample eccentricity from a zero-preserving empirical histogram prior."""
+    prior = _load_eccentricity_prior()
+    if prior is None:
+        return rng.beta(0.867, 3.03, size=n).clip(0.0, 0.99)
+
+    e = np.zeros(n, dtype=np.float64)
+    p_zero = float(prior["p_zero"])
+    nonzero_mask = rng.random(size=n) >= p_zero
+    n_nonzero = int(nonzero_mask.sum())
+    if n_nonzero == 0:
+        return e
+
+    probs = np.asarray(prior["probs"], dtype=np.float64)
+    left_edges = np.asarray(prior["left_edges"], dtype=np.float64)
+    right_edges = np.asarray(prior["right_edges"], dtype=np.float64)
+    bins = rng.choice(len(probs), size=n_nonzero, p=probs)
+    e[nonzero_mask] = rng.uniform(left_edges[bins], right_edges[bins])
+    return e.clip(0.0, 0.99)
 
 def _sample_orbital_params(rng: np.random.Generator, n: int) -> dict[str, np.ndarray]:
     """
     Sample n independent sets of (P, K, e, ω, phase) from the prior.
 
     P and K use log-uniform priors, appropriate for parameters whose
-    uncertainty spans orders of magnitude (Jeffreys prior).  e follows
-    Beta(0.867, 3.03) from Kipping (2013, MNRAS 434, L51) Table 1 (MLE fit to
-    the observed RV exoplanet eccentricity distribution). This is J-shaped —
-    peaked at e=0 — matching the concentration of near-circular orbits in the
-    NASA confirmed-planet catalog. Note: Beta(2, 5) is sometimes used as a
-    simpler weakly-informative prior but is peaked at e≈0.2, which does NOT
-    match the catalog and inflates the eccentricity mismatch seen in diagnostics.
+    uncertainty spans orders of magnitude (Jeffreys prior).  e is sampled from
+    a zero-preserving empirical histogram of known catalog eccentricities.
+    This keeps the exact-zero pile-up seen in the real labels while retaining
+    the observed nonzero eccentricity distribution. If labels.csv is not
+    available, the sampler falls back to the Kipping-style Beta(0.867, 3.03)
+    prior.
     ω and phase are uniform — no preferred orientation or epoch.
 
     The same function is called for both primary and companion planets,
@@ -102,7 +173,7 @@ def _sample_orbital_params(rng: np.random.Generator, n: int) -> dict[str, np.nda
     """
     P     = np.exp(rng.uniform(np.log(1.0),    np.log(3000.0), size=n))
     K     = np.exp(rng.uniform(np.log(1.0),    np.log(300.0),  size=n))
-    e     = rng.beta(0.867, 3.03, size=n).clip(0.0, 0.99)
+    e     = _sample_eccentricity(rng, n)
     omega = rng.uniform(0.0, 2 * np.pi, size=n)
     phase = rng.uniform(0.0, 1.0, size=n)
     return {"P": P, "K": K, "e": e, "omega": omega, "phase": phase}

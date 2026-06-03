@@ -11,7 +11,7 @@ This script intentionally validates the simplest regime first:
 That means every synthetic sample is a single-planet Keplerian signal plus
 noise. Companion injection and encoder training are later steps.
 
-Outputs are written to data/synthetic_validation/ by default.
+Outputs are written to figures/synthetic_validation/ by default.
 """
 
 from __future__ import annotations
@@ -39,7 +39,7 @@ from synthetic_dataset import (
 )
 
 
-DEFAULT_OUT = Path("data") / "synthetic_validation"
+DEFAULT_OUT = Path("figures") / "synthetic_validation"
 
 
 def _masked(x: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
