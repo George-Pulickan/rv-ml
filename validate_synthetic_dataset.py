@@ -74,6 +74,7 @@ def collect_real() -> tuple[pd.DataFrame, list[tuple[np.ndarray, np.ndarray, np.
                 "idx": i,
                 "host": info.get("host", ""),
                 "file": info.get("file", ""),
+                "has_ecc": bool(info.get("has_ecc", True)),
                 "log10_P": float(theta[0]),
                 "log10_K": float(theta[1]),
                 "e": float(theta[2]),
@@ -126,6 +127,7 @@ def collect_synthetic(
                 "idx": i,
                 "host": "synthetic",
                 "file": "",
+                "has_ecc": True,
                 "log10_P": float(theta[0]),
                 "log10_K": float(theta[1]),
                 "e": float(theta[2]),
@@ -179,9 +181,10 @@ def hist_overlay(
 def make_distribution_plots(real: pd.DataFrame, synth: pd.DataFrame, out: Path) -> None:
     """Save parameter and signal-scale comparison plots."""
     fig, axs = plt.subplots(2, 3, figsize=(14, 8))
+    real_known_e = real[real["has_ecc"]].copy() if "has_ecc" in real.columns else real
     hist_overlay(axs[0, 0], real, synth, "log10_P", "log10 period")
     hist_overlay(axs[0, 1], real, synth, "log10_K", "log10 K")
-    hist_overlay(axs[0, 2], real, synth, "e", "eccentricity")
+    hist_overlay(axs[0, 2], real_known_e, synth, "e", "eccentricity (real known-e only)")
     hist_overlay(axs[1, 0], real, synth, "snr_K_over_sigma", "K / median sigma", logx=True)
     hist_overlay(axs[1, 1], real, synth, "rv_std_ms", "RV std [m/s]", logx=True)
     hist_overlay(axs[1, 2], real, synth, "lsp_peak_period_d", "LSP peak period [d]", logx=True)
