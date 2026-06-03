@@ -271,6 +271,160 @@ def make_dataset(n_systems: int, rv_dir: Path, labels_path: Path,
 
 
 # ---------------------------------------------------------------------------
+# (6) Diagnostic plots — overlay the noiseless Keplerian curve
+# ---------------------------------------------------------------------------
+def plot_examples(out_dir: Path, n_examples: int = 6,
+                  save_path: Path | None = None) -> Path:
+    """Plot a grid of synthetic systems with the exact (noiseless) Keplerian
+    curve overlaid on the noisy observations.
+
+    Nicolò's diagnostic: overlaying the exact curve on the same axes verifies
+    that the sampled parameters and the Keplerian integrator are consistent
+    with the simulated observations. The grid shows the highest- and
+    lowest-SNR systems so the dynamic range of the corpus is visible.
+    """
+    import matplotlib  # lazy import — only needed for plotting
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    manifest_path = out_dir / "manifest.csv"
+    if not manifest_path.exists():
+        raise FileNotFoundError(
+            f"No manifest at {manifest_path} — generate synthetic data first "
+            f"with: python synthetic_rv.py --n <N> --out {out_dir}"
+        )
+
+    df = pd.read_csv(manifest_path)
+    snrs = []
+    for fname in df["file"]:
+        data = np.load(out_dir / fname)
+        snrs.append(float(data["K"]) / float(np.median(data["sigma"])))
+    df["snr"] = snrs
+
+    df_sorted = df.sort_values("snr", ascending=False).reset_index(drop=True)
+    half = n_examples // 2
+    selected = pd.concat(
+        [df_sorted.head(half), df_sorted.tail(n_examples - half)],
+        ignore_index=True,
+    )
+
+    fig, axs = plt.subplots(n_examples, 1, figsize=(11, 2.4 * n_examples))
+    if n_examples == 1:
+        axs = [axs]
+
+    for ax, row in zip(axs, selected.itertuples()):
+        data = np.load(out_dir / row.file)
+        t, rv, sigma = data["time"], data["rv"], data["sigma"]
+        P  = float(data["P"]); K = float(data["K"]); e = float(data["e"])
+        omega = np.radians(float(data["omega_deg"]))
+        t_peri = float(data["t_peri"])
+
+        t_dense  = np.linspace(t.min(), t.max(), 1000)
+        rv_exact = rv_keplerian(t_dense, P, K, e, omega, t_peri)
+
+        ax.errorbar(t, rv, yerr=sigma, fmt=".", ms=4, alpha=0.7,
+                    label="synthetic obs")
+        ax.plot(t_dense, rv_exact, color="crimson", lw=1.3, alpha=0.85,
+                label="exact Keplerian")
+        ax.set_xlabel("time [days]")
+        ax.set_ylabel("RV [m/s]")
+        ax.set_title(
+            f"{row.file}  P={P:.2f} d  K={K:.2f} m/s  e={e:.2f}  SNR={row.snr:.1f}",
+            fontsize=10,
+        )
+        ax.legend(loc="best", fontsize=8)
+        ax.grid(alpha=0.25)
+
+    fig.suptitle("Synthetic RV systems — noisy observations + exact Keplerian curve")
+    fig.tight_layout()
+
+    save_path = save_path or (out_dir / "examples_with_exact_curve.png")
+    fig.savefig(save_path, dpi=160)
+    plt.close(fig)
+    print(f"[plot] saved {n_examples} examples to {save_path}")
+    return save_path
+
+
+# ---------------------------------------------------------------------------
+# (7) Binary classifier — discriminate real planets from synthetic samples
+# ---------------------------------------------------------------------------
+def train_real_vs_synthetic_classifier(
+    real_labels_path: Path, synth_dir: Path, out_dir: Path,
+) -> dict:
+    """Train a binary classifier (real NASA planet vs synthetic system) on
+    tabular orbital parameters. A balanced accuracy near 0.5 means the
+    synthetic catalog is statistically indistinguishable from the real one;
+    higher accuracy reveals which parameter distributions diverge.
+    """
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    from sklearn.ensemble import RandomForestClassifier
+    from sklearn.model_selection import StratifiedKFold, cross_val_score
+
+    real = pd.read_csv(real_labels_path).dropna(subset=["pl_orbper"]).copy()
+    real_feat = pd.DataFrame({
+        "log10_P": np.log10(real["pl_orbper"].astype(float)),
+        "log10_K": np.log10(real["pl_rvamp"].astype(float)),
+        "e":       real["pl_orbeccen"].fillna(0.0).astype(float),
+    })
+    real_feat["kind"] = "real"
+
+    synth = pd.read_csv(synth_dir / "manifest.csv")
+    synth_feat = pd.DataFrame({
+        "log10_P": np.log10(synth["P"].astype(float)),
+        "log10_K": np.log10(synth["K"].astype(float)),
+        "e":       synth["e"].astype(float),
+    })
+    synth_feat["kind"] = "synthetic"
+
+    df = pd.concat([real_feat, synth_feat], ignore_index=True)
+    df = df.replace([np.inf, -np.inf], np.nan).dropna()
+
+    features = ["log10_P", "log10_K", "e"]
+    X = df[features].values
+    y = (df["kind"] == "real").astype(int).values
+
+    clf = RandomForestClassifier(n_estimators=300, max_depth=6, random_state=42)
+    cv  = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
+    scores = cross_val_score(clf, X, y, cv=cv, scoring="balanced_accuracy")
+    clf.fit(X, y)
+
+    idx = np.argsort(clf.feature_importances_)[::-1]
+    fig, ax = plt.subplots(figsize=(7, 4))
+    ax.bar(range(len(features)), clf.feature_importances_[idx])
+    ax.set_xticks(range(len(features)))
+    ax.set_xticklabels([features[i] for i in idx], rotation=20, ha="right")
+    ax.set_ylabel("importance")
+    ax.set_title(
+        f"Real (NASA) vs synthetic classifier  "
+        f"balanced-acc = {scores.mean():.3f} ± {scores.std():.3f}  "
+        f"(0.50 = indistinguishable)"
+    )
+    ax.grid(alpha=0.25)
+    fig.tight_layout()
+    save_path = out_dir / "classifier_real_vs_synthetic.png"
+    fig.savefig(save_path, dpi=160)
+    plt.close(fig)
+
+    result = {
+        "balanced_accuracy_mean": float(scores.mean()),
+        "balanced_accuracy_std":  float(scores.std()),
+        "top_feature":            features[int(idx[0])],
+        "n_real":                 int((df["kind"] == "real").sum()),
+        "n_synthetic":            int((df["kind"] == "synthetic").sum()),
+        "plot":                   str(save_path),
+    }
+    print(f"[classifier] real vs synthetic balanced-acc: "
+          f"{result['balanced_accuracy_mean']:.3f} ± "
+          f"{result['balanced_accuracy_std']:.3f}")
+    print(f"[classifier] top discriminating feature: {result['top_feature']}")
+    return result
+
+
+# ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
 def main() -> None:
@@ -290,6 +444,15 @@ def main() -> None:
     p.add_argument("--noise-mode", choices=("chunk", "iid"), default="chunk")
     p.add_argument("--out", type=Path, default=Path("data/synthetic"))
     p.add_argument("--seed", type=int, default=0)
+    p.add_argument("--plot", action="store_true",
+                   help="After generation, save a grid of best/worst-SNR "
+                        "examples with the exact Keplerian curve overlaid")
+    p.add_argument("--plot-n", type=int, default=6,
+                   help="Number of examples in the --plot grid (half best, "
+                        "half worst by SNR)")
+    p.add_argument("--classify", action="store_true",
+                   help="After generation, train a binary classifier "
+                        "(real NASA planet vs synthetic) on orbital params")
     args = p.parse_args()
 
     if args.build_noise or (args.n and not args.noise_pool.exists()):
@@ -299,6 +462,12 @@ def main() -> None:
     if args.n:
         make_dataset(args.n, args.rv_dir, args.labels, args.noise_pool,
                      args.out, noise_mode=args.noise_mode, seed=args.seed)
+
+    if args.plot:
+        plot_examples(args.out, n_examples=args.plot_n)
+
+    if args.classify:
+        train_real_vs_synthetic_classifier(args.labels, args.out, args.out)
 
 
 if __name__ == "__main__":

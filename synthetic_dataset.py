@@ -9,7 +9,7 @@ Priors (applied to every planet, primary and companion alike)
 -----
     P      ~ LogUniform(1, 3000) d
     K      ~ LogUniform(1, 300) m/s
-    e      ~ Beta(2, 5)   low-eccentricity prior (Kipping 2013, MNRAS 434, L51)
+    e      ~ Beta(0.867, 3.03)   eccentricity prior (Kipping 2013, MNRAS 434, L51)
     ω      ~ Uniform(0, 2π)
     T_peri ~ Uniform(t_min, t_min + P)   (random orbital phase)
     γ = 0  (median-subtracted in normalised tensor)
@@ -89,8 +89,12 @@ def _sample_orbital_params(rng: np.random.Generator, n: int) -> dict[str, np.nda
 
     P and K use log-uniform priors, appropriate for parameters whose
     uncertainty spans orders of magnitude (Jeffreys prior).  e follows
-    Beta(2, 5) from Kipping (2013, MNRAS 434, L51), which is fit to the
-    observed exoplanet eccentricity distribution from radial-velocity surveys.
+    Beta(0.867, 3.03) from Kipping (2013, MNRAS 434, L51) Table 1 (MLE fit to
+    the observed RV exoplanet eccentricity distribution). This is J-shaped —
+    peaked at e=0 — matching the concentration of near-circular orbits in the
+    NASA confirmed-planet catalog. Note: Beta(2, 5) is sometimes used as a
+    simpler weakly-informative prior but is peaked at e≈0.2, which does NOT
+    match the catalog and inflates the eccentricity mismatch seen in diagnostics.
     ω and phase are uniform — no preferred orientation or epoch.
 
     The same function is called for both primary and companion planets,
@@ -98,7 +102,7 @@ def _sample_orbital_params(rng: np.random.Generator, n: int) -> dict[str, np.nda
     """
     P     = np.exp(rng.uniform(np.log(1.0),    np.log(3000.0), size=n))
     K     = np.exp(rng.uniform(np.log(1.0),    np.log(300.0),  size=n))
-    e     = rng.beta(2, 5, size=n).clip(0.0, 0.99)
+    e     = rng.beta(0.867, 3.03, size=n).clip(0.0, 0.99)
     omega = rng.uniform(0.0, 2 * np.pi, size=n)
     phase = rng.uniform(0.0, 1.0, size=n)
     return {"P": P, "K": K, "e": e, "omega": omega, "phase": phase}
@@ -197,10 +201,29 @@ def _sample_time_grid_heuristic(rng: np.random.Generator) -> np.ndarray:
     return t.astype(np.float64)
 
 
+_SIGMA_OBS_JITTER_LOG_STD = 0.10   # ~10% per-observation variation within a system
+
+
 def _sample_sigma(rng: np.random.Generator, n_obs: int) -> np.ndarray:
-    """Per-observation σ_obs drawn from the empirical log-normal distribution."""
-    log_sig = rng.normal(_SIGMA_LOG_MEAN, _SIGMA_LOG_STD, size=n_obs)
-    return np.exp(log_sig).astype(np.float64)
+    """Per-observation σ_obs drawn from a two-level hierarchical model.
+
+    Each *system* has an intrinsic precision floor σ_system (set by the
+    instrument and host star), drawn once per call from the population
+    log-normal LogN(_SIGMA_LOG_MEAN, _SIGMA_LOG_STD). Per-observation σ then
+    fluctuates around σ_system with a small log-jitter representing
+    night-to-night noise variation.
+
+    This matches the real data: per-system median σ spans a wide range
+    (HARPS ≈ 0.5 m/s vs HIRES ≈ 3 m/s vs older surveys ≈ 10 m/s), while
+    within a single system the σ values are tightly clustered.
+
+    Drawing σ independently per observation (the previous bug) collapsed
+    the per-system median to the population mean, leaving the synthetic
+    σ distribution far too narrow.
+    """
+    log_sys  = rng.normal(_SIGMA_LOG_MEAN, _SIGMA_LOG_STD)
+    log_obs  = log_sys + rng.normal(0.0, _SIGMA_OBS_JITTER_LOG_STD, size=n_obs)
+    return np.exp(log_obs).astype(np.float64)
 
 
 # ---------------------------------------------------------------------------
@@ -306,11 +329,14 @@ def generate_one(
 
     # ---- Sum Keplerian signals (linear superposition, test-particle limit) ----
     rv_clean = np.zeros(len(t), dtype=np.float64)
+    t_peri_list: list[float] = []
     for pl in all_planets:
         # t_peri is set to within one period of the first observation so that
         # the orbital phase is uniformly distributed at t[0], independent of P.
-        t_peri    = float(t.min()) + pl["phase"] * pl["P"]
-        rv_clean += rv_np(t, pl["P"], pl["K"], pl["e"], pl["omega"], t_peri)
+        tp = float(t.min()) + pl["phase"] * pl["P"]
+        t_peri_list.append(tp)
+        rv_clean += rv_np(t, pl["P"], pl["K"], pl["e"], pl["omega"], tp)
+    t_peri_dom = t_peri_list[dom_idx]
 
     # ---- Single noise draw, shared across all planet signals ----
     noise  = _inject_noise(t, sigma, rng)
@@ -355,6 +381,8 @@ def generate_one(
     info = {
         "P": dom["P"], "K": dom["K"], "e": dom["e"],
         "omega_deg":   np.degrees(dom["omega"]),
+        "t_peri":      t_peri_dom,
+        "rv_med_ms":   rv_med,
         "n_obs":       n_real,
         "baseline_d":  t_span,
         "snr_meas":    dom["K"] / float(np.median(sigma)),

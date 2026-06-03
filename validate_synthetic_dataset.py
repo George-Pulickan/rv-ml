@@ -28,6 +28,7 @@ from matplotlib.backends.backend_pdf import PdfPages
 import numpy as np
 import pandas as pd
 
+from kepler_check import rv_keplerian as _rv_keplerian
 from preprocess import LSP_PERIODS, RVDataset
 from synthetic_dataset import (
     _GP_LIB_PATH,
@@ -46,11 +47,21 @@ def _masked(x: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     return x[:, mask], mask
 
 
-def collect_real() -> tuple[pd.DataFrame, list[tuple[np.ndarray, np.ndarray, np.ndarray, dict]]]:
-    """Collect real single-planet RVDataset samples into comparable metrics."""
+def collect_real(
+    sigma_min: float = 0.1,
+    sigma_max: float = 100.0,
+) -> tuple[pd.DataFrame, list[tuple[np.ndarray, np.ndarray, np.ndarray, dict]]]:
+    """Collect real single-planet RVDataset samples into comparable metrics.
+
+    Files with median σ outside [sigma_min, sigma_max] m/s are rejected — the
+    same physically-motivated filter that synthetic_rv.build_noise_pool applies
+    to keep instrument-precision junk (σ=0.01 placeholders, absolute-RV files
+    with σ≈30 km/s) out of the comparison set.
+    """
     ds = RVDataset(split="all", normalize=False, single_planet=True)
     rows = []
     examples = []
+    n_rejected_sigma = 0
 
     for i in range(len(ds)):
         x, lsp, theta, info = ds.get_numpy(i)
@@ -64,6 +75,9 @@ def collect_real() -> tuple[pd.DataFrame, list[tuple[np.ndarray, np.ndarray, np.
         rv_std = float(info["rv_std_ms"])
         sigma = xm[2] * rv_std
         med_sigma = float(np.median(sigma))
+        if not (sigma_min <= med_sigma <= sigma_max):
+            n_rejected_sigma += 1
+            continue
         K = float(10 ** theta[1])
         t_days = xm[0] * float(info["t_span_days"])
         gaps = np.diff(np.sort(t_days))
@@ -94,6 +108,10 @@ def collect_real() -> tuple[pd.DataFrame, list[tuple[np.ndarray, np.ndarray, np.
         if len(examples) < 6:
             examples.append((x, lsp, theta, info))
 
+    if n_rejected_sigma:
+        print(f"[collect_real] rejected {n_rejected_sigma} systems with "
+              f"median σ outside [{sigma_min}, {sigma_max}] m/s "
+              f"(placeholders / absolute-RV files)")
     return pd.DataFrame(rows), examples
 
 
@@ -237,6 +255,27 @@ def make_noise_plots(real: pd.DataFrame, synth: pd.DataFrame, out: Path) -> None
     plt.close(fig)
 
 
+def _overlay_exact_curve(ax, theta: np.ndarray, info: dict) -> None:
+    """Overlay the noiseless Keplerian curve if t_peri is available in info."""
+    t_peri = info.get("t_peri")
+    if t_peri is None:
+        return
+    P       = 10 ** float(theta[0])
+    K       = 10 ** float(theta[1])
+    e       = float(theta[2])
+    omega   = float(np.arctan2(theta[4], theta[3]))
+    rv_med  = float(info.get("rv_med_ms", 0.0))
+    rv_std  = float(info["rv_std_ms"])
+    t_min   = float(info.get("t_min_days", 0.0))
+    baseline = float(info["baseline_d"])
+
+    t_dense_rel = np.linspace(0.0, baseline, 500)
+    rv_exact = _rv_keplerian(t_dense_rel + t_min, P, K, e, omega, t_peri)
+    ax.plot(t_dense_rel, (rv_exact - rv_med) / rv_std,
+            color="crimson", lw=1.5, alpha=0.85, zorder=5, label="exact")
+    ax.legend(loc="best", fontsize=7)
+
+
 def make_examples_pdf(
     examples: list[tuple[np.ndarray, np.ndarray, np.ndarray, dict]],
     out: Path,
@@ -256,7 +295,8 @@ def make_examples_pdf(
                 sig = xm[2]
 
                 ax = axs[row, 0]
-                ax.errorbar(t, rv, yerr=sig, fmt=".", ms=4, alpha=0.75)
+                ax.errorbar(t, rv, yerr=sig, fmt=".", ms=4, alpha=0.75, label="obs")
+                _overlay_exact_curve(ax, theta, info)
                 ax.set_xlabel("days since first observation")
                 ax.set_ylabel("normalized RV")
                 ax.grid(alpha=0.25)
@@ -296,6 +336,52 @@ def make_lsp_examples(
     fig.tight_layout()
     fig.savefig(out / "lsp_examples.png", dpi=180)
     plt.close(fig)
+
+
+def make_classifier_report(real: pd.DataFrame, synth: pd.DataFrame, out: Path) -> None:
+    """Train a binary classifier to distinguish real from synthetic samples.
+
+    A balanced accuracy near 0.5 means synthetic data is well-calibrated;
+    high accuracy reveals systematic differences between the two populations.
+    Feature importances identify which statistics drive the discrimination.
+    """
+    from sklearn.ensemble import RandomForestClassifier
+    from sklearn.model_selection import StratifiedKFold, cross_val_score
+
+    features = [
+        "log10_P", "log10_K", "e", "n_obs", "baseline_d",
+        "rv_std_ms", "median_sigma_ms", "snr_K_over_sigma",
+        "lsp_peak_period_d", "median_gap_d", "p90_gap_d",
+    ]
+    df = pd.concat([real, synth], ignore_index=True)
+    df = df[[*features, "kind"]].replace([np.inf, -np.inf], np.nan).dropna()
+
+    X = df[features].values
+    y = (df["kind"] == "real").astype(int).values
+
+    clf = RandomForestClassifier(n_estimators=300, max_depth=6, random_state=42)
+    cv  = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
+    scores = cross_val_score(clf, X, y, cv=cv, scoring="balanced_accuracy")
+    clf.fit(X, y)
+
+    idx = np.argsort(clf.feature_importances_)[::-1]
+    fig, ax = plt.subplots(figsize=(9, 4))
+    ax.bar(range(len(features)), clf.feature_importances_[idx])
+    ax.set_xticks(range(len(features)))
+    ax.set_xticklabels([features[i] for i in idx], rotation=40, ha="right", fontsize=9)
+    ax.set_ylabel("importance")
+    ax.set_title(
+        f"Real vs synthetic classifier  "
+        f"balanced-acc = {scores.mean():.3f} ± {scores.std():.3f}  "
+        f"(0.50 = indistinguishable)"
+    )
+    ax.grid(alpha=0.25)
+    fig.tight_layout()
+    fig.savefig(out / "classifier_feature_importance.png", dpi=180)
+    plt.close(fig)
+
+    print(f"[classifier] balanced accuracy: {scores.mean():.3f} ± {scores.std():.3f}")
+    print(f"[classifier] top discriminating feature: {features[idx[0]]}")
 
 
 def summarize(
@@ -398,6 +484,7 @@ def main() -> None:
     make_noise_plots(real, synth, args.out)
     make_examples_pdf(synth_examples, args.out)
     make_lsp_examples(synth_examples, args.out)
+    make_classifier_report(real, synth, args.out)
     summarize(real, synth, args.out, args, gp_exists, gp_loaded, len(grids))
 
     print(f"Wrote synthetic validation outputs to {args.out}")
