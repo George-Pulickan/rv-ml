@@ -7,8 +7,8 @@ as RVDataset in preprocess.py.
 
 Priors (applied to every planet, primary and companion alike)
 -----
-    P      ~ LogUniform(1, 3000) d
-    K      ~ LogUniform(1, 300) m/s
+    P      ~ 3-component Gaussian mixture in log10(P / d)
+    K      ~ LogUniform(8, 400) m/s
     e      ~ empirical histogram from known catalog eccentricities
     ω      ~ Uniform(0, 2π)
     T_peri ~ Uniform(t_min, t_min + P)   (random orbital phase)
@@ -81,6 +81,13 @@ _SIGMA_LOG_STD  = 0.75
 
 _ECC_HIST_BINS = 30
 _ECC_CACHE: dict[str, np.ndarray | float] | None = None
+_K_MIN_MS = 8.0
+_K_MAX_MS = 400.0
+_P_LOG10_WEIGHTS = np.array([0.37725629, 0.24151887, 0.38122484])
+_P_LOG10_MEANS = np.array([0.51182434, 1.54679626, 2.80467308])
+_P_LOG10_STDS = np.array([0.17782275, 0.49030674, 0.33494312])
+_P_MIN_D = 1.0
+_P_MAX_D = 3000.0
 
 
 # ---------------------------------------------------------------------------
@@ -88,22 +95,34 @@ _ECC_CACHE: dict[str, np.ndarray | float] | None = None
 # ---------------------------------------------------------------------------
 
 def _load_eccentricity_prior() -> dict[str, np.ndarray | float] | None:
-    """Load a zero-preserving empirical eccentricity prior from labels.csv."""
+    """Load a zero-preserving empirical eccentricity prior from the real corpus."""
     global _ECC_CACHE
     if _ECC_CACHE is not None:
         return _ECC_CACHE
 
-    if not _LABELS_CSV.exists():
-        return None
-
     try:
         import pandas as pd
 
-        labels = pd.read_csv(_LABELS_CSV)
-        if "pl_orbeccen" not in labels.columns:
+        if _SPLITS_CSV.exists():
+            splits = pd.read_csv(_SPLITS_CSV)
+            if {"e", "has_ecc", "n_planets"}.issubset(splits.columns):
+                real_e = splits.loc[
+                    (splits["has_ecc"].astype(bool)) & (splits["n_planets"] == 1),
+                    "e",
+                ]
+            elif "e" in splits.columns:
+                real_e = splits["e"]
+            else:
+                real_e = pd.Series(dtype=float)
+        elif _LABELS_CSV.exists():
+            labels = pd.read_csv(_LABELS_CSV)
+            if "pl_orbeccen" not in labels.columns:
+                return None
+            real_e = labels["pl_orbeccen"]
+        else:
             return None
 
-        e = labels["pl_orbeccen"].dropna().astype(float).to_numpy()
+        e = real_e.dropna().astype(float).to_numpy()
         e = e[np.isfinite(e)]
         e = np.clip(e, 0.0, 0.99)
         if len(e) == 0:
@@ -155,12 +174,22 @@ def _sample_eccentricity(rng: np.random.Generator, n: int) -> np.ndarray:
     e[nonzero_mask] = rng.uniform(left_edges[bins], right_edges[bins])
     return e.clip(0.0, 0.99)
 
+
+def _sample_period(rng: np.random.Generator, n: int) -> np.ndarray:
+    """Sample orbital periods from a fitted mixture over log10(P / day)."""
+    comps = rng.choice(len(_P_LOG10_WEIGHTS), size=n, p=_P_LOG10_WEIGHTS)
+    log_p = rng.normal(_P_LOG10_MEANS[comps], _P_LOG10_STDS[comps])
+    log_p = np.clip(log_p, np.log10(_P_MIN_D), np.log10(_P_MAX_D))
+    return (10 ** log_p).astype(np.float64)
+
+
 def _sample_orbital_params(rng: np.random.Generator, n: int) -> dict[str, np.ndarray]:
     """
     Sample n independent sets of (P, K, e, ω, phase) from the prior.
 
-    P and K use log-uniform priors, appropriate for parameters whose
-    uncertainty spans orders of magnitude (Jeffreys prior).  e is sampled from
+    P is sampled from a compact Gaussian mixture fitted in log-period space to
+    the validated real single-planet corpus. K uses a log-uniform prior over
+    the observed usable signal-amplitude range. e is sampled from
     a zero-preserving empirical histogram of known catalog eccentricities.
     This keeps the exact-zero pile-up seen in the real labels while retaining
     the observed nonzero eccentricity distribution. If labels.csv is not
@@ -171,8 +200,8 @@ def _sample_orbital_params(rng: np.random.Generator, n: int) -> dict[str, np.nda
     The same function is called for both primary and companion planets,
     ensuring all planets are drawn from the same marginal prior.
     """
-    P     = np.exp(rng.uniform(np.log(1.0),    np.log(3000.0), size=n))
-    K     = np.exp(rng.uniform(np.log(1.0),    np.log(300.0),  size=n))
+    P     = _sample_period(rng, n)
+    K     = np.exp(rng.uniform(np.log(_K_MIN_MS), np.log(_K_MAX_MS), size=n))
     e     = _sample_eccentricity(rng, n)
     omega = rng.uniform(0.0, 2 * np.pi, size=n)
     phase = rng.uniform(0.0, 1.0, size=n)
