@@ -1,0 +1,42 @@
+{
+  "n_synthetic": 400,
+  "f_multi": 0.0,
+  "seed": 123,
+  "real_split": "test",
+  "n_real_single_planet_valid": 57,
+  "real_time_grids_loaded": 388,
+  "gp_fits_path": "data\\gp_fits.json",
+  "gp_fits_exists": false,
+  "gp_library_loaded": false,
+  "noise_mode": "white_gaussian_fallback",
+  "classifier": {
+    "balanced_accuracy_mean": 0.5679545454545455,
+    "balanced_accuracy_std": 0.022836040236885298,
+    "top_feature": "log10_K",
+    "feature_importances": {
+      "log10_K": 0.15160249006022367,
+      "median_sigma_ms": 0.14475854644411412,
+      "rv_std_ms": 0.1003832484519308,
+      "median_gap_d": 0.0994939635268504,
+      "baseline_d": 0.09886951049588444,
+      "p90_gap_d": 0.09275504676474076,
+      "snr_K_over_sigma": 0.0772546397646268,
+      "e": 0.07272295549321744,
+      "log10_P": 0.06353845690313872,
+      "n_obs": 0.05173000337918779,
+      "lsp_peak_period_d": 0.046891138716085086
+    },
+    "n_real": 57,
+    "n_synthetic": 400
+  },
+  "outputs": [
+    "classifier_feature_importance.png",
+    "examples_single_planet.pdf",
+    "lsp_examples.png",
+    "real_vs_synthetic_cadence.png",
+    "real_vs_synthetic_noise.png",
+    "real_vs_synthetic_parameters.png",
+    "summary_metric_quantiles.csv",
+    "summary_real_vs_synthetic_samples.csv"
+  ]
+}

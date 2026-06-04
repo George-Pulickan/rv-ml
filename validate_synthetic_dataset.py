@@ -48,6 +48,7 @@ def _masked(x: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
 
 
 def collect_real(
+    real_split: str = "all",
     sigma_min: float = 0.1,
     sigma_max: float = 100.0,
 ) -> tuple[pd.DataFrame, list[tuple[np.ndarray, np.ndarray, np.ndarray, dict]]]:
@@ -58,7 +59,7 @@ def collect_real(
     to keep instrument-precision junk (σ=0.01 placeholders, absolute-RV files
     with σ≈30 km/s) out of the comparison set.
     """
-    ds = RVDataset(split="all", normalize=False, single_planet=True)
+    ds = RVDataset(split=real_split, normalize=False, single_planet=True)
     rows = []
     examples = []
     n_rejected_sigma = 0
@@ -85,6 +86,7 @@ def collect_real(
         rows.append(
             {
                 "kind": "real",
+                "real_split": real_split,
                 "idx": i,
                 "host": info.get("host", ""),
                 "file": info.get("file", ""),
@@ -109,7 +111,7 @@ def collect_real(
             examples.append((x, lsp, theta, info))
 
     if n_rejected_sigma:
-        print(f"[collect_real] rejected {n_rejected_sigma} systems with "
+        print(f"[collect_real:{real_split}] rejected {n_rejected_sigma} systems with "
               f"median σ outside [{sigma_min}, {sigma_max}] m/s "
               f"(placeholders / absolute-RV files)")
     return pd.DataFrame(rows), examples
@@ -338,7 +340,7 @@ def make_lsp_examples(
     plt.close(fig)
 
 
-def make_classifier_report(real: pd.DataFrame, synth: pd.DataFrame, out: Path) -> None:
+def make_classifier_report(real: pd.DataFrame, synth: pd.DataFrame, out: Path) -> dict:
     """Train a binary classifier to distinguish real from synthetic samples.
 
     A balanced accuracy near 0.5 means synthetic data is well-calibrated;
@@ -382,6 +384,17 @@ def make_classifier_report(real: pd.DataFrame, synth: pd.DataFrame, out: Path) -
 
     print(f"[classifier] balanced accuracy: {scores.mean():.3f} ± {scores.std():.3f}")
     print(f"[classifier] top discriminating feature: {features[idx[0]]}")
+    return {
+        "balanced_accuracy_mean": float(scores.mean()),
+        "balanced_accuracy_std": float(scores.std()),
+        "top_feature": features[int(idx[0])],
+        "feature_importances": {
+            features[int(i)]: float(clf.feature_importances_[int(i)])
+            for i in idx
+        },
+        "n_real": int((df["kind"] == "real").sum()),
+        "n_synthetic": int((df["kind"] == "synthetic").sum()),
+    }
 
 
 def summarize(
@@ -392,6 +405,7 @@ def summarize(
     gp_exists: bool,
     gp_loaded: bool,
     n_grids: int,
+    classifier_report: dict,
 ) -> None:
     """Write CSV summaries and a machine-readable generation-mode note."""
     combined = pd.concat([real, synth], ignore_index=True)
@@ -429,12 +443,14 @@ def summarize(
         "n_synthetic": args.n_samples,
         "f_multi": args.f_multi,
         "seed": args.seed,
+        "real_split": args.real_split,
         "n_real_single_planet_valid": int(len(real)),
         "real_time_grids_loaded": int(n_grids),
         "gp_fits_path": str(_GP_LIB_PATH),
         "gp_fits_exists": bool(gp_exists),
         "gp_library_loaded": bool(gp_loaded),
         "noise_mode": "GPNoiseLibrary" if gp_loaded else "white_gaussian_fallback",
+        "classifier": classifier_report,
         "outputs": sorted(p.name for p in out.iterdir()),
     }
     (out / "generation_mode_summary.json").write_text(json.dumps(notes, indent=2))
@@ -443,12 +459,19 @@ def summarize(
         f.write("RV-ML synthetic validation smoke run\n")
         f.write("===================================\n\n")
         f.write(f"Scope: synthetic generation with f_multi={args.f_multi}.\n")
+        f.write(f"Real comparison split: {args.real_split}\n")
         f.write(f"Synthetic samples: {args.n_samples}\n")
         f.write(f"Valid real single-planet comparison samples: {len(real)}\n")
         f.write(f"Real time grids loaded for synthetic cadence bootstrap: {n_grids}\n")
         f.write(f"GP fits exists: {gp_exists}\n")
         f.write(f"GP library loaded: {gp_loaded}\n")
         f.write(f"Noise mode used by generator: {notes['noise_mode']}\n\n")
+        f.write("Classifier diagnostic:\n")
+        f.write(
+            f"- Balanced accuracy: {classifier_report['balanced_accuracy_mean']:.3f} "
+            f"+/- {classifier_report['balanced_accuracy_std']:.3f}\n"
+        )
+        f.write(f"- Top discriminator: {classifier_report['top_feature']}\n\n")
         f.write("Important interpretation:\n")
         f.write("- This is a smoke/diagnostic validation run, not a training cache.\n")
         if gp_loaded:
@@ -463,12 +486,20 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--n-samples", type=int, default=400)
     p.add_argument("--seed", type=int, default=123)
     p.add_argument("--f-multi", type=float, default=0.0)
-    p.add_argument("--out", type=Path, default=DEFAULT_OUT)
+    p.add_argument(
+        "--real-split",
+        choices=("all", "train", "val", "test"),
+        default="all",
+        help="Real RVDataset split to compare against.",
+    )
+    p.add_argument("--out", type=Path, default=None)
     return p.parse_args()
 
 
 def main() -> None:
     args = parse_args()
+    if args.out is None:
+        args.out = DEFAULT_OUT if args.real_split == "all" else DEFAULT_OUT / f"real_{args.real_split}"
     args.out.mkdir(parents=True, exist_ok=True)
 
     gp_exists = _GP_LIB_PATH.exists()
@@ -476,7 +507,7 @@ def main() -> None:
     gp_loaded = gp_lib is not None
     grids = _load_real_time_grids()
 
-    real, _ = collect_real()
+    real, _ = collect_real(args.real_split)
     synth, synth_examples = collect_synthetic(args.n_samples, args.seed, args.f_multi)
 
     make_distribution_plots(real, synth, args.out)
@@ -484,11 +515,12 @@ def main() -> None:
     make_noise_plots(real, synth, args.out)
     make_examples_pdf(synth_examples, args.out)
     make_lsp_examples(synth_examples, args.out)
-    make_classifier_report(real, synth, args.out)
-    summarize(real, synth, args.out, args, gp_exists, gp_loaded, len(grids))
+    classifier_report = make_classifier_report(real, synth, args.out)
+    summarize(real, synth, args.out, args, gp_exists, gp_loaded, len(grids), classifier_report)
 
     print(f"Wrote synthetic validation outputs to {args.out}")
     print(f"Real comparison samples: {len(real)}")
+    print(f"Real comparison split: {args.real_split}")
     print(f"Synthetic samples: {len(synth)}")
     print(f"Real time grids loaded: {len(grids)}")
     print(f"Noise mode: {'GPNoiseLibrary' if gp_loaded else 'white_gaussian_fallback'}")
