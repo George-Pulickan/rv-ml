@@ -7,3 +7,7 @@ data/
 
 nicolo_reply_draft.md
 handover.md
+
+checkpoints/
+*.pt
+*.pdf
