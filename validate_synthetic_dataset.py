@@ -11,7 +11,8 @@ This script intentionally validates the simplest regime first:
 That means every synthetic sample is a single-planet Keplerian signal plus
 noise. Companion injection and encoder training are later steps.
 
-Outputs are written to figures/synthetic_validation/ by default.
+Outputs are written to a split-named directory under
+figures/synthetic_validation/ by default.
 """
 
 from __future__ import annotations
@@ -37,9 +38,25 @@ from synthetic_dataset import (
     _sample_orbital_params,
     generate_one,
 )
+from time_series_features import spectral_feature_names, spectral_features
 
 
-DEFAULT_OUT = Path("figures") / "synthetic_validation"
+VALIDATION_OUT = Path("figures") / "synthetic_validation"
+DEFAULT_OUT = VALIDATION_OUT / "real_all"
+SPECTRAL_DIM = 64
+SPECTRAL_GRID_SIZE = 1024
+OBSERVATION_SUMMARY_FEATURES = [
+    "n_obs",
+    "baseline_d",
+    "rv_std_ms",
+    "rv_iqr_ms",
+    "median_sigma_ms",
+    "sigma_iqr_ms",
+    "lsp_peak_period_d",
+    "lsp_peak_power",
+    "median_gap_d",
+    "p90_gap_d",
+]
 
 
 def _masked(x: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
@@ -51,7 +68,11 @@ def collect_real(
     real_split: str = "all",
     sigma_min: float = 0.1,
     sigma_max: float = 100.0,
-) -> tuple[pd.DataFrame, list[tuple[np.ndarray, np.ndarray, np.ndarray, dict]]]:
+) -> tuple[
+    pd.DataFrame,
+    list[tuple[np.ndarray, np.ndarray, np.ndarray, dict]],
+    np.ndarray,
+]:
     """Collect real single-planet RVDataset samples into comparable metrics.
 
     Files with median σ outside [sigma_min, sigma_max] m/s are rejected — the
@@ -62,6 +83,7 @@ def collect_real(
     ds = RVDataset(split=real_split, normalize=False, single_planet=True)
     rows = []
     examples = []
+    encoded_series = []
     n_rejected_sigma = 0
 
     for i in range(len(ds)):
@@ -82,6 +104,14 @@ def collect_real(
         K = float(10 ** theta[1])
         t_days = xm[0] * float(info["t_span_days"])
         gaps = np.diff(np.sort(t_days))
+        encoded_series.append(
+            spectral_features(
+                xm[0],
+                xm[1],
+                d=SPECTRAL_DIM,
+                grid_size=SPECTRAL_GRID_SIZE,
+            )
+        )
 
         rows.append(
             {
@@ -99,9 +129,12 @@ def collect_real(
                 "n_obs": int(info["n_obs"]),
                 "baseline_d": float(info["t_span_days"]),
                 "rv_std_ms": rv_std,
+                "rv_iqr_ms": float(np.subtract(*np.percentile(xm[1] * rv_std, [75, 25]))),
                 "median_sigma_ms": med_sigma,
+                "sigma_iqr_ms": float(np.subtract(*np.percentile(sigma, [75, 25]))),
                 "snr_K_over_sigma": K / med_sigma if med_sigma > 0 else np.nan,
                 "lsp_peak_period_d": float(LSP_PERIODS[int(np.argmax(lsp))]),
+                "lsp_peak_power": float(np.max(lsp)),
                 "median_gap_d": float(np.median(gaps)) if len(gaps) else np.nan,
                 "p90_gap_d": float(np.percentile(gaps, 90)) if len(gaps) else np.nan,
             }
@@ -114,19 +147,24 @@ def collect_real(
         print(f"[collect_real:{real_split}] rejected {n_rejected_sigma} systems with "
               f"median σ outside [{sigma_min}, {sigma_max}] m/s "
               f"(placeholders / absolute-RV files)")
-    return pd.DataFrame(rows), examples
+    return pd.DataFrame(rows), examples, np.asarray(encoded_series, dtype=np.float64)
 
 
 def collect_synthetic(
     n_samples: int,
     seed: int,
     f_multi: float,
-) -> tuple[pd.DataFrame, list[tuple[np.ndarray, np.ndarray, np.ndarray, dict]]]:
+) -> tuple[
+    pd.DataFrame,
+    list[tuple[np.ndarray, np.ndarray, np.ndarray, dict]],
+    np.ndarray,
+]:
     """Generate synthetic samples and collect the same metrics as real data."""
     rng = np.random.default_rng(seed)
     params = _sample_orbital_params(rng, n_samples)
     rows = []
     examples = []
+    encoded_series = []
 
     for i in range(n_samples):
         p = {k: float(v[i]) for k, v in params.items()}
@@ -140,6 +178,14 @@ def collect_synthetic(
         K = float(10 ** theta[1])
         t_days = xm[0] * float(info["t_span_days"])
         gaps = np.diff(np.sort(t_days))
+        encoded_series.append(
+            spectral_features(
+                xm[0],
+                xm[1],
+                d=SPECTRAL_DIM,
+                grid_size=SPECTRAL_GRID_SIZE,
+            )
+        )
 
         rows.append(
             {
@@ -156,9 +202,12 @@ def collect_synthetic(
                 "n_obs": int(info["n_obs"]),
                 "baseline_d": float(info["baseline_d"]),
                 "rv_std_ms": rv_std,
+                "rv_iqr_ms": float(np.subtract(*np.percentile(xm[1] * rv_std, [75, 25]))),
                 "median_sigma_ms": med_sigma,
+                "sigma_iqr_ms": float(np.subtract(*np.percentile(sigma, [75, 25]))),
                 "snr_K_over_sigma": float(info["snr_meas"]),
                 "lsp_peak_period_d": float(LSP_PERIODS[int(np.argmax(lsp))]),
+                "lsp_peak_power": float(np.max(lsp)),
                 "median_gap_d": float(np.median(gaps)) if len(gaps) else np.nan,
                 "p90_gap_d": float(np.percentile(gaps, 90)) if len(gaps) else np.nan,
             }
@@ -167,7 +216,7 @@ def collect_synthetic(
         if len(examples) < 12:
             examples.append((x, lsp, theta, info))
 
-    return pd.DataFrame(rows), examples
+    return pd.DataFrame(rows), examples, np.asarray(encoded_series, dtype=np.float64)
 
 
 def hist_overlay(
@@ -340,60 +389,181 @@ def make_lsp_examples(
     plt.close(fig)
 
 
-def make_classifier_report(real: pd.DataFrame, synth: pd.DataFrame, out: Path) -> dict:
-    """Train a binary classifier to distinguish real from synthetic samples.
+def make_classifier_report(
+    real: pd.DataFrame,
+    synth: pd.DataFrame,
+    real_spectral: np.ndarray,
+    synth_spectral: np.ndarray,
+    out: Path,
+) -> dict:
+    """Distinguish real from synthetic data using observations only.
 
-    A balanced accuracy near 0.5 means synthetic data is well-calibrated;
-    high accuracy reveals systematic differences between the two populations.
-    Feature importances identify which statistics drive the discrimination.
+    Each unevenly sampled RV series contributes a fixed-length spline/FFT
+    power vector. This is combined with summaries computed directly from the
+    observations and their uncertainties. Catalogued or injected Kepler
+    parameters are deliberately excluded from the classifier inputs.
     """
     from sklearn.ensemble import RandomForestClassifier
-    from sklearn.model_selection import StratifiedKFold, cross_val_score
+    from sklearn.metrics import balanced_accuracy_score
+    from sklearn.model_selection import StratifiedKFold
 
-    features = [
-        "log10_P", "log10_K", "e", "n_obs", "baseline_d",
-        "rv_std_ms", "median_sigma_ms", "snr_K_over_sigma",
-        "lsp_peak_period_d", "median_gap_d", "p90_gap_d",
-    ]
-    df = pd.concat([real, synth], ignore_index=True)
-    df = df[[*features, "kind"]].replace([np.inf, -np.inf], np.nan).dropna()
+    if len(real_spectral) != len(real) or len(synth_spectral) != len(synth):
+        raise ValueError("spectral feature rows must align with classifier samples")
+    if real_spectral.ndim != 2 or synth_spectral.ndim != 2:
+        raise ValueError("spectral features must be two-dimensional")
+    if real_spectral.shape[1] != synth_spectral.shape[1]:
+        raise ValueError("real and synthetic spectral dimensions must match")
 
-    X = df[features].values
-    y = (df["kind"] == "real").astype(int).values
+    spectral_dim = int(real_spectral.shape[1])
+    spectral_names = spectral_feature_names(spectral_dim)
+    features = [*spectral_names, *OBSERVATION_SUMMARY_FEATURES]
 
-    clf = RandomForestClassifier(n_estimators=300, max_depth=6, random_state=42)
-    cv  = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
-    scores = cross_val_score(clf, X, y, cv=cv, scoring="balanced_accuracy")
+    summary = pd.concat(
+        [
+            real[OBSERVATION_SUMMARY_FEATURES],
+            synth[OBSERVATION_SUMMARY_FEATURES],
+        ],
+        ignore_index=True,
+    ).replace([np.inf, -np.inf], np.nan)
+    spectral = np.vstack([real_spectral, synth_spectral])
+    valid = summary.notna().all(axis=1).to_numpy() & np.isfinite(spectral).all(axis=1)
+
+    X = np.column_stack([spectral[valid], summary.to_numpy(dtype=float)[valid]])
+    y_all = np.concatenate(
+        [
+            np.ones(len(real), dtype=int),
+            np.zeros(len(synth), dtype=int),
+        ]
+    )
+    y = y_all[valid]
+
+    def _new_classifier(seed: int) -> RandomForestClassifier:
+        return RandomForestClassifier(
+            n_estimators=300,
+            max_depth=6,
+            class_weight="balanced",
+            random_state=seed,
+        )
+
+    cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
+    group_columns = {
+        "spectral_power": np.arange(spectral_dim),
+        **{
+            name: np.array([spectral_dim + i])
+            for i, name in enumerate(OBSERVATION_SUMMARY_FEATURES)
+        },
+    }
+    group_drops = {name: [] for name in group_columns}
+    scores = []
+
+    # Permute each complete feature group on held-out folds. This makes the
+    # 64-bin spectral block comparable with each one-column summary feature.
+    for fold, (train_idx, test_idx) in enumerate(cv.split(X, y)):
+        fold_clf = _new_classifier(42 + fold)
+        fold_clf.fit(X[train_idx], y[train_idx])
+        baseline = balanced_accuracy_score(y[test_idx], fold_clf.predict(X[test_idx]))
+        scores.append(baseline)
+
+        rng = np.random.default_rng(42 + fold)
+        for name, columns in group_columns.items():
+            repeat_scores = []
+            for _ in range(5):
+                X_permuted = X[test_idx].copy()
+                source = X_permuted[:, columns].copy()
+                X_permuted[:, columns] = source[rng.permutation(len(test_idx))]
+                repeat_scores.append(
+                    balanced_accuracy_score(y[test_idx], fold_clf.predict(X_permuted))
+                )
+            group_drops[name].append(baseline - float(np.mean(repeat_scores)))
+
+    scores = np.asarray(scores, dtype=float)
+    clf = _new_classifier(42)
     clf.fit(X, y)
 
-    idx = np.argsort(clf.feature_importances_)[::-1]
-    fig, ax = plt.subplots(figsize=(9, 4))
-    ax.bar(range(len(features)), clf.feature_importances_[idx])
-    ax.set_xticks(range(len(features)))
-    ax.set_xticklabels([features[i] for i in idx], rotation=40, ha="right", fontsize=9)
-    ax.set_ylabel("importance")
-    ax.set_title(
-        f"Real vs synthetic classifier  "
-        f"balanced-acc = {scores.mean():.3f} ± {scores.std():.3f}  "
+    importances = clf.feature_importances_
+    idx = np.argsort(importances)[::-1]
+    top_n = min(20, len(features))
+    top_idx = idx[:top_n]
+
+    grouped_importances = {
+        name: float(np.mean(drops))
+        for name, drops in group_drops.items()
+    }
+    grouped_importance_std = {
+        name: float(np.std(drops))
+        for name, drops in group_drops.items()
+    }
+    grouped_sorted = sorted(
+        grouped_importances.items(),
+        key=lambda item: item[1],
+        reverse=True,
+    )
+
+    fig, (ax_top, ax_group) = plt.subplots(2, 1, figsize=(12, 9))
+    ax_top.bar(range(top_n), importances[top_idx])
+    ax_top.set_xticks(range(top_n))
+    ax_top.set_xticklabels(
+        [features[i] for i in top_idx],
+        rotation=40,
+        ha="right",
+        fontsize=8,
+    )
+    ax_top.set_ylabel("importance")
+    ax_top.set_title("Top individual observation-based classifier features")
+    ax_top.grid(alpha=0.25)
+
+    group_names = [name for name, _ in grouped_sorted]
+    group_values = [value for _, value in grouped_sorted]
+    group_errors = [grouped_importance_std[name] for name in group_names]
+    ax_group.bar(range(len(group_names)), group_values, yerr=group_errors, capsize=3)
+    ax_group.axhline(0.0, color="black", linewidth=0.8)
+    ax_group.set_xticks(range(len(group_names)))
+    ax_group.set_xticklabels(group_names, rotation=35, ha="right", fontsize=9)
+    ax_group.set_ylabel("balanced-accuracy drop")
+    ax_group.set_title(
+        f"Cross-validated grouped permutation importance: "
+        f"balanced-acc = {scores.mean():.3f} +/- {scores.std():.3f} "
         f"(0.50 = indistinguishable)"
     )
-    ax.grid(alpha=0.25)
+    ax_group.grid(alpha=0.25)
+
     fig.tight_layout()
     fig.savefig(out / "classifier_feature_importance.png", dpi=180)
     plt.close(fig)
 
-    print(f"[classifier] balanced accuracy: {scores.mean():.3f} ± {scores.std():.3f}")
-    print(f"[classifier] top discriminating feature: {features[idx[0]]}")
+    print(f"[classifier] balanced accuracy: {scores.mean():.3f} +/- {scores.std():.3f}")
+    print(f"[classifier] top individual feature: {features[idx[0]]}")
+    print(f"[classifier] top feature group: {grouped_sorted[0][0]}")
     return {
+        "purpose": "real_vs_synthetic_observation_discriminator",
+        "class_labels": {"0": "synthetic", "1": "real"},
+        "input_type": "spectral_plus_observation_summaries",
+        "spectral_method": "smoothing_spline_uniform_grid_rfft_power",
+        "spectral_dimension": spectral_dim,
+        "spectral_grid_size": SPECTRAL_GRID_SIZE,
+        "spectral_normalized": True,
+        "summary_features": OBSERVATION_SUMMARY_FEATURES,
+        "excluded_from_classifier": [
+            "log10_P",
+            "log10_K",
+            "e",
+            "P_d",
+            "K_ms",
+            "snr_K_over_sigma",
+        ],
         "balanced_accuracy_mean": float(scores.mean()),
         "balanced_accuracy_std": float(scores.std()),
         "top_feature": features[int(idx[0])],
+        "top_feature_group": grouped_sorted[0][0],
+        "grouped_importance_method": "cross_validated_permutation_accuracy_drop",
+        "grouped_feature_importances": dict(grouped_sorted),
+        "grouped_feature_importance_std": grouped_importance_std,
         "feature_importances": {
-            features[int(i)]: float(clf.feature_importances_[int(i)])
+            features[int(i)]: float(importances[int(i)])
             for i in idx
         },
-        "n_real": int((df["kind"] == "real").sum()),
-        "n_synthetic": int((df["kind"] == "synthetic").sum()),
+        "n_real": int((y == 1).sum()),
+        "n_synthetic": int((y == 0).sum()),
     }
 
 
@@ -420,9 +590,12 @@ def summarize(
             "n_obs",
             "baseline_d",
             "median_sigma_ms",
+            "sigma_iqr_ms",
             "rv_std_ms",
+            "rv_iqr_ms",
             "snr_K_over_sigma",
             "lsp_peak_period_d",
+            "lsp_peak_power",
             "median_gap_d",
         ]:
             vals = df[col].replace([np.inf, -np.inf], np.nan).dropna()
@@ -466,12 +639,21 @@ def summarize(
         f.write(f"GP fits exists: {gp_exists}\n")
         f.write(f"GP library loaded: {gp_loaded}\n")
         f.write(f"Noise mode used by generator: {notes['noise_mode']}\n\n")
-        f.write("Classifier diagnostic:\n")
+        f.write("Observation-based classifier diagnostic:\n")
+        f.write(
+            f"- Inputs: {classifier_report['spectral_dimension']} normalized spectral "
+            "power bins plus observation-derived summaries.\n"
+        )
+        f.write(
+            "- Kepler parameters and K/measurement-uncertainty are excluded "
+            "from classifier inputs.\n"
+        )
         f.write(
             f"- Balanced accuracy: {classifier_report['balanced_accuracy_mean']:.3f} "
             f"+/- {classifier_report['balanced_accuracy_std']:.3f}\n"
         )
-        f.write(f"- Top discriminator: {classifier_report['top_feature']}\n\n")
+        f.write(f"- Top individual discriminator: {classifier_report['top_feature']}\n")
+        f.write(f"- Top feature group: {classifier_report['top_feature_group']}\n\n")
         f.write("Important interpretation:\n")
         f.write("- This is a smoke/diagnostic validation run, not a training cache.\n")
         if gp_loaded:
@@ -499,7 +681,11 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     args = parse_args()
     if args.out is None:
-        args.out = DEFAULT_OUT if args.real_split == "all" else DEFAULT_OUT / f"real_{args.real_split}"
+        args.out = (
+            DEFAULT_OUT
+            if args.real_split == "all"
+            else VALIDATION_OUT / f"real_{args.real_split}"
+        )
     args.out.mkdir(parents=True, exist_ok=True)
 
     gp_exists = _GP_LIB_PATH.exists()
@@ -507,15 +693,25 @@ def main() -> None:
     gp_loaded = gp_lib is not None
     grids = _load_real_time_grids()
 
-    real, _ = collect_real(args.real_split)
-    synth, synth_examples = collect_synthetic(args.n_samples, args.seed, args.f_multi)
+    real, _, real_spectral = collect_real(args.real_split)
+    synth, synth_examples, synth_spectral = collect_synthetic(
+        args.n_samples,
+        args.seed,
+        args.f_multi,
+    )
 
     make_distribution_plots(real, synth, args.out)
     make_cadence_plots(real, synth, args.out)
     make_noise_plots(real, synth, args.out)
     make_examples_pdf(synth_examples, args.out)
     make_lsp_examples(synth_examples, args.out)
-    classifier_report = make_classifier_report(real, synth, args.out)
+    classifier_report = make_classifier_report(
+        real,
+        synth,
+        real_spectral,
+        synth_spectral,
+        args.out,
+    )
     summarize(real, synth, args.out, args, gp_exists, gp_loaded, len(grids), classifier_report)
 
     print(f"Wrote synthetic validation outputs to {args.out}")

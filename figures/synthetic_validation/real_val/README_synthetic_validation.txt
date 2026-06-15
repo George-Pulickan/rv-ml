@@ -10,9 +10,12 @@ GP fits exists: False
 GP library loaded: False
 Noise mode used by generator: white_gaussian_fallback
 
-Classifier diagnostic:
-- Balanced accuracy: 0.500 +/- 0.000
-- Top discriminator: log10_P
+Observation-based classifier diagnostic:
+- Inputs: 64 normalized spectral power bins plus observation-derived summaries.
+- Kepler parameters and K/measurement-uncertainty are excluded from classifier inputs.
+- Balanced accuracy: 0.559 +/- 0.033
+- Top individual discriminator: sigma_iqr_ms
+- Top feature group: lsp_peak_power
 
 Important interpretation:
 - This is a smoke/diagnostic validation run, not a training cache.
