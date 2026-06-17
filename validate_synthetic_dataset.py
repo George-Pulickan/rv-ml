@@ -455,6 +455,7 @@ def make_classifier_report(
     }
     group_drops = {name: [] for name in group_columns}
     scores = []
+    p_real = np.full(len(y), np.nan, dtype=float)
 
     # Permute each complete feature group on held-out folds. This makes the
     # 64-bin spectral block comparable with each one-column summary feature.
@@ -463,6 +464,8 @@ def make_classifier_report(
         fold_clf.fit(X[train_idx], y[train_idx])
         baseline = balanced_accuracy_score(y[test_idx], fold_clf.predict(X[test_idx]))
         scores.append(baseline)
+        real_class_idx = int(np.where(fold_clf.classes_ == 1)[0][0])
+        p_real[test_idx] = fold_clf.predict_proba(X[test_idx])[:, real_class_idx]
 
         rng = np.random.default_rng(42 + fold)
         for name, columns in group_columns.items():
@@ -498,6 +501,8 @@ def make_classifier_report(
         key=lambda item: item[1],
         reverse=True,
     )
+    df_for_plots = pd.concat([real, synth], ignore_index=True).iloc[valid].copy()
+    df_for_plots["p_real_oof"] = p_real
 
     fig, (ax_top, ax_group) = plt.subplots(2, 1, figsize=(12, 9))
     ax_top.bar(range(top_n), importances[top_idx])
@@ -531,6 +536,57 @@ def make_classifier_report(
     fig.savefig(out / "classifier_feature_importance.png", dpi=180)
     plt.close(fig)
 
+    # Probability calibration/diagnostic views requested by the supervisor.
+    # These use out-of-fold probabilities, so each sample is scored by a model
+    # that did not train on that sample.
+    fig, ax = plt.subplots(figsize=(8, 5))
+    bins = np.linspace(0.0, 1.0, 31)
+    real_probs = df_for_plots.loc[df_for_plots["kind"] == "real", "p_real_oof"]
+    synth_probs = df_for_plots.loc[df_for_plots["kind"] == "synthetic", "p_real_oof"]
+    ax.hist(synth_probs, bins=bins, alpha=0.55, density=True, label="synthetic")
+    ax.hist(real_probs, bins=bins, alpha=0.55, density=True, label="real")
+    ax.axvline(0.5, color="black", linestyle="--", linewidth=1)
+    ax.set_xlabel("out-of-fold predicted probability of being real")
+    ax.set_ylabel("density")
+    ax.set_title("Real-vs-synthetic classifier probability distribution")
+    ax.grid(alpha=0.25)
+    ax.legend()
+    fig.tight_layout()
+    fig.savefig(out / "classifier_probability_histogram.png", dpi=180)
+    plt.close(fig)
+
+    fig, axs = plt.subplots(1, 3, figsize=(15, 4.5))
+    param_specs = [
+        ("log10_P", "log10 period [d]"),
+        ("log10_K", "log10 K [m/s]"),
+        ("e", "eccentricity"),
+    ]
+    for ax, (col, xlabel) in zip(axs, param_specs):
+        for kind, face, edge, label in [
+            ("synthetic", "white", "black", "synthetic"),
+            ("real", "black", "black", "real"),
+        ]:
+            part = df_for_plots[df_for_plots["kind"] == kind]
+            ax.scatter(
+                part[col],
+                part["p_real_oof"],
+                s=18,
+                facecolors=face,
+                edgecolors=edge,
+                linewidths=0.6,
+                alpha=0.55,
+                label=label,
+            )
+        ax.axhline(0.5, color="crimson", linestyle="--", linewidth=1)
+        ax.set_xlabel(xlabel)
+        ax.set_ylabel("P(real)") if ax is axs[0] else ax.set_ylabel("")
+        ax.grid(alpha=0.25)
+    axs[0].legend(loc="lower right", fontsize=9)
+    fig.suptitle("Classifier probability versus Kepler diagnostic parameters")
+    fig.tight_layout(rect=(0, 0, 1, 0.94))
+    fig.savefig(out / "classifier_probability_vs_kepler.png", dpi=180)
+    plt.close(fig)
+
     print(f"[classifier] balanced accuracy: {scores.mean():.3f} +/- {scores.std():.3f}")
     print(f"[classifier] top individual feature: {features[idx[0]]}")
     print(f"[classifier] top feature group: {grouped_sorted[0][0]}")
@@ -553,6 +609,10 @@ def make_classifier_report(
         ],
         "balanced_accuracy_mean": float(scores.mean()),
         "balanced_accuracy_std": float(scores.std()),
+        "probability_diagnostics": [
+            "classifier_probability_histogram.png",
+            "classifier_probability_vs_kepler.png",
+        ],
         "top_feature": features[int(idx[0])],
         "top_feature_group": grouped_sorted[0][0],
         "grouped_importance_method": "cross_validated_permutation_accuracy_drop",
@@ -654,6 +714,12 @@ def summarize(
         )
         f.write(f"- Top individual discriminator: {classifier_report['top_feature']}\n")
         f.write(f"- Top feature group: {classifier_report['top_feature_group']}\n\n")
+        f.write("Additional classifier diagnostics:\n")
+        f.write("- classifier_probability_histogram.png shows out-of-fold P(real) by class.\n")
+        f.write(
+            "- classifier_probability_vs_kepler.png shows out-of-fold P(real) "
+            "against Kepler diagnostic parameters, which are not classifier inputs.\n\n"
+        )
         f.write("Important interpretation:\n")
         f.write("- This is a smoke/diagnostic validation run, not a training cache.\n")
         if gp_loaded:

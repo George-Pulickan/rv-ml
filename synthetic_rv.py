@@ -271,83 +271,7 @@ def make_dataset(n_systems: int, rv_dir: Path, labels_path: Path,
 
 
 # ---------------------------------------------------------------------------
-# (6) Diagnostic plots — overlay the noiseless Keplerian curve
-# ---------------------------------------------------------------------------
-def plot_examples(out_dir: Path, n_examples: int = 6,
-                  save_path: Path | None = None) -> Path:
-    """Plot a grid of synthetic systems with the exact (noiseless) Keplerian
-    curve overlaid on the noisy observations.
-
-    Nicolò's diagnostic: overlaying the exact curve on the same axes verifies
-    that the sampled parameters and the Keplerian integrator are consistent
-    with the simulated observations. The grid shows the highest- and
-    lowest-SNR systems so the dynamic range of the corpus is visible.
-    """
-    import matplotlib  # lazy import — only needed for plotting
-
-    matplotlib.use("Agg")
-    import matplotlib.pyplot as plt
-
-    manifest_path = out_dir / "manifest.csv"
-    if not manifest_path.exists():
-        raise FileNotFoundError(
-            f"No manifest at {manifest_path} — generate synthetic data first "
-            f"with: python synthetic_rv.py --n <N> --out {out_dir}"
-        )
-
-    df = pd.read_csv(manifest_path)
-    snrs = []
-    for fname in df["file"]:
-        data = np.load(out_dir / fname)
-        snrs.append(float(data["K"]) / float(np.median(data["sigma"])))
-    df["snr"] = snrs
-
-    df_sorted = df.sort_values("snr", ascending=False).reset_index(drop=True)
-    half = n_examples // 2
-    selected = pd.concat(
-        [df_sorted.head(half), df_sorted.tail(n_examples - half)],
-        ignore_index=True,
-    )
-
-    fig, axs = plt.subplots(n_examples, 1, figsize=(11, 2.4 * n_examples))
-    if n_examples == 1:
-        axs = [axs]
-
-    for ax, row in zip(axs, selected.itertuples()):
-        data = np.load(out_dir / row.file)
-        t, rv, sigma = data["time"], data["rv"], data["sigma"]
-        P  = float(data["P"]); K = float(data["K"]); e = float(data["e"])
-        omega = np.radians(float(data["omega_deg"]))
-        t_peri = float(data["t_peri"])
-
-        t_dense  = np.linspace(t.min(), t.max(), 1000)
-        rv_exact = rv_keplerian(t_dense, P, K, e, omega, t_peri)
-
-        ax.errorbar(t, rv, yerr=sigma, fmt=".", ms=4, alpha=0.7,
-                    label="synthetic obs")
-        ax.plot(t_dense, rv_exact, color="crimson", lw=1.3, alpha=0.85,
-                label="exact Keplerian")
-        ax.set_xlabel("time [days]")
-        ax.set_ylabel("RV [m/s]")
-        ax.set_title(
-            f"{row.file}  P={P:.2f} d  K={K:.2f} m/s  e={e:.2f}  SNR={row.snr:.1f}",
-            fontsize=10,
-        )
-        ax.legend(loc="best", fontsize=8)
-        ax.grid(alpha=0.25)
-
-    fig.suptitle("Synthetic RV systems — noisy observations + exact Keplerian curve")
-    fig.tight_layout()
-
-    save_path = save_path or (out_dir / "examples_with_exact_curve.png")
-    fig.savefig(save_path, dpi=160)
-    plt.close(fig)
-    print(f"[plot] saved {n_examples} examples to {save_path}")
-    return save_path
-
-
-# ---------------------------------------------------------------------------
-# (7) Binary classifier — discriminate real planets from synthetic samples
+# (6) Binary classifier — discriminate real planets from synthetic samples
 # ---------------------------------------------------------------------------
 def train_real_vs_synthetic_classifier(
     real_labels_path: Path, synth_dir: Path, out_dir: Path,
@@ -444,12 +368,6 @@ def main() -> None:
     p.add_argument("--noise-mode", choices=("chunk", "iid"), default="chunk")
     p.add_argument("--out", type=Path, default=Path("data/synthetic"))
     p.add_argument("--seed", type=int, default=0)
-    p.add_argument("--plot", action="store_true",
-                   help="After generation, save a grid of best/worst-SNR "
-                        "examples with the exact Keplerian curve overlaid")
-    p.add_argument("--plot-n", type=int, default=6,
-                   help="Number of examples in the --plot grid (half best, "
-                        "half worst by SNR)")
     p.add_argument("--classify", action="store_true",
                    help="After generation, train a binary classifier "
                         "(real NASA planet vs synthetic) on orbital params")
@@ -462,9 +380,6 @@ def main() -> None:
     if args.n:
         make_dataset(args.n, args.rv_dir, args.labels, args.noise_pool,
                      args.out, noise_mode=args.noise_mode, seed=args.seed)
-
-    if args.plot:
-        plot_examples(args.out, n_examples=args.plot_n)
 
     if args.classify:
         train_real_vs_synthetic_classifier(args.labels, args.out, args.out)

@@ -17,6 +17,10 @@ Observation-based classifier diagnostic:
 - Top individual discriminator: sigma_iqr_ms
 - Top feature group: lsp_peak_power
 
+Additional classifier diagnostics:
+- classifier_probability_histogram.png shows out-of-fold P(real) by class.
+- classifier_probability_vs_kepler.png shows out-of-fold P(real) against Kepler diagnostic parameters, which are not classifier inputs.
+
 Important interpretation:
 - This is a smoke/diagnostic validation run, not a training cache.
 - Because gp_fits.json is absent or unloadable, noise is white Gaussian fallback.
