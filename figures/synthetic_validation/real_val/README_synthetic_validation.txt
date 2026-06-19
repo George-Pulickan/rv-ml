@@ -13,9 +13,9 @@ Noise mode used by generator: white_gaussian_fallback
 Observation-based classifier diagnostic:
 - Inputs: 64 normalized spectral power bins plus observation-derived summaries.
 - Kepler parameters and K/measurement-uncertainty are excluded from classifier inputs.
-- Balanced accuracy: 0.559 +/- 0.033
+- Balanced accuracy: 0.535 +/- 0.030
 - Top individual discriminator: sigma_iqr_ms
-- Top feature group: lsp_peak_power
+- Top feature group: sigma_iqr_ms
 
 Additional classifier diagnostics:
 - classifier_probability_histogram.png shows out-of-fold P(real) by class.

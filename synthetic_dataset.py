@@ -7,8 +7,8 @@ as RVDataset in preprocess.py.
 
 Priors (applied to every planet, primary and companion alike)
 -----
-    P      ~ 3-component Gaussian mixture in log10(P / d)
-    K      ~ LogUniform(8, 400) m/s
+    P      ~ empirical histogram in log10(P / d)
+    K      ~ empirical histogram in log10(K / m/s)
     e      ~ empirical histogram from known catalog eccentricities
     ω      ~ Uniform(0, 2π)
     T_peri ~ Uniform(t_min, t_min + P)   (random orbital phase)
@@ -79,7 +79,10 @@ _LABELS_CSV  = Path("data/labels.csv")
 _SIGMA_LOG_MEAN = np.log(4.62)
 _SIGMA_LOG_STD  = 0.75
 
+_PARAM_HIST_BINS = 40
 _ECC_HIST_BINS = 30
+_PERIOD_CACHE: dict[str, np.ndarray] | None = None
+_K_CACHE: dict[str, np.ndarray] | None = None
 _ECC_CACHE: dict[str, np.ndarray | float] | None = None
 _K_MIN_MS = 8.0
 _K_MAX_MS = 400.0
@@ -93,6 +96,104 @@ _P_MAX_D = 3000.0
 # ---------------------------------------------------------------------------
 # Prior sampler (identical for primary and companion planets)
 # ---------------------------------------------------------------------------
+
+def _real_single_planet_column(
+    splits_col: str,
+    labels_col: str | None = None,
+) -> np.ndarray:
+    """Return a finite real-corpus column for empirical prior fitting."""
+    import pandas as pd
+
+    if _SPLITS_CSV.exists():
+        splits = pd.read_csv(_SPLITS_CSV)
+        if splits_col not in splits.columns:
+            return np.array([], dtype=np.float64)
+
+        df = splits
+        if "n_planets" in df.columns:
+            df = df.loc[df["n_planets"] == 1]
+        values = df[splits_col]
+    elif labels_col is not None and _LABELS_CSV.exists():
+        labels = pd.read_csv(_LABELS_CSV)
+        if labels_col not in labels.columns:
+            return np.array([], dtype=np.float64)
+        values = labels[labels_col]
+    else:
+        return np.array([], dtype=np.float64)
+
+    arr = values.dropna().astype(float).to_numpy()
+    return arr[np.isfinite(arr)]
+
+
+def _build_log_histogram_prior(values: np.ndarray) -> dict[str, np.ndarray] | None:
+    """Build a non-empty empirical histogram prior over log10(values)."""
+    values = np.asarray(values, dtype=np.float64)
+    values = values[np.isfinite(values) & (values > 0.0)]
+    if len(values) == 0:
+        return None
+
+    log_values = np.log10(values)
+    counts, edges = np.histogram(log_values, bins=_PARAM_HIST_BINS)
+    keep = counts > 0
+    if not np.any(keep):
+        return None
+
+    probs = counts[keep].astype(np.float64)
+    probs /= probs.sum()
+    return {
+        "left_edges": edges[:-1][keep],
+        "right_edges": edges[1:][keep],
+        "probs": probs,
+    }
+
+
+def _sample_log_histogram(
+    rng: np.random.Generator,
+    n: int,
+    prior: dict[str, np.ndarray],
+) -> np.ndarray:
+    """Sample positive values by drawing a log-bin then sampling within it."""
+    probs = np.asarray(prior["probs"], dtype=np.float64)
+    left_edges = np.asarray(prior["left_edges"], dtype=np.float64)
+    right_edges = np.asarray(prior["right_edges"], dtype=np.float64)
+    bins = rng.choice(len(probs), size=n, p=probs)
+    log_values = rng.uniform(left_edges[bins], right_edges[bins])
+    return (10 ** log_values).astype(np.float64)
+
+
+def _load_period_prior() -> dict[str, np.ndarray] | None:
+    """Load an empirical log-period histogram prior from real single planets."""
+    global _PERIOD_CACHE
+    if _PERIOD_CACHE is not None:
+        return _PERIOD_CACHE
+
+    try:
+        values = _real_single_planet_column("P_d", "pl_orbper")
+        prior = _build_log_histogram_prior(values)
+        if prior is not None:
+            _PERIOD_CACHE = prior
+        return prior
+    except Exception as exc:
+        print(f"[synthetic_dataset] could not load empirical period prior ({exc}); using mixture fallback")
+        return None
+
+
+def _load_k_prior() -> dict[str, np.ndarray] | None:
+    """Load an empirical log-K histogram prior from real single planets."""
+    global _K_CACHE
+    if _K_CACHE is not None:
+        return _K_CACHE
+
+    try:
+        values = _real_single_planet_column("K_ms", "pl_rvamp")
+        prior = _build_log_histogram_prior(values)
+        if prior is not None:
+            _K_CACHE = prior
+        return prior
+    except Exception as exc:
+        print(f"[synthetic_dataset] could not load empirical K prior ({exc}); using log-uniform fallback")
+        return None
+
 
 def _load_eccentricity_prior() -> dict[str, np.ndarray | float] | None:
     """Load a zero-preserving empirical eccentricity prior from the real corpus."""
@@ -176,32 +277,43 @@ def _sample_eccentricity(rng: np.random.Generator, n: int) -> np.ndarray:
 
 
 def _sample_period(rng: np.random.Generator, n: int) -> np.ndarray:
-    """Sample orbital periods from a fitted mixture over log10(P / day)."""
+    """Sample orbital periods from an empirical histogram over log10(P / day)."""
+    prior = _load_period_prior()
+    if prior is not None:
+        return _sample_log_histogram(rng, n, prior)
+
     comps = rng.choice(len(_P_LOG10_WEIGHTS), size=n, p=_P_LOG10_WEIGHTS)
     log_p = rng.normal(_P_LOG10_MEANS[comps], _P_LOG10_STDS[comps])
     log_p = np.clip(log_p, np.log10(_P_MIN_D), np.log10(_P_MAX_D))
     return (10 ** log_p).astype(np.float64)
 
 
+def _sample_k(rng: np.random.Generator, n: int) -> np.ndarray:
+    """Sample RV semi-amplitudes from an empirical histogram over log10(K)."""
+    prior = _load_k_prior()
+    if prior is not None:
+        return _sample_log_histogram(rng, n, prior)
+    return np.exp(rng.uniform(np.log(_K_MIN_MS), np.log(_K_MAX_MS), size=n))
+
+
 def _sample_orbital_params(rng: np.random.Generator, n: int) -> dict[str, np.ndarray]:
     """
     Sample n independent sets of (P, K, e, ω, phase) from the prior.
 
-    P is sampled from a compact Gaussian mixture fitted in log-period space to
-    the validated real single-planet corpus. K uses a log-uniform prior over
-    the observed usable signal-amplitude range. e is sampled from
-    a zero-preserving empirical histogram of known catalog eccentricities.
-    This keeps the exact-zero pile-up seen in the real labels while retaining
-    the observed nonzero eccentricity distribution. If labels.csv is not
-    available, the sampler falls back to the Kipping-style Beta(0.867, 3.03)
-    prior.
+    P and K are sampled from empirical histograms in log-space fitted to the
+    validated real single-planet corpus. e is sampled from a zero-preserving
+    empirical histogram of known catalog eccentricities. This keeps the real
+    corpus shape without imposing a Gaussian-mixture or log-uniform parametric
+    form. If the real corpus files are not available, the sampler falls back to
+    the older period mixture, K log-uniform prior, and Kipping-style
+    Beta(0.867, 3.03) eccentricity prior.
     ω and phase are uniform — no preferred orientation or epoch.
 
     The same function is called for both primary and companion planets,
     ensuring all planets are drawn from the same marginal prior.
     """
     P     = _sample_period(rng, n)
-    K     = np.exp(rng.uniform(np.log(_K_MIN_MS), np.log(_K_MAX_MS), size=n))
+    K     = _sample_k(rng, n)
     e     = _sample_eccentricity(rng, n)
     omega = rng.uniform(0.0, 2 * np.pi, size=n)
     phase = rng.uniform(0.0, 1.0, size=n)
