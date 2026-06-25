@@ -6,14 +6,18 @@ Real comparison split: test
 Synthetic samples: 400
 Valid real single-planet comparison samples: 57
 Real time grids loaded for synthetic cadence bootstrap: 388
-GP fits exists: False
-GP library loaded: False
-Noise mode used by generator: white_gaussian_fallback
+GP residual checkpoint: models\gp_residual_svgp.pt
+GP residual checkpoint exists: True
+GP residual model loaded: True
+Legacy GP fits path: data\gp_fits.json
+Legacy GP fits exists: False
+Legacy GP library loaded: False
+Noise mode used by generator: gp_residual_svgp
 
 Observation-based classifier diagnostic:
 - Inputs: 64 normalized spectral power bins plus observation-derived summaries.
 - Kepler parameters and K/measurement-uncertainty are excluded from classifier inputs.
-- Balanced accuracy: 0.522 +/- 0.035
+- Balanced accuracy: 0.532 +/- 0.031
 - Top individual discriminator: sigma_iqr_ms
 - Top feature group: sigma_iqr_ms
 
@@ -23,5 +27,5 @@ Additional classifier diagnostics:
 
 Important interpretation:
 - This is a smoke/diagnostic validation run, not a training cache.
-- Because gp_fits.json is absent or unloadable, noise is white Gaussian fallback.
+- GP residual SVGP checkpoint loaded successfully.
 - Next scientific step is to inspect plots and decide whether priors, cadence, or noise need adjustment.

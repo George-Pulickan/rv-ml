@@ -43,8 +43,10 @@ Time grids
 
 Noise
 -----
-    GP noise drawn from GPNoiseLibrary (Matérn-3/2 / SHO fitted to real residuals).
-    Falls back to i.i.d. N(0, σ²) white noise if GP library is absent or returns NaN.
+    Residual noise is drawn from the trained global SVGP residual model when
+    models/gp_residual_svgp.pt is available. Falls back to the older
+    GPNoiseLibrary path (data/gp_fits.json), then to i.i.d. N(0, σ²) white
+    noise if GP sampling is unavailable or invalid.
 
 Usage
 -----
@@ -69,6 +71,7 @@ from torch.utils.data import Dataset
 from preprocess import LSP_N, T_MAX, THETA_NAMES, compute_lsp
 
 _GP_LIB_PATH = Path("data/gp_fits.json")
+_GP_RESIDUAL_PATH = Path("models/gp_residual_svgp.pt")
 _STATS_PATH  = Path("data/dataset_stats.json")
 _SPLITS_CSV  = Path("data/splits.csv")
 _RV_DIR      = Path("data/rv_raw")
@@ -443,6 +446,8 @@ def _sample_sigma(rng: np.random.Generator, n_obs: int) -> np.ndarray:
 # ---------------------------------------------------------------------------
 
 _GP_LIBRARY = None
+_GP_RESIDUAL_SAMPLER = None
+_GP_RESIDUAL_LOAD_ATTEMPTED = False
 
 
 def _load_gp_library():
@@ -455,16 +460,149 @@ def _load_gp_library():
         return None
 
 
-def _inject_noise(t: np.ndarray, sigma: np.ndarray,
-                  rng: np.random.Generator) -> np.ndarray:
+def _load_gp_residual_sampler():
+    """Load and cache the trained global SVGP residual sampler."""
+    global _GP_RESIDUAL_SAMPLER, _GP_RESIDUAL_LOAD_ATTEMPTED
+    if _GP_RESIDUAL_LOAD_ATTEMPTED:
+        return _GP_RESIDUAL_SAMPLER
+
+    _GP_RESIDUAL_LOAD_ATTEMPTED = True
+    if not _GP_RESIDUAL_PATH.exists():
+        return None
+
+    try:
+        import gpytorch
+        from gp_residual_model import _make_svgp
+
+        checkpoint = torch.load(_GP_RESIDUAL_PATH, map_location="cpu", weights_only=False)
+        inducing = checkpoint["model_state"]["variational_strategy.inducing_points"]
+        model = _make_svgp(inducing)
+        likelihood = gpytorch.likelihoods.StudentTLikelihood()
+        model.load_state_dict(checkpoint["model_state"])
+        likelihood.load_state_dict(checkpoint["likelihood_state"])
+        model.eval()
+        likelihood.eval()
+
+        standardizer = checkpoint["standardizer"]
+        _GP_RESIDUAL_SAMPLER = {
+            "model": model,
+            "likelihood": likelihood,
+            "mean": np.asarray(standardizer["mean"], dtype=np.float32),
+            "std": np.asarray(standardizer["std"], dtype=np.float32),
+            "feature_names": list(checkpoint["feature_names"]),
+        }
+        return _GP_RESIDUAL_SAMPLER
+    except Exception as exc:
+        print(f"[synthetic_dataset] could not load GP residual SVGP ({exc}); using fallback noise")
+        _GP_RESIDUAL_SAMPLER = None
+        return None
+
+
+def _gp_residual_features(
+    t: np.ndarray,
+    rv_clean_dominant: np.ndarray,
+    dominant_params: dict[str, float],
+) -> np.ndarray:
+    """Build feature rows matching gp_residual_model.FEATURE_NAMES."""
+    P = float(dominant_params["P"])
+    K = float(dominant_params["K"])
+    e = float(np.clip(dominant_params["e"], 0.0, 0.99))
+    omega = float(dominant_params["omega"])
+    t0 = int(np.argmin(t))
+
+    phase = np.mod(t - float(t.min()), P) / P
+    y_rel = rv_clean_dominant - float(rv_clean_dominant[t0])
+    return np.column_stack(
+        [
+            phase,
+            np.full_like(t, np.log10(max(P, 1e-3)), dtype=np.float64),
+            np.full_like(t, np.log10(max(K, 1e-3)), dtype=np.float64),
+            np.full_like(t, e, dtype=np.float64),
+            np.full_like(t, np.cos(omega), dtype=np.float64),
+            np.full_like(t, np.sin(omega), dtype=np.float64),
+            y_rel,
+        ]
+    ).astype(np.float32)
+
+
+def _sample_gp_residual_noise(
+    t: np.ndarray,
+    rv_clean_dominant: np.ndarray | None,
+    dominant_params: dict[str, float] | None,
+    rng: np.random.Generator,
+) -> np.ndarray | None:
+    """Draw residual noise from the trained global SVGP model, if available."""
+    if rv_clean_dominant is None or dominant_params is None:
+        return None
+
+    sampler = _load_gp_residual_sampler()
+    if sampler is None:
+        return None
+
+    try:
+        import gpytorch
+
+        X = _gp_residual_features(t, rv_clean_dominant, dominant_params)
+        X = (X - sampler["mean"]) / np.maximum(sampler["std"], 1e-8)
+        Xt = torch.as_tensor(X, dtype=torch.float32)
+        seed = int(rng.integers(0, 2**31 - 1))
+        torch.manual_seed(seed)
+
+        with torch.no_grad(), gpytorch.settings.num_likelihood_samples(1):
+            latent = sampler["model"](Xt)
+            sample = sampler["likelihood"](latent).sample()
+
+        noise = sample.detach().cpu().numpy().reshape(-1).astype(np.float64)
+        if noise.shape != t.shape or np.isnan(noise).any() or not np.isfinite(noise).all():
+            return None
+        return noise
+    except Exception:
+        return None
+
+
+def get_noise_model_status() -> dict[str, object]:
+    """Return the currently available synthetic-noise backends."""
+    residual_sampler = _load_gp_residual_sampler()
+    gp_library = _load_gp_library()
+    return {
+        "gp_residual_path": str(_GP_RESIDUAL_PATH),
+        "gp_residual_exists": _GP_RESIDUAL_PATH.exists(),
+        "gp_residual_loaded": residual_sampler is not None,
+        "gp_fits_path": str(_GP_LIB_PATH),
+        "gp_fits_exists": _GP_LIB_PATH.exists(),
+        "gp_library_loaded": gp_library is not None,
+        "preferred_noise_mode": (
+            "gp_residual_svgp"
+            if residual_sampler is not None
+            else "GPNoiseLibrary"
+            if gp_library is not None
+            else "white_gaussian_fallback"
+        ),
+    }
+
+
+def _inject_noise(
+    t: np.ndarray,
+    sigma: np.ndarray,
+    rng: np.random.Generator,
+    dominant_params: dict[str, float] | None = None,
+    rv_clean_dominant: np.ndarray | None = None,
+) -> tuple[np.ndarray, str]:
     """
-    GP noise from GPNoiseLibrary (Matérn-3/2 or SHO kernel).
-    Falls back to i.i.d. N(0, σ²) white noise if GP sample fails or is NaN.
+    Draw synthetic residual noise.
+
+    Prefers the trained global SVGP residual model. If unavailable, tries
+    the older per-system GPNoiseLibrary path. Falls back to i.i.d. N(0, σ²)
+    white noise if GP sampling fails or is unavailable.
 
     A single noise draw is shared across all planets in a multi-planet system
     — the noise process is a property of the instrument and stellar activity,
     independent of the planetary configuration.
     """
+    residual_noise = _sample_gp_residual_noise(t, rv_clean_dominant, dominant_params, rng)
+    if residual_noise is not None:
+        return residual_noise, "gp_residual_svgp"
+
     global _GP_LIBRARY
     if _GP_LIBRARY is None:
         _GP_LIBRARY = _load_gp_library()
@@ -473,10 +611,10 @@ def _inject_noise(t: np.ndarray, sigma: np.ndarray,
         try:
             s = _GP_LIBRARY.sample(t, rng=rng).astype(np.float64)
             if not np.isnan(s).any():
-                return s
+                return s, "GPNoiseLibrary"
         except Exception:
             pass
-    return rng.normal(0.0, sigma).astype(np.float64)
+    return rng.normal(0.0, sigma).astype(np.float64), "white_gaussian_fallback"
 
 
 # ---------------------------------------------------------------------------
@@ -541,17 +679,27 @@ def generate_one(
 
     # ---- Sum Keplerian signals (linear superposition, test-particle limit) ----
     rv_clean = np.zeros(len(t), dtype=np.float64)
+    rv_clean_parts: list[np.ndarray] = []
     t_peri_list: list[float] = []
     for pl in all_planets:
         # t_peri is set to within one period of the first observation so that
         # the orbital phase is uniformly distributed at t[0], independent of P.
         tp = float(t.min()) + pl["phase"] * pl["P"]
         t_peri_list.append(tp)
-        rv_clean += rv_np(t, pl["P"], pl["K"], pl["e"], pl["omega"], tp)
+        rv_part = rv_np(t, pl["P"], pl["K"], pl["e"], pl["omega"], tp)
+        rv_clean_parts.append(rv_part)
+        rv_clean += rv_part
     t_peri_dom = t_peri_list[dom_idx]
+    rv_clean_dom = rv_clean_parts[dom_idx]
 
     # ---- Single noise draw, shared across all planet signals ----
-    noise  = _inject_noise(t, sigma, rng)
+    noise, noise_mode = _inject_noise(
+        t,
+        sigma,
+        rng,
+        dominant_params=dom,
+        rv_clean_dominant=rv_clean_dom,
+    )
     rv_obs = rv_clean + noise
 
     # ---- GLS periodogram on the combined multi-planet + noise signal ----
@@ -604,6 +752,7 @@ def generate_one(
         "n_planets":   len(all_planets),
         "n_companions": n_companions,
         "has_ecc":     True,   # synthetic e always sampled from prior, never imputed
+        "noise_mode":   noise_mode,
         "valid":       True,
     }
     return x, lsp, theta, info

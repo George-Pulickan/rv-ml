@@ -32,11 +32,10 @@ import pandas as pd
 from kepler_check import rv_keplerian as _rv_keplerian
 from preprocess import LSP_PERIODS, RVDataset
 from synthetic_dataset import (
-    _GP_LIB_PATH,
-    _load_gp_library,
     _load_real_time_grids,
     _sample_orbital_params,
     generate_one,
+    get_noise_model_status,
 )
 from time_series_features import spectral_feature_names, spectral_features
 
@@ -206,6 +205,7 @@ def collect_synthetic(
                 "median_sigma_ms": med_sigma,
                 "sigma_iqr_ms": float(np.subtract(*np.percentile(sigma, [75, 25]))),
                 "snr_K_over_sigma": float(info["snr_meas"]),
+                "noise_mode": str(info.get("noise_mode", "unknown")),
                 "lsp_peak_period_d": float(LSP_PERIODS[int(np.argmax(lsp))]),
                 "lsp_peak_power": float(np.max(lsp)),
                 "median_gap_d": float(np.median(gaps)) if len(gaps) else np.nan,
@@ -632,8 +632,7 @@ def summarize(
     synth: pd.DataFrame,
     out: Path,
     args: argparse.Namespace,
-    gp_exists: bool,
-    gp_loaded: bool,
+    noise_status: dict[str, object],
     n_grids: int,
     classifier_report: dict,
 ) -> None:
@@ -672,6 +671,11 @@ def summarize(
             )
     pd.DataFrame(rows).to_csv(out / "summary_metric_quantiles.csv", index=False)
 
+    observed_noise_modes = (
+        synth["noise_mode"].value_counts().sort_index().to_dict()
+        if "noise_mode" in synth.columns
+        else {}
+    )
     notes = {
         "n_synthetic": args.n_samples,
         "f_multi": args.f_multi,
@@ -679,10 +683,9 @@ def summarize(
         "real_split": args.real_split,
         "n_real_single_planet_valid": int(len(real)),
         "real_time_grids_loaded": int(n_grids),
-        "gp_fits_path": str(_GP_LIB_PATH),
-        "gp_fits_exists": bool(gp_exists),
-        "gp_library_loaded": bool(gp_loaded),
-        "noise_mode": "GPNoiseLibrary" if gp_loaded else "white_gaussian_fallback",
+        "noise_status": noise_status,
+        "noise_modes_observed": observed_noise_modes,
+        "noise_mode": noise_status["preferred_noise_mode"],
         "classifier": classifier_report,
         "outputs": sorted(p.name for p in out.iterdir()),
     }
@@ -696,8 +699,12 @@ def summarize(
         f.write(f"Synthetic samples: {args.n_samples}\n")
         f.write(f"Valid real single-planet comparison samples: {len(real)}\n")
         f.write(f"Real time grids loaded for synthetic cadence bootstrap: {n_grids}\n")
-        f.write(f"GP fits exists: {gp_exists}\n")
-        f.write(f"GP library loaded: {gp_loaded}\n")
+        f.write(f"GP residual checkpoint: {noise_status['gp_residual_path']}\n")
+        f.write(f"GP residual checkpoint exists: {noise_status['gp_residual_exists']}\n")
+        f.write(f"GP residual model loaded: {noise_status['gp_residual_loaded']}\n")
+        f.write(f"Legacy GP fits path: {noise_status['gp_fits_path']}\n")
+        f.write(f"Legacy GP fits exists: {noise_status['gp_fits_exists']}\n")
+        f.write(f"Legacy GP library loaded: {noise_status['gp_library_loaded']}\n")
         f.write(f"Noise mode used by generator: {notes['noise_mode']}\n\n")
         f.write("Observation-based classifier diagnostic:\n")
         f.write(
@@ -722,10 +729,12 @@ def summarize(
         )
         f.write("Important interpretation:\n")
         f.write("- This is a smoke/diagnostic validation run, not a training cache.\n")
-        if gp_loaded:
-            f.write("- GP noise path loaded successfully.\n")
+        if noise_status["gp_residual_loaded"]:
+            f.write("- GP residual SVGP checkpoint loaded successfully.\n")
+        elif noise_status["gp_library_loaded"]:
+            f.write("- Legacy GPNoiseLibrary path loaded successfully.\n")
         else:
-            f.write("- Because gp_fits.json is absent or unloadable, noise is white Gaussian fallback.\n")
+            f.write("- Because GP noise is absent or unloadable, noise is white Gaussian fallback.\n")
         f.write("- Next scientific step is to inspect plots and decide whether priors, cadence, or noise need adjustment.\n")
 
 
@@ -754,9 +763,7 @@ def main() -> None:
         )
     args.out.mkdir(parents=True, exist_ok=True)
 
-    gp_exists = _GP_LIB_PATH.exists()
-    gp_lib = _load_gp_library()
-    gp_loaded = gp_lib is not None
+    noise_status = get_noise_model_status()
     grids = _load_real_time_grids()
 
     real, _, real_spectral = collect_real(args.real_split)
@@ -778,14 +785,14 @@ def main() -> None:
         synth_spectral,
         args.out,
     )
-    summarize(real, synth, args.out, args, gp_exists, gp_loaded, len(grids), classifier_report)
+    summarize(real, synth, args.out, args, noise_status, len(grids), classifier_report)
 
     print(f"Wrote synthetic validation outputs to {args.out}")
     print(f"Real comparison samples: {len(real)}")
     print(f"Real comparison split: {args.real_split}")
     print(f"Synthetic samples: {len(synth)}")
     print(f"Real time grids loaded: {len(grids)}")
-    print(f"Noise mode: {'GPNoiseLibrary' if gp_loaded else 'white_gaussian_fallback'}")
+    print(f"Noise mode: {noise_status['preferred_noise_mode']}")
 
 
 if __name__ == "__main__":
