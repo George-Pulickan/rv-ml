@@ -62,6 +62,7 @@ Usage
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 import numpy as np
@@ -94,6 +95,15 @@ _P_LOG10_MEANS = np.array([0.51182434, 1.54679626, 2.80467308])
 _P_LOG10_STDS = np.array([0.17782275, 0.49030674, 0.33494312])
 _P_MIN_D = 1.0
 _P_MAX_D = 3000.0
+
+
+def _gp_residual_scale() -> float:
+    """Amplitude scale for GP residual samples; useful for validation sweeps."""
+    try:
+        scale = float(os.environ.get("RVML_GP_RESIDUAL_SCALE", "0.85"))
+    except ValueError:
+        scale = 1.0
+    return max(scale, 0.0)
 
 
 # ---------------------------------------------------------------------------
@@ -328,6 +338,7 @@ def _sample_orbital_params(rng: np.random.Generator, n: int) -> dict[str, np.nda
 # ---------------------------------------------------------------------------
 
 _REAL_TIME_GRIDS: list[np.ndarray] | None = None   # module-level cache
+_REAL_OBS_PROFILES: list[tuple[np.ndarray, np.ndarray]] | None = None
 
 
 def _load_real_time_grids() -> list[np.ndarray]:
@@ -373,6 +384,76 @@ def _load_real_time_grids() -> list[np.ndarray]:
         _REAL_TIME_GRIDS = []
 
     return _REAL_TIME_GRIDS
+
+
+def _load_real_observation_profiles(
+    sigma_min: float = 0.1,
+    sigma_max: float = 100.0,
+) -> list[tuple[np.ndarray, np.ndarray]]:
+    """
+    Load paired (time, sigma) profiles from the training split.
+
+    Bootstrapping sigma together with its original cadence preserves the
+    within-system uncertainty spread that the simple log-normal sigma model
+    smoothed away. Only training-split files are used to avoid validation/test
+    leakage.
+    """
+    global _REAL_OBS_PROFILES
+    if _REAL_OBS_PROFILES is not None:
+        return _REAL_OBS_PROFILES
+
+    if not _SPLITS_CSV.exists() or not _RV_DIR.exists():
+        _REAL_OBS_PROFILES = []
+        return []
+
+    try:
+        import pandas as pd
+        from parse_and_label import parse_tbl
+
+        df = pd.read_csv(_SPLITS_CSV)
+        train = df.loc[df["split"] == "train"]
+        if "n_planets" in train.columns:
+            train = train.loc[train["n_planets"] == 1]
+        files = train["file"].tolist()
+
+        profiles: list[tuple[np.ndarray, np.ndarray]] = []
+        for fname in files:
+            path = _RV_DIR / fname
+            if not path.exists():
+                continue
+            try:
+                _, t, _, sigma = parse_tbl(path)
+                t = np.asarray(t, dtype=np.float64)
+                sigma = np.asarray(sigma, dtype=np.float64)
+                ok = np.isfinite(t) & np.isfinite(sigma) & (sigma > 0.0)
+                t = t[ok]
+                sigma = sigma[ok]
+                if len(t) < 10:
+                    continue
+                med_sigma = float(np.median(sigma))
+                if not (sigma_min <= med_sigma <= sigma_max):
+                    continue
+                order = np.argsort(t)
+                profiles.append((t[order] - float(t[order][0]), sigma[order]))
+            except Exception:
+                continue
+
+        _REAL_OBS_PROFILES = profiles
+        print(f"[synthetic_dataset] loaded {len(profiles)} real observation profiles from training split")
+    except Exception as exc:
+        print(f"[synthetic_dataset] could not load real observation profiles ({exc}); using heuristic sigma")
+        _REAL_OBS_PROFILES = []
+
+    return _REAL_OBS_PROFILES
+
+
+def _sample_observation_profile(rng: np.random.Generator) -> tuple[np.ndarray, np.ndarray] | None:
+    """Return a paired real training time grid and per-observation sigma array."""
+    profiles = _load_real_observation_profiles()
+    if not profiles:
+        return None
+    t, sigma = profiles[int(rng.integers(0, len(profiles)))]
+    return t.copy(), sigma.copy()
 
 
 def _sample_time_grid(rng: np.random.Generator) -> np.ndarray:
@@ -555,7 +636,7 @@ def _sample_gp_residual_noise(
         noise = sample.detach().cpu().numpy().reshape(-1).astype(np.float64)
         if noise.shape != t.shape or np.isnan(noise).any() or not np.isfinite(noise).all():
             return None
-        return noise
+        return noise * _gp_residual_scale()
     except Exception:
         return None
 
@@ -568,6 +649,7 @@ def get_noise_model_status() -> dict[str, object]:
         "gp_residual_path": str(_GP_RESIDUAL_PATH),
         "gp_residual_exists": _GP_RESIDUAL_PATH.exists(),
         "gp_residual_loaded": residual_sampler is not None,
+        "gp_residual_scale": _gp_residual_scale(),
         "gp_fits_path": str(_GP_LIB_PATH),
         "gp_fits_exists": _GP_LIB_PATH.exists(),
         "gp_library_loaded": gp_library is not None,
@@ -674,8 +756,12 @@ def generate_one(
     dom     = all_planets[dom_idx]
 
     # ---- Shared time grid and per-observation errors ----
-    t     = _sample_time_grid(rng)
-    sigma = _sample_sigma(rng, len(t))
+    obs_profile = _sample_observation_profile(rng)
+    if obs_profile is not None:
+        t, sigma = obs_profile
+    else:
+        t = _sample_time_grid(rng)
+        sigma = _sample_sigma(rng, len(t))
 
     # ---- Sum Keplerian signals (linear superposition, test-particle limit) ----
     rv_clean = np.zeros(len(t), dtype=np.float64)

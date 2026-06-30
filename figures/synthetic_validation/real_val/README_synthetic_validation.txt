@@ -17,9 +17,9 @@ Noise mode used by generator: gp_residual_svgp
 Observation-based classifier diagnostic:
 - Inputs: 64 normalized spectral power bins plus observation-derived summaries.
 - Kepler parameters and K/measurement-uncertainty are excluded from classifier inputs.
-- Balanced accuracy: 0.553 +/- 0.021
+- Balanced accuracy: 0.522 +/- 0.052
 - Top individual discriminator: lsp_peak_power
-- Top feature group: lsp_peak_power
+- Top feature group: rv_iqr_ms
 
 Additional classifier diagnostics:
 - classifier_probability_histogram.png shows out-of-fold P(real) by class.
