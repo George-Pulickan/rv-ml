@@ -9,7 +9,8 @@ import matplotlib.pyplot as plt
 
 # load RV data
 # convert to spectral features using time_series_features.py
-# store features together with true orbital parameters 
+# store features and true orbital parameters in dataframe
+# f1, f2, ..., f64, p1, p2, ... p6
 def create_dataset(split="train"):
     dataset = RVDataset(split, normalize=False)
     rows = []
