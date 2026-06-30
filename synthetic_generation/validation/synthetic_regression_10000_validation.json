@@ -1,0 +1,129 @@
+{
+  "csv_path": "synthetic_generation\\datasets\\synthetic_regression_10000.csv",
+  "n_rows": 10000,
+  "n_columns": 79,
+  "passed": true,
+  "n_failed_checks": 0,
+  "checks": [
+    {
+      "name": "expected_columns",
+      "passed": true,
+      "detail": "found ['log10_P', 'log10_K', 'e', 'cos_omega', 'sin_omega', 'spectral_power_001', 'spectral_power_002', 'spectral_power_003', 'spectral_power_004', 'spectral_power_005', 'spectral_power_006', 'spectral_power_007', 'spectral_power_008', 'spectral_power_009', 'spectral_power_010', 'spectral_power_011', 'spectral_power_012', 'spectral_power_013', 'spectral_power_014', 'spectral_power_015', 'spectral_power_016', 'spectral_power_017', 'spectral_power_018', 'spectral_power_019', 'spectral_power_020', 'spectral_power_021', 'spectral_power_022', 'spectral_power_023', 'spectral_power_024', 'spectral_power_025', 'spectral_power_026', 'spectral_power_027', 'spectral_power_028', 'spectral_power_029', 'spectral_power_030', 'spectral_power_031', 'spectral_power_032', 'spectral_power_033', 'spectral_power_034', 'spectral_power_035', 'spectral_power_036', 'spectral_power_037', 'spectral_power_038', 'spectral_power_039', 'spectral_power_040', 'spectral_power_041', 'spectral_power_042', 'spectral_power_043', 'spectral_power_044', 'spectral_power_045', 'spectral_power_046', 'spectral_power_047', 'spectral_power_048', 'spectral_power_049', 'spectral_power_050', 'spectral_power_051', 'spectral_power_052', 'spectral_power_053', 'spectral_power_054', 'spectral_power_055', 'spectral_power_056', 'spectral_power_057', 'spectral_power_058', 'spectral_power_059', 'spectral_power_060', 'spectral_power_061', 'spectral_power_062', 'spectral_power_063', 'spectral_power_064', 'n_obs', 'baseline_d', 'rv_std_ms', 'rv_iqr_ms', 'median_sigma_ms', 'sigma_iqr_ms', 'lsp_peak_period_d', 'lsp_peak_power', 'median_gap_d', 'p90_gap_d']"
+    },
+    {
+      "name": "expected_row_count",
+      "passed": true,
+      "detail": "found 10000 rows, expected 10000"
+    },
+    {
+      "name": "no_missing_values",
+      "passed": true,
+      "detail": "missing values by column: {'log10_P': 0, 'log10_K': 0, 'e': 0, 'cos_omega': 0, 'sin_omega': 0, 'spectral_power_001': 0, 'spectral_power_002': 0, 'spectral_power_003': 0, 'spectral_power_004': 0, 'spectral_power_005': 0, 'spectral_power_006': 0, 'spectral_power_007': 0, 'spectral_power_008': 0, 'spectral_power_009': 0, 'spectral_power_010': 0, 'spectral_power_011': 0, 'spectral_power_012': 0, 'spectral_power_013': 0, 'spectral_power_014': 0, 'spectral_power_015': 0, 'spectral_power_016': 0, 'spectral_power_017': 0, 'spectral_power_018': 0, 'spectral_power_019': 0, 'spectral_power_020': 0, 'spectral_power_021': 0, 'spectral_power_022': 0, 'spectral_power_023': 0, 'spectral_power_024': 0, 'spectral_power_025': 0, 'spectral_power_026': 0, 'spectral_power_027': 0, 'spectral_power_028': 0, 'spectral_power_029': 0, 'spectral_power_030': 0, 'spectral_power_031': 0, 'spectral_power_032': 0, 'spectral_power_033': 0, 'spectral_power_034': 0, 'spectral_power_035': 0, 'spectral_power_036': 0, 'spectral_power_037': 0, 'spectral_power_038': 0, 'spectral_power_039': 0, 'spectral_power_040': 0, 'spectral_power_041': 0, 'spectral_power_042': 0, 'spectral_power_043': 0, 'spectral_power_044': 0, 'spectral_power_045': 0, 'spectral_power_046': 0, 'spectral_power_047': 0, 'spectral_power_048': 0, 'spectral_power_049': 0, 'spectral_power_050': 0, 'spectral_power_051': 0, 'spectral_power_052': 0, 'spectral_power_053': 0, 'spectral_power_054': 0, 'spectral_power_055': 0, 'spectral_power_056': 0, 'spectral_power_057': 0, 'spectral_power_058': 0, 'spectral_power_059': 0, 'spectral_power_060': 0, 'spectral_power_061': 0, 'spectral_power_062': 0, 'spectral_power_063': 0, 'spectral_power_064': 0, 'n_obs': 0, 'baseline_d': 0, 'rv_std_ms': 0, 'rv_iqr_ms': 0, 'median_sigma_ms': 0, 'sigma_iqr_ms': 0, 'lsp_peak_period_d': 0, 'lsp_peak_power': 0, 'median_gap_d': 0, 'p90_gap_d': 0}"
+    },
+    {
+      "name": "all_columns_finite_numeric",
+      "passed": true,
+      "detail": "finite numeric columns: {'log10_P': True, 'log10_K': True, 'e': True, 'cos_omega': True, 'sin_omega': True, 'spectral_power_001': True, 'spectral_power_002': True, 'spectral_power_003': True, 'spectral_power_004': True, 'spectral_power_005': True, 'spectral_power_006': True, 'spectral_power_007': True, 'spectral_power_008': True, 'spectral_power_009': True, 'spectral_power_010': True, 'spectral_power_011': True, 'spectral_power_012': True, 'spectral_power_013': True, 'spectral_power_014': True, 'spectral_power_015': True, 'spectral_power_016': True, 'spectral_power_017': True, 'spectral_power_018': True, 'spectral_power_019': True, 'spectral_power_020': True, 'spectral_power_021': True, 'spectral_power_022': True, 'spectral_power_023': True, 'spectral_power_024': True, 'spectral_power_025': True, 'spectral_power_026': True, 'spectral_power_027': True, 'spectral_power_028': True, 'spectral_power_029': True, 'spectral_power_030': True, 'spectral_power_031': True, 'spectral_power_032': True, 'spectral_power_033': True, 'spectral_power_034': True, 'spectral_power_035': True, 'spectral_power_036': True, 'spectral_power_037': True, 'spectral_power_038': True, 'spectral_power_039': True, 'spectral_power_040': True, 'spectral_power_041': True, 'spectral_power_042': True, 'spectral_power_043': True, 'spectral_power_044': True, 'spectral_power_045': True, 'spectral_power_046': True, 'spectral_power_047': True, 'spectral_power_048': True, 'spectral_power_049': True, 'spectral_power_050': True, 'spectral_power_051': True, 'spectral_power_052': True, 'spectral_power_053': True, 'spectral_power_054': True, 'spectral_power_055': True, 'spectral_power_056': True, 'spectral_power_057': True, 'spectral_power_058': True, 'spectral_power_059': True, 'spectral_power_060': True, 'spectral_power_061': True, 'spectral_power_062': True, 'spectral_power_063': True, 'spectral_power_064': True, 'n_obs': True, 'baseline_d': True, 'rv_std_ms': True, 'rv_iqr_ms': True, 'median_sigma_ms': True, 'sigma_iqr_ms': True, 'lsp_peak_period_d': True, 'lsp_peak_power': True, 'median_gap_d': True, 'p90_gap_d': True}"
+    },
+    {
+      "name": "log10_P_range",
+      "passed": true,
+      "detail": "10000/10000 values within [-1.0, 4.0], min=-0.083072, max=3.57059"
+    },
+    {
+      "name": "log10_K_range",
+      "passed": true,
+      "detail": "10000/10000 values within [0.0, 4.0], min=0.294656, max=3.25733"
+    },
+    {
+      "name": "e_range",
+      "passed": true,
+      "detail": "10000/10000 values within [0.0, 0.99], min=0, max=0.95684"
+    },
+    {
+      "name": "cos_omega_range",
+      "passed": true,
+      "detail": "10000/10000 values within [-1.0, 1.0], min=-1, max=1"
+    },
+    {
+      "name": "sin_omega_range",
+      "passed": true,
+      "detail": "10000/10000 values within [-1.0, 1.0], min=-1, max=1"
+    },
+    {
+      "name": "n_obs_range",
+      "passed": true,
+      "detail": "10000/10000 values within [10.0, 1000.0], min=10, max=450"
+    },
+    {
+      "name": "baseline_d_range",
+      "passed": true,
+      "detail": "10000/10000 values within [0.0, 10000.0], min=0.1484, max=6166.09"
+    },
+    {
+      "name": "rv_std_ms_range",
+      "passed": true,
+      "detail": "10000/10000 values within [0.0, 10000.0], min=6.13362, max=1333.52"
+    },
+    {
+      "name": "rv_iqr_ms_range",
+      "passed": true,
+      "detail": "10000/10000 values within [0.0, 10000.0], min=4.55594, max=2698.67"
+    },
+    {
+      "name": "median_sigma_ms_range",
+      "passed": true,
+      "detail": "10000/10000 values within [0.0, 1000.0], min=0.5, max=77"
+    },
+    {
+      "name": "sigma_iqr_ms_range",
+      "passed": true,
+      "detail": "10000/10000 values within [0.0, 1000.0], min=0, max=23"
+    },
+    {
+      "name": "lsp_peak_period_d_range",
+      "passed": true,
+      "detail": "10000/10000 values within [0.5, 5000.0], min=0.5, max=5000"
+    },
+    {
+      "name": "lsp_peak_power_range",
+      "passed": true,
+      "detail": "10000/10000 values within [0.0, 1.0], min=0.00441126, max=1"
+    },
+    {
+      "name": "median_gap_d_range",
+      "passed": true,
+      "detail": "10000/10000 values within [0.0, 10000.0], min=0.00192261, max=155.653"
+    },
+    {
+      "name": "p90_gap_d_range",
+      "passed": true,
+      "detail": "10000/10000 values within [0.0, 10000.0], min=0.00670013, max=435.366"
+    },
+    {
+      "name": "n_obs_integer",
+      "passed": true,
+      "detail": "10000/10000 values are integer-like"
+    },
+    {
+      "name": "omega_unit_circle",
+      "passed": true,
+      "detail": "max |cos^2 + sin^2 - 1| = 8.2457e-08"
+    },
+    {
+      "name": "spectral_power_nonnegative",
+      "passed": true,
+      "detail": "640000/640000 spectral values are finite and non-negative"
+    },
+    {
+      "name": "spectral_power_sum_leq_one",
+      "passed": true,
+      "detail": "min row sum=0.621694, max row sum=1"
+    },
+    {
+      "name": "summary_features_complete",
+      "passed": true,
+      "detail": "10000/10000 rows have complete summary inputs"
+    }
+  ]
+}
