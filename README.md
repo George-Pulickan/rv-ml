@@ -92,6 +92,52 @@ CSV (power spectrum + summary features → true Keplerian params) and analyses i
 > / `parse_and_label.py` / `preprocess.py` and `train.py`. The trained residual noise model
 > (`models/gp_residual_svgp.pt`) *is* committed.
 
+## Current state — canonical models & configuration
+
+This project has several files that do similar things; the list below is the **currently
+canonical** choice for each stage, so collaborators build on the live path, not a legacy one.
+(Query the live noise backend at runtime with `synthetic_dataset.get_noise_model_status()`.)
+
+**Noise model — global SVGP + Student-t residual GP.**
+`gp_residual_model.py` → checkpoint `models/gp_residual_svgp.pt` (512 inducing points, ARD
+Matérn-5/2, Student-t likelihood; fit to real single-system residuals). It is the **primary**
+backend in `synthetic_dataset._inject_noise`, which falls back in order to: the per-system
+celerite2 `GPNoiseLibrary` (`data/gp_fits.json`, produced by `gp_noise_model.py` /
+`gp_corpus_fit.py` — *legacy/fallback*) → i.i.d. white Gaussian. GP-sample amplitude is scaled
+by env `RVML_GP_RESIDUAL_SCALE` (default **0.85**). *Known limitation:* the residual amplitude
+is not predictable from orbit features — next step is to condition it on measurement σ.
+
+**Synthetic generator — `synthetic_dataset.py`** (canonical for encoder pretraining). Current
+priors, all bootstrapped from the real corpus:
+- **Eccentricity:** zero-preserving empirical histogram (30 bins over (0, 0.99] + explicit point
+  mass at e=0) from `data/splits.csv` (`has_ecc` single-planet); Beta(0.867, 3.03) fallback.
+- **Period:** 3-component log10 Gaussian mixture (modes ≈ 3.3, 35, 638 d).
+- **Semi-amplitude K:** LogUniform(8, 400) m/s.
+- **Cadence + σ:** bootstrapped paired `(time grid, per-obs σ)` from real training `.tbl` files.
+- `synthetic_rv.py` is a **separate** catalog-resampling generator (300-system diagnostic sets),
+  *not* the pretraining source — don't confuse the two.
+
+**Encoder — `models/encoder.py`, default arch `resnet`** (registry: resnet/deep/tcn/inception/
+lstm/transformer/nolsp). Decoder is the fixed `models/kepler_torch.py:KeplerDecoder` (no learned
+weights; refits `t_peri` analytically). Train with `train.py` (pretrain on synthetic → finetune
+on real); checkpoints save as `checkpoints/<arch>_finetune_best.pt`. **Regenerate the pretrain
+cache** (e.g. `generate_cache(...)`) before a real run — an old `data/pretrain_cache.pt` predates
+the current priors.
+
+**Regression baseline — `synthetic_generation/train_regression_models.py`** on
+`datasets/synthetic_regression_10000.csv` (74-D: 64 spectral bins + 10 summaries → 5 targets).
+Baseline for the encoder task; key result — summaries recover P/K well, the raw power spectrum
+only helps at full 512-bin resolution (`lsp_resolution_experiment.py`).
+
+**Uncertainty quantification — NOT yet implemented (the paper's main contribution).** Plan:
+*unsupervised* conformal prediction using the reconstruction residual `‖Kepler(φ(y)) − y‖` as the
+conformity score (needs no ground-truth θ), with `validate_synthetic_dataset.py`'s real-vs-
+synthetic classifier serving as the covariate-shift discriminator. To be built as `conformal.py`.
+See the Overleaf draft (§2.2.1, "Unsupervised CP") linked at the bottom.
+
+**Immediate next steps:** (1) finish a proper encoder training run and evaluate with
+`injection_recovery.py`; (2) σ-condition the residual GP; (3) implement unsupervised CP.
+
 ## Setup
 
     python3 -m venv .venv && source .venv/bin/activate
