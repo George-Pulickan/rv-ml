@@ -108,6 +108,7 @@ def _curve_from_x(x: np.ndarray, info: dict) -> dict:
     return {
         "t_norm": x[0].astype(np.float32),
         "rv_obs": x[1].astype(np.float32),
+        "sig": x[2].astype(np.float32),   # per-obs measurement sigma, in rv_std units
         "mask": x[3].astype(np.float32),
         "t_span": float(info["t_span_days"]),
         "t_min": float(info["t_min_days"]),
@@ -160,16 +161,22 @@ def make_real(split: str, sigma_min: float, sigma_max: float) -> list[dict]:
 
 
 class Scorer:
-    def __init__(self):
+    """Reconstruction-residual conformity score.
+
+    mode="rv_std" : RMS residual in each curve's rv_std units (raw).
+    mode="chi2"   : residual weighted by the per-obs measurement sigma, i.e. the
+                    reduced-chi RMS sqrt(mean[ ((rv_obs - rv_pred)/sigma)^2 ]).
+                    This removes the per-system noise-amplitude scale so the
+                    calibration quantile is set by fit quality, not raw jitter,
+                    and should tighten the prediction sets.
+    """
+
+    def __init__(self, mode: str = "rv_std"):
         self.decoder = KeplerDecoder().eval()
+        self.mode = mode
 
     @torch.no_grad()
     def score(self, theta5: np.ndarray, curve: dict) -> np.ndarray:
-        """Reconstruction residual (rv_std units) for a batch of candidate theta.
-
-        theta5 : (G, 5) physical [log10_P, log10_K, e, cos_w, sin_w]
-        returns: (G,) RMS masked residual ||rv_obs - h_kepler(theta)||.
-        """
         g = theta5.shape[0]
         t_norm = torch.from_numpy(curve["t_norm"]).unsqueeze(0).expand(g, -1)
         rv_obs = torch.from_numpy(curve["rv_obs"]).unsqueeze(0).expand(g, -1)
@@ -179,7 +186,11 @@ class Scorer:
         rv_std = torch.full((g,), curve["rv_std"], dtype=torch.float32)
         th = torch.as_tensor(theta5, dtype=torch.float32)
         rv_pred = self.decoder(th, t_norm, t_span, t_min, rv_obs, rv_std, mask)
-        diff = (rv_obs - rv_pred) ** 2 * mask
+        resid = rv_obs - rv_pred
+        if self.mode == "chi2":
+            sig = torch.from_numpy(curve["sig"]).unsqueeze(0).expand(g, -1)
+            resid = resid / sig.clamp(min=1e-3)
+        diff = resid ** 2 * mask
         n = mask.sum(dim=1).clamp(min=1.0)
         return torch.sqrt((diff.sum(dim=1) / n)).cpu().numpy()
 
@@ -276,7 +287,7 @@ def _coverage_at(pre: list[dict], grids: dict, q: float) -> dict:
     }
 
 
-def run_e1(scorer, rf, calib, test_syn, test_real, grids, alphas, out_dir, fig_dir):
+def run_e1(scorer, rf, calib, test_syn, test_real, grids, alphas, out_dir, fig_dir, suffix=""):
     def hats(systems):
         return list(rf.predict(np.vstack([s["features"] for s in systems])))
 
@@ -310,9 +321,10 @@ def run_e1(scorer, rf, calib, test_syn, test_real, grids, alphas, out_dir, fig_d
         ax.set_title(f"{dom} test")
         ax.grid(alpha=0.2)
         ax.legend(fontsize=8)
-    fig.suptitle("E1 — unsupervised CP coverage vs nominal", fontsize=14)
+    fig.suptitle(f"E1 — unsupervised CP coverage vs nominal (score={suffix.strip('_') or 'rv_std'})",
+                 fontsize=14)
     fig.tight_layout(rect=(0, 0, 1, 0.95))
-    fig.savefig(fig_dir / "conformal_e1_coverage.png", dpi=180)
+    fig.savefig(fig_dir / f"conformal_e1_coverage{suffix}.png", dpi=180)
     plt.close(fig)
     return report
 
@@ -322,7 +334,7 @@ def run_e1(scorer, rf, calib, test_syn, test_real, grids, alphas, out_dir, fig_d
 # ---------------------------------------------------------------------------
 
 
-def run_e2(scorer, systems, out_dir, fig_dir, n_offsets=25, n_sys=250):
+def run_e2(scorer, systems, out_dir, fig_dir, n_offsets=25, n_sys=250, suffix=""):
     systems = systems[:n_sys]
     offsets = {
         "log10_P": np.linspace(-1.0, 1.0, n_offsets),
@@ -357,11 +369,34 @@ def run_e2(scorer, systems, out_dir, fig_dir, n_offsets=25, n_sys=250):
         right = np.corrcoef(offsets[c][half + 1:], mean[half + 1:])[0, 1]
         mono[c] = {"rise_left": float(left), "rise_right": float(right),
                    "min_at_offset": float(offsets[c][int(np.argmin(mean))])}
-    fig.suptitle("E2 — score vs offset per coordinate (Assumption 2.3 monotonicity)", fontsize=13)
+    fig.suptitle(f"E2 — score vs offset per coordinate (score={suffix.strip('_') or 'rv_std'})",
+                 fontsize=13)
     fig.tight_layout(rect=(0, 0, 1, 0.93))
-    fig.savefig(fig_dir / "conformal_e2_monotonicity.png", dpi=180)
+    fig.savefig(fig_dir / f"conformal_e2_monotonicity{suffix}.png", dpi=180)
     plt.close(fig)
     return mono
+
+
+def plot_width_comparison(report_by_mode: dict, alpha: float, fig_dir: Path) -> None:
+    """Median set width per coordinate, rv_std vs chi2 score, on synthetic + real."""
+    modes = list(report_by_mode)
+    fig, axs = plt.subplots(1, 2, figsize=(13, 5))
+    for ax, dom in zip(axs, ["synthetic", "real"]):
+        x = np.arange(D)
+        w = 0.8 / len(modes)
+        for k, m in enumerate(modes):
+            widths = report_by_mode[m][dom][f"{alpha:.2f}"]["per_coord_median_width"]
+            ax.bar(x + (k - 0.5) * w, [widths[c] for c in COORDS], w, label=f"score={m}")
+        ax.set_xticks(x)
+        ax.set_xticklabels(COORDS)
+        ax.set_ylabel(f"median set width @ 1-alpha={1-alpha:.2f}")
+        ax.set_title(f"{dom} test")
+        ax.grid(alpha=0.2, axis="y")
+        ax.legend()
+    fig.suptitle("Prediction-set width: raw vs sigma-normalized (chi2) score", fontsize=14)
+    fig.tight_layout(rect=(0, 0, 1, 0.95))
+    fig.savefig(fig_dir / "conformal_width_comparison.png", dpi=180)
+    plt.close(fig)
 
 
 # ---------------------------------------------------------------------------
@@ -393,7 +428,6 @@ def main() -> None:
     rf.fit(df[FEATURES].to_numpy(float), df[list(TARGET_COLUMNS)].to_numpy(float))
     print(f"trained RF phi on {len(df)} synthetic rows")
 
-    scorer = Scorer()
     grids = histogram_grids(args.grid, args.seed)
 
     print("building calibration / test systems ...")
@@ -403,14 +437,67 @@ def main() -> None:
     print(f"n_cal={len(calib)} n_test_syn={len(test_syn)} n_test_real={len(test_real)}")
 
     alphas = [0.05, 0.1, 0.15, 0.2, 0.3, 0.4]
-    e1 = run_e1(scorer, rf, calib, test_syn, test_real, grids, alphas, args.out_dir, args.fig_dir)
-    e2 = run_e2(scorer, test_syn, args.out_dir, args.fig_dir)
+    modes = ["rv_std", "chi2"]
+    e1_by_mode, e2_by_mode = {}, {}
+    for mode in modes:
+        print(f"\n===== score mode: {mode} =====")
+        scorer = Scorer(mode=mode)
+        e1_by_mode[mode] = run_e1(scorer, rf, calib, test_syn, test_real, grids,
+                                  alphas, args.out_dir, args.fig_dir, suffix=f"_{mode}")
+        e2_by_mode[mode] = run_e2(scorer, test_syn, args.out_dir, args.fig_dir, suffix=f"_{mode}")
 
-    report = {"E1_coverage": e1, "E2_monotonicity": e2}
+    plot_width_comparison(e1_by_mode, 0.1, args.fig_dir)
+
+    report = {"modes": modes, "E1_coverage": e1_by_mode, "E2_monotonicity": e2_by_mode}
     (args.out_dir / "conformal_metrics.json").write_text(json.dumps(report, indent=2))
-    _write_report(report, args.out_dir / "conformal_report.txt")
-    print(f"wrote conformal metrics + report to {args.out_dir}")
+    _write_report_multi(report, args.out_dir / "conformal_report.txt")
+    print(f"\nwrote conformal metrics + report to {args.out_dir}")
     print(f"wrote figures to {args.fig_dir}")
+
+
+def _write_report_multi(report: dict, path: Path) -> None:
+    lines = ["Unsupervised Conformal Prediction — score-mode comparison (rv_std vs chi2)",
+             "=" * 72, ""]
+    for mode in report["modes"]:
+        lines.append(f"##### SCORE MODE: {mode} #####")
+        lines.append("")
+        lines.extend(_report_lines({"E1_coverage": report["E1_coverage"][mode],
+                                    "E2_monotonicity": report["E2_monotonicity"][mode]}))
+        lines.append("")
+    # width comparison at alpha=0.10
+    lines.append("Median set width @ 1-alpha=0.90 — rv_std vs chi2")
+    lines.append("-" * 52)
+    for dom in ["synthetic", "real"]:
+        lines.append(f"[{dom}]")
+        for c in COORDS:
+            ws = {m: report["E1_coverage"][m][dom]["0.10"]["per_coord_median_width"][c]
+                  for m in report["modes"]}
+            lines.append("  " + f"{c:<10}" + "  ".join(f"{m}={ws[m]:.3g}" for m in report["modes"]))
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def _report_lines(report: dict) -> list[str]:
+    e1, e2 = report["E1_coverage"], report["E2_monotonicity"]
+    lines = [f"coordinates (d={e1['d']}): {', '.join(e1['coords'])}  (Bonferroni)",
+             f"n_cal={e1['n_cal']}  n_test_syn={e1['n_test_syn']}  n_test_real={e1['n_test_real']}",
+             "", "E1 — empirical coverage (should be >= nominal 1 - alpha)", "-" * 60]
+    for dom in ["synthetic", "real"]:
+        lines.append(f"[{dom} test]")
+        lines.append(f"  {'1-alpha':>8}{'joint':>9}" + "".join(f"{c:>11}" for c in e1["coords"]))
+        for a in e1["alphas"]:
+            r = e1[dom][f"{a:.2f}"]
+            row = f"  {1-a:>8.2f}{r['joint_coverage']:>9.3f}"
+            row += "".join(f"{r['per_coord_coverage'][c]:>11.3f}" for c in e1["coords"])
+            lines.append(row)
+        w = e1[dom][f"{e1['alphas'][0]:.2f}"]["per_coord_median_width"]
+        lines.append("  median set width @ alpha=0.10: "
+                     + "  ".join(f"{c}={w[c]:.3g}" for c in e1["coords"]))
+    lines.append("")
+    lines.append("E2 — monotonicity (Assumption 2.3; rise~+1 => identifiable, ~0 => flat)")
+    for c, m in e2.items():
+        lines.append(f"  {c:<10} rise_left={m['rise_left']:+.2f}  rise_right={m['rise_right']:+.2f}  "
+                     f"min@offset={m['min_at_offset']:+.3f}")
+    return lines
 
 
 def _write_report(report: dict, path: Path) -> None:
