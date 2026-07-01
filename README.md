@@ -4,6 +4,16 @@ ML pipeline for predicting exoplanet orbital parameters from radial velocity
 time series. Encoder → embedding → continuous-output decoder, with conformal
 prediction intervals.
 
+## 📋 Project log & coordination — read before starting work
+
+Current steps, task assignments, and status updates live in the shared project log:
+
+**https://docs.google.com/document/d/1OZliqxJH3tyKIoUy9zpJO3d2aDqwG9eJZJ9lcB3FvqU/edit**
+
+Check it (and post an update) before you start a task, so work isn't duplicated. The
+"Current state" section below tracks the canonical code/models; the Google Doc tracks the
+*who/what/next* of the ongoing work.
+
 ## Repository structure
 
 The pipeline flows: **download real RV → parse/label → validate against Kepler →
