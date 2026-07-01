@@ -1,0 +1,140 @@
+Random-forest regression on the synthetic RV input-output CSV
+================================================================
+synthetic rows : 10000
+held-out split : 8000 train / 2000 test
+real reference : 357 systems (split=all)
+forest         : 300 trees, 5-fold CV
+feature dims   : summary=10, spectral=64, both=74
+
+Cross-validated metrics (mean over folds)
+-----------------------------------------
+config              target              R2       MAE      RMSE
+joint|both          log10_P          0.664     0.392     0.600
+joint|both          log10_K          0.792     0.147     0.240
+joint|both          e                0.147     0.178     0.228
+joint|both          cos_omega       -0.036     0.639     0.717
+joint|both          sin_omega       -0.054     0.649     0.728
+
+joint|spectral      log10_P         -0.157     0.964     1.114
+joint|spectral      log10_K         -0.163     0.449     0.567
+joint|spectral      e               -0.157     0.209     0.266
+joint|spectral      cos_omega       -0.160     0.660     0.759
+joint|spectral      sin_omega       -0.163     0.665     0.765
+
+joint|summary       log10_P          0.661     0.387     0.603
+joint|summary       log10_K          0.790     0.146     0.241
+joint|summary       e                0.136     0.178     0.229
+joint|summary       cos_omega       -0.048     0.640     0.721
+joint|summary       sin_omega       -0.070     0.653     0.734
+
+separate|both       log10_P          0.672     0.356     0.593
+separate|both       log10_K          0.794     0.141     0.239
+separate|both       e                0.160     0.177     0.226
+separate|both       cos_omega       -0.029     0.638     0.715
+separate|both       sin_omega       -0.030     0.643     0.720
+
+separate|spectral   log10_P         -0.171     0.967     1.121
+separate|spectral   log10_K         -0.165     0.451     0.568
+separate|spectral   e               -0.163     0.210     0.266
+separate|spectral   cos_omega       -0.165     0.660     0.761
+separate|spectral   sin_omega       -0.163     0.664     0.765
+
+separate|summary    log10_P          0.669     0.356     0.596
+separate|summary    log10_K          0.790     0.142     0.241
+separate|summary    e                0.148     0.177     0.228
+separate|summary    cos_omega       -0.051     0.641     0.722
+separate|summary    sin_omega       -0.059     0.649     0.729
+
+Held-out test metrics
+---------------------
+config              target              R2       MAE      RMSE
+joint|both          log10_P          0.669     0.397     0.598
+joint|both          log10_K          0.805     0.146     0.237
+joint|both          e                0.150     0.178     0.227
+joint|both          cos_omega       -0.042     0.640     0.720
+joint|both          sin_omega       -0.068     0.651     0.732
+
+joint|spectral      log10_P         -0.133     0.958     1.107
+joint|spectral      log10_K         -0.156     0.453     0.575
+joint|spectral      e               -0.172     0.210     0.266
+joint|spectral      cos_omega       -0.166     0.659     0.762
+joint|spectral      sin_omega       -0.164     0.665     0.764
+
+joint|summary       log10_P          0.669     0.391     0.599
+joint|summary       log10_K          0.809     0.143     0.234
+joint|summary       e                0.143     0.176     0.228
+joint|summary       cos_omega       -0.047     0.639     0.722
+joint|summary       sin_omega       -0.092     0.656     0.740
+
+separate|both       log10_P          0.691     0.352     0.578
+separate|both       log10_K          0.804     0.140     0.237
+separate|both       e                0.157     0.176     0.226
+separate|both       cos_omega       -0.035     0.638     0.717
+separate|both       sin_omega       -0.041     0.645     0.723
+
+separate|spectral   log10_P         -0.135     0.955     1.108
+separate|spectral   log10_K         -0.157     0.454     0.576
+separate|spectral   e               -0.174     0.210     0.266
+separate|spectral   cos_omega       -0.173     0.662     0.764
+separate|spectral   sin_omega       -0.167     0.665     0.765
+
+separate|summary    log10_P          0.685     0.354     0.584
+separate|summary    log10_K          0.804     0.141     0.237
+separate|summary    e                0.152     0.174     0.226
+separate|summary    cos_omega       -0.060     0.643     0.726
+separate|summary    sin_omega       -0.072     0.653     0.733
+
+Synthetic-trained -> real transfer
+----------------------------------
+config              target              R2       MAE      RMSE
+joint|both          log10_P          0.792     0.299     0.481
+joint|both          log10_K          0.820     0.144     0.222
+joint|both          e                0.129     0.183     0.235
+joint|both          cos_omega       -0.591     0.795     0.860
+joint|both          sin_omega       -0.066     0.402     0.547
+
+joint|spectral      log10_P         -0.211     1.007     1.161
+joint|spectral      log10_K         -0.156     0.444     0.561
+joint|spectral      e               -0.187     0.215     0.274
+joint|spectral      cos_omega       -0.685     0.801     0.885
+joint|spectral      sin_omega       -0.269     0.452     0.597
+
+joint|summary       log10_P          0.811     0.282     0.458
+joint|summary       log10_K          0.832     0.138     0.214
+joint|summary       e                0.123     0.183     0.236
+joint|summary       cos_omega       -0.594     0.794     0.860
+joint|summary       sin_omega       -0.064     0.406     0.547
+
+separate|both       log10_P          0.816     0.251     0.452
+separate|both       log10_K          0.842     0.130     0.208
+separate|both       e                0.115     0.187     0.237
+separate|both       cos_omega       -0.586     0.797     0.858
+separate|both       sin_omega       -0.109     0.399     0.558
+
+separate|spectral   log10_P         -0.232     1.015     1.171
+separate|spectral   log10_K         -0.172     0.445     0.565
+separate|spectral   e               -0.179     0.216     0.273
+separate|spectral   cos_omega       -0.657     0.793     0.877
+separate|spectral   sin_omega       -0.283     0.462     0.600
+
+separate|summary    log10_P          0.826     0.241     0.440
+separate|summary    log10_K          0.848     0.125     0.204
+separate|summary    e                0.121     0.185     0.236
+separate|summary    cos_omega       -0.567     0.789     0.853
+separate|summary    sin_omega       -0.095     0.406     0.555
+
+Baseline (predict train mean) held-out test
+--------------------------------------------
+  log10_P      R2=-0.000  MAE=0.948  RMSE=1.040
+  log10_K      R2=-0.000  MAE=0.424  RMSE=0.535
+  e            R2=-0.000  MAE=0.198  RMSE=0.246
+  cos_omega    R2=-0.000  MAE=0.633  RMSE=0.705
+  sin_omega    R2=-0.003  MAE=0.640  RMSE=0.709
+
+Note on feature dimensionality
+------------------------------
+This RF baseline uses the compact 74-D representation stored in the CSV
+(64 power-spectrum bins + 10 observation summaries). The RVEncoder NN
+instead consumes ~1500 dims: a 512-bin Lomb-Scargle power spectrum plus a
+(4, 256) summary tensor. The two are different encodings of the same RV
+time series; metrics are not directly comparable across the two spaces.

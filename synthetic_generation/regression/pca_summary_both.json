@@ -1,0 +1,105 @@
+{
+  "feature_set": "both",
+  "n_features": 74,
+  "n_real": 357,
+  "n_synthetic": 10000,
+  "explained_variance_ratio": [
+    0.8250500609020436,
+    0.03614448067355384
+  ],
+  "cumulative_explained_variance": 0.8611945415755974,
+  "top_loadings": {
+    "PC1": [
+      {
+        "feature": "spectral_power_033",
+        "loading": 0.12786743822037827
+      },
+      {
+        "feature": "spectral_power_034",
+        "loading": 0.12772614487428563
+      },
+      {
+        "feature": "spectral_power_032",
+        "loading": 0.12761740747777287
+      },
+      {
+        "feature": "spectral_power_038",
+        "loading": 0.12760142416150289
+      },
+      {
+        "feature": "spectral_power_028",
+        "loading": 0.1275806846909372
+      },
+      {
+        "feature": "spectral_power_039",
+        "loading": 0.12757520589970772
+      },
+      {
+        "feature": "spectral_power_035",
+        "loading": 0.12755171956671524
+      },
+      {
+        "feature": "spectral_power_037",
+        "loading": 0.12752757628344727
+      },
+      {
+        "feature": "spectral_power_036",
+        "loading": 0.12749584334215602
+      },
+      {
+        "feature": "spectral_power_027",
+        "loading": 0.12745592285023633
+      }
+    ],
+    "PC2": [
+      {
+        "feature": "p90_gap_d",
+        "loading": 0.493287455274068
+      },
+      {
+        "feature": "baseline_d",
+        "loading": 0.47526455903744186
+      },
+      {
+        "feature": "median_sigma_ms",
+        "loading": -0.422597362687993
+      },
+      {
+        "feature": "median_gap_d",
+        "loading": 0.40985597983616073
+      },
+      {
+        "feature": "sigma_iqr_ms",
+        "loading": -0.3715471095581104
+      },
+      {
+        "feature": "lsp_peak_power",
+        "loading": -0.17306488588883281
+      },
+      {
+        "feature": "n_obs",
+        "loading": 0.07852760031271018
+      },
+      {
+        "feature": "lsp_peak_period_d",
+        "loading": -0.0348748289328972
+      },
+      {
+        "feature": "rv_iqr_ms",
+        "loading": 0.03467118689603229
+      },
+      {
+        "feature": "rv_std_ms",
+        "loading": 0.0247714922865677
+      }
+    ]
+  },
+  "real_pc_mean": [
+    0.22623887505009774,
+    -0.1715453210931502
+  ],
+  "synthetic_pc_mean": [
+    -0.008076727839288492,
+    0.006124167963025459
+  ]
+}
