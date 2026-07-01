@@ -73,6 +73,11 @@ rv-ml/
 | `train.py` | Two-phase encoder training: pretrain on synthetic → finetune on real → `checkpoints/` |
 | `injection_recovery.py` | Injection-recovery benchmark for a trained encoder |
 
+**Uncertainty quantification (Step 6)**
+| File | Purpose |
+|---|---|
+| `conformal.py` | Unsupervised conformal prediction: turns the Step-5 regressor's point predictions into prediction sets via the reconstruction-residual score `‖Kepler(θ)−y‖` (no ground-truth θ). Runs coverage (E1) + monotonicity (E2), incl. a σ-normalized (χ²) score variant |
+
 **Diagnostics & misc**
 | File | Purpose |
 |---|---|
@@ -139,14 +144,20 @@ the current priors.
 Baseline for the encoder task; key result — summaries recover P/K well, the raw power spectrum
 only helps at full 512-bin resolution (`lsp_resolution_experiment.py`).
 
-**Uncertainty quantification — NOT yet implemented (the paper's main contribution).** Plan:
-*unsupervised* conformal prediction using the reconstruction residual `‖Kepler(φ(y)) − y‖` as the
-conformity score (needs no ground-truth θ), with `validate_synthetic_dataset.py`'s real-vs-
-synthetic classifier serving as the covariate-shift discriminator. To be built as `conformal.py`.
-See the Overleaf draft (§2.2.1, "Unsupervised CP") linked at the bottom.
+**Uncertainty quantification (the paper's main contribution) — implemented in `conformal.py`.**
+*Unsupervised* conformal prediction: the conformity score is the reconstruction residual
+`‖Kepler(θ) − y‖` (evaluated via the fixed `KeplerDecoder`, no ground-truth θ), with split-conformal
+calibration + Bonferroni over the four physical coordinates (log10_P, log10_K, e, ω). All
+calibration draws and parameter search grids come from the empirical corpus histograms H, not
+ad-hoc priors. **Result: coverage is valid (≥ nominal) on synthetic AND real data** (the guarantee
+transfers — the point vs Baragatti's supervised calibration). The sets are currently *valid but
+wide*: a σ-normalized (χ²) score did **not** tighten them, because the width is limited by the
+weak nuisance point-estimate the univariate CP conditions on (+ period aliasing), not the noise
+scale. See the Overleaf draft (§2.2.1) linked at the bottom.
 
-**Immediate next steps:** (1) finish a proper encoder training run and evaluate with
-`injection_recovery.py`; (2) σ-condition the residual GP; (3) implement unsupervised CP.
+**Immediate next steps:** (1) tighten the CP sets with a *profiled* conformity score (minimise over
+nuisance coords instead of fixing at θ̂) and a stronger point predictor; (2) σ-condition the residual
+GP; (3) a full-scale encoder training run, evaluated with `injection_recovery.py`.
 
 ## Setup
 
