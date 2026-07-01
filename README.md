@@ -155,7 +155,7 @@ wide*: a σ-normalized (χ²) score did **not** tighten them, because the width 
 weak nuisance point-estimate the univariate CP conditions on (+ period aliasing), not the noise
 scale. See the Overleaf draft (§2.2.1) linked at the bottom.
 
-**Immediate next steps:** (1) tighten the CP sets with a *profiled* conformity score (minimise over
+**Next steps:** (1) tighten the CP sets with a *profiled* conformity score (minimise over
 nuisance coords instead of fixing at θ̂) and a stronger point predictor; (2) σ-condition the residual
 GP; (3) a full-scale encoder training run, evaluated with `injection_recovery.py`.
 
