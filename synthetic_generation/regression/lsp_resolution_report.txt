@@ -1,0 +1,33 @@
+Spectral-resolution experiment (64-bin vs 512-bin power spectrum)
+================================================================
+synthetic rows : 10000
+real reference : 357 (split=all)
+forest         : 300 trees, max_features=sqrt, 5-fold CV
+feature dims   : summary=10, spectral64=64, lsp512=512, spectral64+summary=74, lsp512+summary=522
+
+Cross-validated R^2 by feature set (separate RFs, mean +/- std over folds)
+--------------------------------------------------------------------------
+feature set                log10_P     log10_K           e   cos_omega   sin_omega
+summary                 +0.672±0.01  +0.799±0.01  +0.134±0.02  -0.055±0.01  -0.063±0.01
+spectral64              -0.211±0.01  -0.201±0.01  -0.203±0.02  -0.206±0.01  -0.208±0.01
+lsp512                  +0.531±0.01  +0.118±0.01  -0.026±0.01  -0.014±0.00  -0.013±0.01
+spectral64+summary      +0.616±0.01  +0.773±0.01  +0.087±0.01  -0.037±0.01  -0.039±0.00
+lsp512+summary          +0.621±0.01  +0.676±0.00  +0.041±0.00  -0.013±0.00  -0.013±0.01
+
+Synthetic-trained -> real transfer R^2 (separate RFs)
+--------------------------------------------------------------------------
+feature set                log10_P     log10_K           e   cos_omega   sin_omega
+summary                     +0.823      +0.853      +0.108      -0.567      -0.102
+spectral64                  -0.267      -0.192      -0.214      -0.680      -0.345
+lsp512                      +0.720      +0.021      -0.038      -0.580      -0.044
+spectral64+summary          +0.727      +0.794      +0.055      -0.615      -0.065
+lsp512+summary              +0.779      +0.655      +0.048      -0.582      -0.041
+
+Joint vs separate on lsp512+summary (held-out test R^2)
+--------------------------------------------------
+target           joint  separate
+log10_P         +0.605    +0.619
+log10_K         +0.618    +0.678
+e               +0.049    +0.040
+cos_omega       -0.017    -0.015
+sin_omega       -0.014    -0.011

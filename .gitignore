@@ -11,3 +11,6 @@ handover.md
 checkpoints/
 *.pt
 *.pdf
+
+# Large regenerable experiment dataset (512-bin LSP regression, ~130 MB)
+synthetic_generation/datasets/synthetic_lsp_regression_10000.csv

@@ -123,12 +123,13 @@ def _mean_std(values: list[float]) -> dict[str, float]:
 # ---------------------------------------------------------------------------
 
 
-def _make_rf(n_estimators: int, seed: int) -> RandomForestRegressor:
-    return RandomForestRegressor(
-        n_estimators=n_estimators,
-        n_jobs=-1,
-        random_state=seed,
-    )
+def _make_rf(n_estimators: int, seed: int, max_features=None) -> RandomForestRegressor:
+    # max_features=None keeps sklearn's default (all features); pass e.g. "sqrt"
+    # to keep per-split cost bounded on very high-dimensional inputs (512-bin LSP).
+    kwargs = dict(n_estimators=n_estimators, n_jobs=-1, random_state=seed)
+    if max_features is not None:
+        kwargs["max_features"] = max_features
+    return RandomForestRegressor(**kwargs)
 
 
 @dataclass
@@ -137,6 +138,7 @@ class JointModel:
 
     n_estimators: int
     seed: int
+    max_features: object = None
     _rf: RandomForestRegressor = field(init=False, repr=False)
     _mu: np.ndarray = field(init=False, repr=False)
     _sd: np.ndarray = field(init=False, repr=False)
@@ -147,7 +149,7 @@ class JointModel:
         # small-variance target (e.g. e).
         self._mu = y.mean(axis=0)
         self._sd = np.where(y.std(axis=0) > 0, y.std(axis=0), 1.0)
-        self._rf = _make_rf(self.n_estimators, self.seed)
+        self._rf = _make_rf(self.n_estimators, self.seed, self.max_features)
         self._rf.fit(X, (y - self._mu) / self._sd)
         return self
 
@@ -162,12 +164,13 @@ class SeparateModel:
     n_estimators: int
     seed: int
     targets: list[str]
+    max_features: object = None
     _rfs: list[RandomForestRegressor] = field(init=False, repr=False)
 
     def fit(self, X: np.ndarray, y: np.ndarray) -> "SeparateModel":
         self._rfs = []
         for j in range(y.shape[1]):
-            rf = _make_rf(self.n_estimators, self.seed + j)
+            rf = _make_rf(self.n_estimators, self.seed + j, self.max_features)
             rf.fit(X, y[:, j])
             self._rfs.append(rf)
         return self
@@ -180,11 +183,13 @@ class SeparateModel:
         return np.vstack([rf.feature_importances_ for rf in self._rfs])
 
 
-def _build(family: str, n_estimators: int, seed: int, targets: list[str]):
+def _build(family: str, n_estimators: int, seed: int, targets: list[str], max_features=None):
     if family == "joint":
-        return JointModel(n_estimators=n_estimators, seed=seed)
+        return JointModel(n_estimators=n_estimators, seed=seed, max_features=max_features)
     if family == "separate":
-        return SeparateModel(n_estimators=n_estimators, seed=seed, targets=targets)
+        return SeparateModel(
+            n_estimators=n_estimators, seed=seed, targets=targets, max_features=max_features
+        )
     raise ValueError(f"unknown model family: {family}")
 
 
@@ -201,13 +206,14 @@ def cross_validate(
     n_estimators: int,
     n_folds: int,
     seed: int,
+    max_features=None,
 ) -> dict[str, dict[str, dict[str, float]]]:
     """K-fold CV -> per-target {metric: {mean, std}} aggregated over folds."""
     kf = KFold(n_splits=n_folds, shuffle=True, random_state=seed)
     fold_metrics: list[dict[str, dict[str, float]]] = []
 
     for tr, te in kf.split(X):
-        model = _build(family, n_estimators, seed, targets)
+        model = _build(family, n_estimators, seed, targets, max_features)
         model.fit(X[tr], y[tr])
         y_pred = model.predict(X[te])
         fold_metrics.append(per_target_metrics(y[te], y_pred, targets))
