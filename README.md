@@ -34,6 +34,7 @@ rv-ml/
 │   └── gp_residual_svgp.pt#   trained global SVGP residual noise model (committed)
 ├── checkpoints/           # (gitignored) trained encoder checkpoints (*.pt)
 ├── figures/               # diagnostic + real-vs-synthetic validation plots
+├── slurm/                 # sbatch scripts for cluster (RHUL GPU) training
 └── synthetic_generation/  # regression-baseline & analysis sub-project (see below)
 ```
 
@@ -71,12 +72,13 @@ rv-ml/
 | File | Purpose |
 |---|---|
 | `train.py` | Two-phase encoder training: pretrain on synthetic → finetune on real → `checkpoints/` |
+| `slurm/train_encoder.sbatch` | RHUL GPU batch job wrapping `train.py` (pretrain 300 ep on the synthetic cache → finetune 100 ep on real); submit from repo root with `sbatch slurm/train_encoder.sbatch` |
 | `injection_recovery.py` | Injection-recovery benchmark for a trained encoder |
 
 **Uncertainty quantification (Step 6)**
 | File | Purpose |
 |---|---|
-| `conformal.py` | Unsupervised conformal prediction: turns the Step-5 regressor's point predictions into prediction sets via the reconstruction-residual score `‖Kepler(θ)−y‖` (no ground-truth θ). Runs coverage (E1) + monotonicity (E2), incl. a σ-normalized (χ²) score variant |
+| `conformal.py` | Unsupervised conformal prediction: turns the Step-5 regressor's point predictions into prediction sets via the reconstruction-residual score `‖Kepler(θ)−y‖` (no ground-truth θ). Runs coverage (E1) + monotonicity (E2). Score variants: profiled over nuisance coords (`--profile {none,K,Keomega}`, default K) and σ-normalized χ² (`--chi2`, opt-in) |
 
 **Diagnostics & misc**
 | File | Purpose |
@@ -153,11 +155,15 @@ ad-hoc priors. **Result: coverage is valid (≥ nominal) on synthetic AND real d
 transfers — the point vs Baragatti's supervised calibration). The sets are currently *valid but
 wide*: a σ-normalized (χ²) score did **not** tighten them, because the width is limited by the
 weak nuisance point-estimate the univariate CP conditions on (+ period aliasing), not the noise
-scale. See the Overleaf draft (§2.2.1) linked at the bottom.
+scale. A *profiled* conformity score (minimise over nuisance coords instead of fixing at θ̂;
+`--profile K` / `--profile Keomega`) is now implemented; in a quick run (n=40) profiling K left
+the median widths unchanged — a full-scale run and/or a stronger point predictor is the open
+question. See the Overleaf draft (§2.2.1) linked at the bottom.
 
-**Immediate next steps:** (1) tighten the CP sets with a *profiled* conformity score (minimise over
-nuisance coords instead of fixing at θ̂) and a stronger point predictor; (2) σ-condition the residual
-GP; (3) a full-scale encoder training run, evaluated with `injection_recovery.py`.
+**Immediate next steps:** (1) full-scale profiled-CP run (`--profile Keomega`, default n=400) +
+a stronger point predictor to tighten the sets; (2) σ-condition the residual GP; (3) a full-scale
+encoder training run (`slurm/train_encoder.sbatch` on the RHUL GPU cluster; needs the regenerated
+`data/pretrain_cache_v3.pt`), evaluated with `injection_recovery.py`.
 
 ## Setup
 
