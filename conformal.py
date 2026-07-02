@@ -195,9 +195,9 @@ class Scorer:
         return torch.sqrt((diff.sum(dim=1) / n)).cpu().numpy()
 
 
-def _theta_with_coord(theta_hat5: np.ndarray, coord: str, value: float) -> np.ndarray:
-    """Copy theta_hat (5,) and overwrite one CP coordinate; return (1, 5)."""
-    out = theta_hat5.copy()
+def _set_coord(theta5: np.ndarray, coord: str, value: float) -> np.ndarray:
+    """Return a copy of theta5 (5,) with one CP coordinate overwritten."""
+    out = theta5.copy()
     if coord == "log10_P":
         out[0] = value
     elif coord == "log10_K":
@@ -206,7 +206,91 @@ def _theta_with_coord(theta_hat5: np.ndarray, coord: str, value: float) -> np.nd
         out[2] = np.clip(value, 0.0, 0.99)
     elif coord == "omega":
         out[3], out[4] = np.cos(value), np.sin(value)
-    return out[None, :]
+    return out
+
+
+def _theta_with_coord(theta_hat5: np.ndarray, coord: str, value: float) -> np.ndarray:
+    """Copy theta_hat (5,) and overwrite one CP coordinate; return (1, 5)."""
+    return _set_coord(theta_hat5, coord, value)[None, :]
+
+
+def _set_coord_grid(base_M5: np.ndarray, coord: str, grid: np.ndarray) -> np.ndarray:
+    """Broadcast a (M, 5) base and a (G,) grid for `coord` into (M, G, 5)."""
+    M = base_M5.shape[0]
+    G = grid.shape[0]
+    big = np.repeat(base_M5[:, None, :], G, axis=1)          # (M, G, 5)
+    if coord == "log10_P":
+        big[:, :, 0] = grid[None, :]
+    elif coord == "log10_K":
+        big[:, :, 1] = grid[None, :]
+    elif coord == "e":
+        big[:, :, 2] = np.clip(grid, 0.0, 0.99)[None, :]
+    elif coord == "omega":
+        big[:, :, 3] = np.cos(grid)[None, :]
+        big[:, :, 4] = np.sin(grid)[None, :]
+    return big
+
+
+# ---------------------------------------------------------------------------
+# Profiled conformity score
+# ---------------------------------------------------------------------------
+#
+# The univariate CP set for coordinate c (eq 9) pins the other coordinates at
+# the point estimate theta_hat.  When theta_hat is weak on those nuisance
+# coordinates the reconstruction stays a poor fit for every swept value of c, so
+# the score is flat and the set fills the whole histogram support (valid but
+# uninformative).  The *profiled* score instead minimises the reconstruction
+# residual over a chosen nuisance set N at each swept value:
+#
+#     s_prof(c=v, y) = min_{theta_N}  s( theta_hat with c=v and N refit, y )
+#
+# implemented as batched coordinate descent over N on the empirical grids.  The
+# tested coordinate c is never profiled (it is pinned to v).  With N = {} this
+# reduces exactly to the pinned score, so the baseline is recovered bit-for-bit.
+# Calibration scores are profiled by the identical procedure (pinning c at its
+# own predicted value theta_hat_c), which keeps the split-conformal exchange-
+# ability argument intact — hence the quantile q becomes per-coordinate.
+
+
+def profiled_min(
+    scorer: "Scorer",
+    base5: np.ndarray,
+    coord_c: str,
+    values: np.ndarray,
+    profile_coords: tuple[str, ...],
+    pgrids: dict[str, np.ndarray],
+    curve: dict,
+    sweeps: int = 2,
+) -> np.ndarray:
+    """Profiled score for coordinate `coord_c` over a set of pinned `values`.
+
+    Returns (len(values),): for each pinned value v of coord_c, the minimum
+    reconstruction score over the nuisance coordinates (profile_coords minus
+    coord_c), found by `sweeps` passes of 1-D grid coordinate descent warm-
+    started from base5.  profile_coords=() gives the plain pinned score.
+    """
+    values = np.asarray(values, dtype=float)
+    M = values.shape[0]
+    th = np.repeat(base5[None, :], M, axis=0)                # (M, 5)
+    for k in range(M):
+        th[k] = _set_coord(th[k], coord_c, values[k])
+
+    nuisance = [c for c in profile_coords if c != coord_c]
+    if not nuisance:
+        return scorer.score(th, curve)                       # (M,)
+
+    for _ in range(sweeps):
+        for p in nuisance:
+            g = pgrids[p]                                    # (G,)
+            big = _set_coord_grid(th, p, g)                  # (M, G, 5)
+            # Keep the incumbent as a candidate so the descent can never make the
+            # score worse than the pinned baseline (base value of p may be off-grid).
+            big = np.concatenate([big, th[:, None, :]], axis=1)  # (M, G+1, 5)
+            Gp = big.shape[1]
+            sc = scorer.score(big.reshape(M * Gp, 5), curve).reshape(M, Gp)
+            j = sc.argmin(axis=1)                            # (M,)
+            th = big[np.arange(M), j]                        # (M, 5) — best per row
+    return scorer.score(th, curve)                           # (M,) final min
 
 
 # ---------------------------------------------------------------------------
@@ -240,44 +324,55 @@ def _true_coord(theta5: np.ndarray, coord: str) -> float:
 # ---------------------------------------------------------------------------
 
 
-def _calib_scores(scorer, calib, theta_hats) -> np.ndarray:
-    """Surrogate calibration scores s(theta_hat_j, y_j) (alpha-independent)."""
-    return np.array([scorer.score(th[None, :], s["curve"])[0]
-                     for s, th in zip(calib, theta_hats)])
+def _calib_scores(scorer, calib, theta_hats, profile_coords, pgrids) -> dict:
+    """Per-coordinate surrogate calibration scores (alpha-independent).
+
+    For coordinate c and calibration curve j: profile the nuisance while pinning
+    c at its own predicted value theta_hat_c.  With profile_coords=() every
+    coordinate yields the same s(theta_hat_j, y_j) as the pinned baseline.
+    """
+    out = {c: np.empty(len(calib)) for c in COORDS}
+    for i, (s, th) in enumerate(zip(calib, theta_hats)):
+        for c in COORDS:
+            v = _true_coord(th, c)   # pin c at its predicted value
+            out[c][i] = profiled_min(scorer, th, c, np.array([v]),
+                                     profile_coords, pgrids, s["curve"])[0]
+    return out
 
 
-def _bonferroni_q(calib_scores: np.ndarray, alpha: float) -> float:
-    n = len(calib_scores)
+def _bonferroni_q(calib_scores_c: np.ndarray, alpha: float) -> float:
+    n = len(calib_scores_c)
     level = 1.0 - alpha / D
     k = min(int(math.ceil((n + 1) * level)), n)          # rank (1-indexed)
-    return float(np.sort(calib_scores)[k - 1])
+    return float(np.sort(calib_scores_c)[k - 1])
 
 
-def _precompute_test(scorer, test, theta_hats, grids) -> list[dict]:
-    """Per-system alpha-independent scores: s at the true value, and over the grid."""
+def _precompute_test(scorer, test, theta_hats, grids, profile_coords, pgrids) -> list[dict]:
+    """Per-system alpha-independent profiled scores: at the true value and over the grid."""
     pre = []
     for s, th in zip(test, theta_hats):
         rec = {"s_true": {}, "grid_scores": {}}
         for c in COORDS:
             true_v = _true_coord(s["theta5"], c)
-            rec["s_true"][c] = float(scorer.score(_theta_with_coord(th, c, true_v), s["curve"])[0])
-            cand = np.vstack([_theta_with_coord(th, c, v)[0] for v in grids[c]])
-            rec["grid_scores"][c] = scorer.score(cand, s["curve"])
+            rec["s_true"][c] = float(profiled_min(scorer, th, c, np.array([true_v]),
+                                                  profile_coords, pgrids, s["curve"])[0])
+            rec["grid_scores"][c] = profiled_min(scorer, th, c, grids[c],
+                                                 profile_coords, pgrids, s["curve"])
         pre.append(rec)
     return pre
 
 
-def _coverage_at(pre: list[dict], grids: dict, q: float) -> dict:
+def _coverage_at(pre: list[dict], grids: dict, q: dict) -> dict:
     per_cov = {c: [] for c in COORDS}
     per_w = {c: [] for c in COORDS}
     joint = []
     for rec in pre:
         all_c = True
         for c in COORDS:
-            cov = rec["s_true"][c] <= q
+            cov = rec["s_true"][c] <= q[c]
             per_cov[c].append(cov)
             all_c = all_c and cov
-            acc = grids[c][rec["grid_scores"][c] <= q]
+            acc = grids[c][rec["grid_scores"][c] <= q[c]]
             per_w[c].append(float(acc.max() - acc.min()) if acc.size else 0.0)
         joint.append(all_c)
     return {
@@ -287,19 +382,22 @@ def _coverage_at(pre: list[dict], grids: dict, q: float) -> dict:
     }
 
 
-def run_e1(scorer, rf, calib, test_syn, test_real, grids, alphas, out_dir, fig_dir, suffix=""):
+def run_e1(scorer, rf, calib, test_syn, test_real, grids, alphas, out_dir, fig_dir,
+           suffix="", profile_coords=(), pgrids=None):
     def hats(systems):
         return list(rf.predict(np.vstack([s["features"] for s in systems])))
 
-    calib_scores = _calib_scores(scorer, calib, hats(calib))
-    pre_syn = _precompute_test(scorer, test_syn, hats(test_syn), grids)
-    pre_real = _precompute_test(scorer, test_real, hats(test_real), grids)
+    pgrids = pgrids if pgrids is not None else grids
+    calib_scores = _calib_scores(scorer, calib, hats(calib), profile_coords, pgrids)
+    pre_syn = _precompute_test(scorer, test_syn, hats(test_syn), grids, profile_coords, pgrids)
+    pre_real = _precompute_test(scorer, test_real, hats(test_real), grids, profile_coords, pgrids)
 
     report = {"d": D, "coords": COORDS, "n_cal": len(calib),
               "n_test_syn": len(test_syn), "n_test_real": len(test_real),
+              "profile_coords": list(profile_coords),
               "alphas": alphas, "synthetic": {}, "real": {}}
     for a in alphas:
-        q = _bonferroni_q(calib_scores, a)
+        q = {c: _bonferroni_q(calib_scores[c], a) for c in COORDS}
         report["synthetic"][f"{a:.2f}"] = {"q": q, **_coverage_at(pre_syn, grids, q)}
         report["real"][f"{a:.2f}"] = {"q": q, **_coverage_at(pre_real, grids, q)}
         print(f"[E1] alpha={a:.2f} target>={1-a:.2f}  "
@@ -334,7 +432,8 @@ def run_e1(scorer, rf, calib, test_syn, test_real, grids, alphas, out_dir, fig_d
 # ---------------------------------------------------------------------------
 
 
-def run_e2(scorer, systems, out_dir, fig_dir, n_offsets=25, n_sys=250, suffix=""):
+def run_e2(scorer, systems, out_dir, fig_dir, n_offsets=25, n_sys=250, suffix="",
+           profile_coords=(), pgrids=None):
     systems = systems[:n_sys]
     offsets = {
         "log10_P": np.linspace(-1.0, 1.0, n_offsets),
@@ -342,13 +441,15 @@ def run_e2(scorer, systems, out_dir, fig_dir, n_offsets=25, n_sys=250, suffix=""
         "e": np.linspace(-0.4, 0.4, n_offsets),
         "omega": np.linspace(-np.pi, np.pi, n_offsets),
     }
+    pgrids = pgrids if pgrids is not None else {}
     curves = {c: np.zeros((len(systems), n_offsets)) for c in COORDS}
     for si, s in enumerate(systems):
         th_true = s["theta5"]
         for c in COORDS:
             base = _true_coord(th_true, c)
-            cand = np.vstack([_theta_with_coord(th_true, c, base + d)[0] for d in offsets[c]])
-            curves[c][si] = scorer.score(cand, s["curve"])
+            vals = base + offsets[c]
+            curves[c][si] = profiled_min(scorer, th_true, c, vals,
+                                         profile_coords, pgrids, s["curve"])
 
     fig, axs = plt.subplots(1, D, figsize=(4.2 * D, 4.2))
     mono = {}
@@ -393,7 +494,7 @@ def plot_width_comparison(report_by_mode: dict, alpha: float, fig_dir: Path) -> 
         ax.set_title(f"{dom} test")
         ax.grid(alpha=0.2, axis="y")
         ax.legend()
-    fig.suptitle("Prediction-set width: raw vs sigma-normalized (chi2) score", fontsize=14)
+    fig.suptitle("Prediction-set width by score config (pinned vs profiled)", fontsize=14)
     fig.tight_layout(rect=(0, 0, 1, 0.95))
     fig.savefig(fig_dir / "conformal_width_comparison.png", dpi=180)
     plt.close(fig)
@@ -413,6 +514,16 @@ def main() -> None:
     ap.add_argument("--n-cal", type=int, default=400)
     ap.add_argument("--n-test", type=int, default=400)
     ap.add_argument("--grid", type=int, default=41)
+    ap.add_argument("--profile", default="K", choices=("none", "K", "Keomega"),
+                    help="nuisance set profiled by the conformity score: "
+                         "none (pinned baseline only), K (log10_K, default), "
+                         "Keomega (log10_K + e + omega)")
+    ap.add_argument("--profile-grid", type=int, default=33,
+                    help="grid resolution for the profiled nuisance minimisation")
+    ap.add_argument("--sweeps", type=int, default=2,
+                    help="coordinate-descent passes for multi-coord profiling")
+    ap.add_argument("--chi2", action="store_true",
+                    help="also run the sigma-normalized (chi2) score variant")
     ap.add_argument("--real-split", default="test", choices=("all", "train", "val", "test"))
     ap.add_argument("--sigma-min", type=float, default=0.1)
     ap.add_argument("--sigma-max", type=float, default=100.0)
@@ -429,6 +540,7 @@ def main() -> None:
     print(f"trained RF phi on {len(df)} synthetic rows")
 
     grids = histogram_grids(args.grid, args.seed)
+    pgrids = histogram_grids(args.profile_grid, args.seed)
 
     print("building calibration / test systems ...")
     calib = make_synthetic(args.n_cal, args.seed + 1)
@@ -436,15 +548,36 @@ def main() -> None:
     test_real = make_real(args.real_split, args.sigma_min, args.sigma_max)
     print(f"n_cal={len(calib)} n_test_syn={len(test_syn)} n_test_real={len(test_real)}")
 
+    profile_map = {"none": (), "K": ("log10_K",),
+                   "Keomega": ("log10_K", "e", "omega")}
+
+    # Each config = (label, score-mode, profiled nuisance coords).  The pinned
+    # baseline (no profiling) is always run so the width comparison shows the
+    # profiling effect; --profile adds the profiled config, --chi2 the variant.
+    configs: list[tuple[str, str, tuple[str, ...]]] = [("rv_std", "rv_std", ())]
+    if args.profile != "none":
+        configs.append((f"rv_std+prof_{args.profile}", "rv_std",
+                        profile_map[args.profile]))
+    if args.chi2:
+        configs.append(("chi2", "chi2", ()))
+        if args.profile != "none":
+            configs.append((f"chi2+prof_{args.profile}", "chi2",
+                            profile_map[args.profile]))
+
+    import time
     alphas = [0.05, 0.1, 0.15, 0.2, 0.3, 0.4]
-    modes = ["rv_std", "chi2"]
+    modes = [label for label, _, _ in configs]
     e1_by_mode, e2_by_mode = {}, {}
-    for mode in modes:
-        print(f"\n===== score mode: {mode} =====")
+    for label, mode, prof in configs:
+        print(f"\n===== config: {label}  (score={mode}, profile={list(prof) or 'none'}) =====")
+        t0 = time.perf_counter()
         scorer = Scorer(mode=mode)
-        e1_by_mode[mode] = run_e1(scorer, rf, calib, test_syn, test_real, grids,
-                                  alphas, args.out_dir, args.fig_dir, suffix=f"_{mode}")
-        e2_by_mode[mode] = run_e2(scorer, test_syn, args.out_dir, args.fig_dir, suffix=f"_{mode}")
+        e1_by_mode[label] = run_e1(scorer, rf, calib, test_syn, test_real, grids,
+                                   alphas, args.out_dir, args.fig_dir, suffix=f"_{label}",
+                                   profile_coords=prof, pgrids=pgrids)
+        e2_by_mode[label] = run_e2(scorer, test_syn, args.out_dir, args.fig_dir,
+                                   suffix=f"_{label}", profile_coords=prof, pgrids=pgrids)
+        print(f"  [{label}] done in {time.perf_counter()-t0:.0f}s")
 
     plot_width_comparison(e1_by_mode, 0.1, args.fig_dir)
 
@@ -456,16 +589,16 @@ def main() -> None:
 
 
 def _write_report_multi(report: dict, path: Path) -> None:
-    lines = ["Unsupervised Conformal Prediction — score-mode comparison (rv_std vs chi2)",
+    lines = ["Unsupervised Conformal Prediction — score-config comparison",
              "=" * 72, ""]
     for mode in report["modes"]:
-        lines.append(f"##### SCORE MODE: {mode} #####")
+        lines.append(f"##### CONFIG: {mode} #####")
         lines.append("")
         lines.extend(_report_lines({"E1_coverage": report["E1_coverage"][mode],
                                     "E2_monotonicity": report["E2_monotonicity"][mode]}))
         lines.append("")
     # width comparison at alpha=0.10
-    lines.append("Median set width @ 1-alpha=0.90 — rv_std vs chi2")
+    lines.append("Median set width @ 1-alpha=0.90 — by score config")
     lines.append("-" * 52)
     for dom in ["synthetic", "real"]:
         lines.append(f"[{dom}]")
