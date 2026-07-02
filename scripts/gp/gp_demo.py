@@ -23,15 +23,19 @@ Runtime: ~2-5 minutes.
 """
 import json
 from pathlib import Path
+import sys
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 from scipy import stats as st
 
+ROOT = Path(__file__).resolve().parents[2]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
 from kepler_check import validate_one
 from gp_noise_model import fit_all_kernels, time_lag_dcf
 
-ROOT = Path(__file__).parent
 FIG_PATH = ROOT / 'figures' / 'gp_vs_bootstrap.png'
 SUMMARY_PATH = ROOT / 'data' / 'gp_demo_summary.csv'
 KERNEL_TABLE_PATH = ROOT / 'data' / 'gp_demo_kernel_comparison.csv'

@@ -18,15 +18,19 @@ Outputs:
 Runtime: ~2-4 hours for ~500 systems.
 """
 from pathlib import Path
+import sys
 import json
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 from time import time
 
+ROOT = Path(__file__).resolve().parents[2]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
 from gp_noise_model import fit_all_kernels
 
-ROOT = Path(__file__).parent
 RESID_NPZ = ROOT / 'data' / 'residuals.npz'
 RESID_CSV = ROOT / 'data' / 'residuals_index.csv'
 OUT_JSON = ROOT / 'data' / 'gp_fits.json'
