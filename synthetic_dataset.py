@@ -114,7 +114,11 @@ def _real_single_planet_column(
     splits_col: str,
     labels_col: str | None = None,
 ) -> np.ndarray:
-    """Return a finite real-corpus column for empirical prior fitting."""
+    """Return a finite real-corpus column for empirical prior fitting.
+
+    Train-split rows only (Nicolò, 2026-07): H is fit on the training split of
+    the real corpus; val/test are held out to test the CP intervals.
+    """
     import pandas as pd
 
     if _SPLITS_CSV.exists():
@@ -123,6 +127,8 @@ def _real_single_planet_column(
             return np.array([], dtype=np.float64)
 
         df = splits
+        if "split" in df.columns:
+            df = df.loc[df["split"] == "train"]
         if "n_planets" in df.columns:
             df = df.loc[df["n_planets"] == 1]
         values = df[splits_col]
@@ -219,6 +225,9 @@ def _load_eccentricity_prior() -> dict[str, np.ndarray | float] | None:
 
         if _SPLITS_CSV.exists():
             splits = pd.read_csv(_SPLITS_CSV)
+            # H is fit on the training split only; val/test are held out for CP.
+            if "split" in splits.columns:
+                splits = splits.loc[splits["split"] == "train"]
             if {"e", "has_ecc", "n_planets"}.issubset(splits.columns):
                 real_e = splits.loc[
                     (splits["has_ecc"].astype(bool)) & (splits["n_planets"] == 1),
