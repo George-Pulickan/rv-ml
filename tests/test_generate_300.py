@@ -7,6 +7,8 @@ if str(ROOT) not in sys.path:
 
 from synthetic_dataset import SyntheticRVDataset
 import pandas as pd
+import matplotlib
+matplotlib.use("Agg")  # headless: plt.show() under the macosx backend hangs unittest discovery
 import matplotlib.pyplot as plt
 import numpy as np
 
@@ -81,7 +83,7 @@ plt.title(
     f"P={info_best['P']:.1f} d"
 )
 plt.savefig("figures/synthetic_plots/Best_candidate_RV.png")
-plt.show()
+plt.close()
 
 # ---------------------------------------------------
 # PLOT WORST CANDIDATE
@@ -105,7 +107,7 @@ plt.title(
     f"P={info_worst['P']:.1f} d"
 )
 plt.savefig("figures/synthetic_plots/Worst_candidate_RV.png")
-plt.show()
+plt.close()
 
 
 # ---------------------------------------------------
@@ -123,7 +125,7 @@ plt.ylabel("Count")
 plt.title("Synthetic RV Amplitude Histogram")
 
 plt.savefig("figures/synthetic_plots/Synthetic_RV_histogram.png")
-plt.show()
+plt.close()
 
 
 # ---------------------------------------------------
@@ -137,7 +139,7 @@ plt.ylabel("Count")
 plt.title("Synthetic Orbital Period Histogram")
 
 plt.savefig("figures/synthetic_plots/Synthetic_period_histogram.png")
-plt.show()
+plt.close()
 
 
 # ---------------------------------------------------
@@ -151,7 +153,7 @@ plt.ylabel("Count")
 plt.title("Synthetic Eccentricity Histogram")
 
 plt.savefig("figures/synthetic_plots/Synthetic_eccentricity_histogram.png")
-plt.show()
+plt.close()
 
 
 # ---------------------------------------------------
@@ -165,7 +167,7 @@ plt.ylabel("Count")
 plt.title("Synthetic SNR Histogram")
 
 plt.savefig("figures/synthetic_plots/SNR_histogram.png")
-plt.show()
+plt.close()
 
 
 # ---------------------------------------------------
@@ -209,7 +211,7 @@ plt.title("Real vs Synthetic Orbital Period Distribution")
 
 plt.legend()
 plt.savefig("figures/synthetic_plots/Period_comparison.png")
-plt.show()
+plt.close()
 
 # ---------------------------------------------------
 # RV comparison
@@ -239,7 +241,7 @@ plt.title("Real vs Synthetic RV Amplitude Distribution")
 
 plt.legend()
 plt.savefig("figures/synthetic_plots/RV_comparison.png")
-plt.show()
+plt.close()
 
 # ---------------------------------------------------
 # Eccentricity comparison
@@ -268,4 +270,4 @@ plt.title("Real vs Synthetic Eccentricity Distribution")
 
 plt.legend()
 plt.savefig("figures/synthetic_plots/Eccentricity_comparison.png")
-plt.show()
+plt.close()
