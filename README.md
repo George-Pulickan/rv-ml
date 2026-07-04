@@ -56,7 +56,7 @@ rv-ml/
 **Noise model (Gaussian Processes)**
 | File | Purpose |
 |---|---|
-| `gp_residual_model.py` | Global SVGP + Student-t fit to real residuals (Nicolò's spec) → `models/gp_residual_svgp.pt` |
+| `gp_residual_model.py` | Global SVGP + Student-t fit to real residuals (Nicolò's spec; least-squares systemic offset γ) → `models/gp_residual_svgp.pt` |
 | `gp_noise_model.py` | Per-system celerite2 GP noise model |
 | `gp_corpus_fit.py` / `gp_sensitivity.py` / `gp_demo.py` | Corpus-wide GP fit + kernel selection, threshold sensitivity, 3-system demo |
 | `cache_residuals.py` | Cache `(t, residual, sigma)` per system for the residual GP |
@@ -73,12 +73,14 @@ rv-ml/
 |---|---|
 | `train.py` | Two-phase encoder training: pretrain on synthetic → finetune on real → `checkpoints/` |
 | `slurm/train_encoder.sbatch` | RHUL GPU batch job wrapping `train.py` (pretrain 300 ep on the synthetic cache → finetune 100 ep on real); submit from repo root with `sbatch slurm/train_encoder.sbatch` |
+| `slurm/gp_conformal.sbatch` | RHUL CPU batch job: full-scale SVGP retrain (LS-γ offset) → full-scale `conformal_shift.py` (n_cal=400); submit from repo root with `sbatch slurm/gp_conformal.sbatch` |
 | `injection_recovery.py` | Injection-recovery benchmark for a trained encoder |
 
 **Uncertainty quantification (Step 6)**
 | File | Purpose |
 |---|---|
 | `conformal.py` | Unsupervised conformal prediction: turns the Step-5 regressor's point predictions into prediction sets via the reconstruction-residual score `‖Kepler(θ)−y‖` (no ground-truth θ). Runs coverage (E1) + monotonicity (E2). Score variants: profiled over nuisance coords (`--profile {none,K,Keomega}`, default K) and σ-normalized χ² (`--chi2`, opt-in) |
+| `conformal_shift.py` | Split-CP calibrated on fake data, tested on real (Nicolò's 2026-07 spec): naive score `\|ψ(y)−θ̄\|` (ground-truth θ̄) vs surrogate score (θ̄ → argmin‖y−Kepler(θ)‖), likelihood-ratio reweighting `p_real/p_fake` via a real-vs-fake discriminator (Tibshirani et al. 2019 weighted quantile), and a noise-model-normalized score `s/(γ+v)` with tuned γ. ψ trains on the 512-bin raw-LSP dataset by default (feature columns follow `--csv`) |
 
 **Diagnostics & misc**
 | File | Purpose |
@@ -125,7 +127,8 @@ by env `RVML_GP_RESIDUAL_SCALE` (default **0.85**). *Known limitation:* the resi
 is not predictable from orbit features — next step is to condition it on measurement σ.
 
 **Synthetic generator — `synthetic_dataset.py`** (canonical for encoder pretraining). Current
-priors, all bootstrapped from the real corpus:
+priors, all bootstrapped from the **train split** of the real corpus (Nicolò, 2026-07: H is
+fit train-only; real val/test are held out for testing the CP intervals):
 - **Eccentricity:** zero-preserving empirical histogram (30 bins over (0, 0.99] + explicit point
   mass at e=0) from `data/splits.csv` (`has_ecc` single-planet); Beta(0.867, 3.03) fallback.
 - **Period:** 3-component log10 Gaussian mixture (modes ≈ 3.3, 35, 638 d).
@@ -160,10 +163,23 @@ scale. A *profiled* conformity score (minimise over nuisance coords instead of f
 the median widths unchanged — a full-scale run and/or a stronger point predictor is the open
 question. See the Overleaf draft (§2.2.1) linked at the bottom.
 
-**Immediate next steps:** (1) full-scale profiled-CP run (`--profile Keomega`, default n=400) +
-a stronger point predictor to tighten the sets; (2) σ-condition the residual GP; (3) a full-scale
-encoder training run (`slurm/train_encoder.sbatch` on the RHUL GPU cluster; needs the regenerated
-`data/pretrain_cache_v3.pt`), evaluated with `injection_recovery.py`.
+**Nicolò's 2026-07 CP spec is implemented in `conformal_shift.py`** — the paper's comparison is
+now: split-CP calibrated *only on fake data* and tested on real, (i) naive score `|ψ(y)−θ̄|`
+with the ground-truth generating parameter θ̄ vs (ii) the surrogate-label strategy
+(θ̄ → argmin_θ‖y−Kepler(θ)‖), the latter reweighted by the likelihood ratio `p_real/p_fake`
+(estimated by a real-vs-fake logistic discriminator; weighted quantile per Tibshirani et al.
+2019). A noise-model-normalized score `s/(γ+v)` (v = SVGP predictive std proxy, γ tuned on a
+synthetic tuning set) is included as a variant. ψ defaults to the 512-bin raw-LSP feature set
+(Nicolò OK'd more Fourier bins); the weight discriminator deliberately stays on the 74-dim
+summary features to keep the likelihood-ratio weights non-degenerate.
+
+**Immediate next steps:** (1) full-scale SVGP retrain + `conformal_shift.py` run on the RHUL
+cluster (`slurm/gp_conformal.sbatch`; local artifacts are currently from a `--smoke` run — heavy
+jobs run on the cluster, not locally); (2) full-scale profiled-CP run (`--profile Keomega`,
+default n=400) + a stronger point predictor to tighten the sets; (3) σ-condition the residual GP
+(awaiting Nicolò's sign-off); (4) a full-scale encoder training run (`slurm/train_encoder.sbatch`
+on the RHUL GPU cluster; needs the regenerated `data/pretrain_cache_v3.pt`), evaluated with
+`injection_recovery.py`.
 
 ## Setup
 
