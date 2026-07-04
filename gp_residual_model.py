@@ -11,9 +11,10 @@ Gaussian Process whose features are multi-dimensional,
 
 across all single-planet systems, where y(t) is the noiseless Keplerian
 trajectory obtained by integrating the *tabulated* catalog parameters
-K = (P, K, e, w) and anchoring the vertical offset to the first observation
-(the "observed initial condition"). T = P, so t mod T projects every system
-into a single orbital period (George's phase-folded view).
+K = (P, K, e, w) plus a least-squares systemic offset gamma (inverse-variance-
+weighted mean of yhat - y; Nicolò approved replacing the earlier first-
+observation anchor, 2026-07). T = P, so t mod T projects every system into a
+single orbital period (George's phase-folded view).
 
 Measurement uncertainty is propagated by sampling yhat uniformly within its
 error bar (Nicolo: "sample uniformly haty within the measurement noise bars")
@@ -83,19 +84,26 @@ def _fit_tperi(t, rv, sigma, P, K, e, omega, grid_n=60):
     return best_tp
 
 
-def _system_residual(t, yhat, planet):
-    """Noiseless Keplerian anchored to the first observation, and residual.
+def _ls_gamma(y, yhat, sigma):
+    """Least-squares systemic offset: argmin_g sum_i ((yhat_i - y_i - g)/sigma_i)^2,
+    i.e. the inverse-variance-weighted mean of (yhat - y)."""
+    w2 = 1.0 / np.maximum(sigma, 1e-6) ** 2
+    return float(np.sum((yhat - y) * w2) / np.sum(w2))
 
-    y(t)   = rv_keplerian(catalog params) + gamma,  gamma = yhat0 - y(t0)
+
+def _system_residual(t, yhat, sigma, planet):
+    """Noiseless Keplerian with a least-squares offset, and the residual.
+
+    y(t)   = rv_keplerian(catalog params) + gamma
+    gamma  = inverse-variance-weighted LS fit of the offset (Nicolò, 2026-07;
+             replaces the earlier first-observation anchor)
     r(t)   = y(t) - yhat(t)
 
     yhat is the (possibly resampled) RV used to define both the residual and the
-    anchor. Returns (y_anchored, r).
+    offset. Returns (y_anchored, r).
     """
-    t0 = int(np.argmin(t))
     y = rv_keplerian(t, planet.P, planet.K, planet.e, planet.omega, planet.t_peri)
-    gamma = float(yhat[t0] - y[t0])
-    y = y + gamma
+    y = y + _ls_gamma(y, yhat, sigma)
     return y, (y - yhat)
 
 
@@ -167,7 +175,7 @@ def build_split(split: str, n_aug: int, seed: int = 0,
             phasefit = False
 
         # Nominal residual decides the model-mismatch cut (pre-augmentation).
-        _, r_nom = _system_residual(t, yhat, planet)
+        _, r_nom = _system_residual(t, yhat, sigma, planet)
         rms_over_sigma = float(np.sqrt(np.mean(r_nom ** 2)) / max(med_sigma, 1e-6))
         if rms_over_sigma > max_rms_over_sigma:
             n_cut_rms += 1
@@ -198,8 +206,8 @@ def build_split(split: str, n_aug: int, seed: int = 0,
 
         for draw in range(n_aug):
             yh = yhat if draw == 0 else yhat + rng.uniform(-sigma, sigma)
-            # Anchor to (possibly resampled) first obs; r is DC-free by construction.
-            r = (y_kep + (yh[t0] - y_kep[t0])) - yh
+            # LS offset against the (possibly resampled) obs; r is DC-free.
+            r = (y_kep + _ls_gamma(y_kep, yh, sigma)) - yh
             X_rows.append(X_sys)
             r_rows.append(r)
             g_rows.append(np.full(len(r), gid, dtype=np.int64))
@@ -665,7 +673,7 @@ def main():
     cache_dir = ROOT / "data" / "gp_residual_cache"
 
     def cached_build(split, n_aug):
-        key = f"{split}_aug{n_aug}_seed{args.seed}_sig{args.sigma_max:g}_rms{args.max_rms_over_sigma:g}_fv3"
+        key = f"{split}_aug{n_aug}_seed{args.seed}_sig{args.sigma_max:g}_rms{args.max_rms_over_sigma:g}_fv4"
         path = cache_dir / f"{key}.npz"
         if not args.no_cache and path.exists():
             z = np.load(path, allow_pickle=True)
