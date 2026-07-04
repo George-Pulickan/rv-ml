@@ -43,8 +43,8 @@ rv-ml/
 **Data acquisition & labelling**
 | File | Purpose |
 |---|---|
-| `download_rv.py` | Download all RV time series from the NASA Exoplanet Archive → `data/rv_raw/` |
-| `parse_and_label.py` | Parse raw `.tbl` → ML-ready `(X, y)`; SIMBAD alias matching; writes `labels.csv`/`splits.csv` |
+| `scripts/data/download_rv.py` | Download all RV time series from the NASA Exoplanet Archive → `data/rv_raw/` |
+| `scripts/data/parse_and_label.py` | Parse raw `.tbl` → ML-ready `(X, y)`; SIMBAD alias matching; writes `labels.csv`/`splits.csv` |
 | `kepler_check.py` | Pipeline validator: forward-model Keplerian RV from tabulated params vs observations (51 Peg b canonical) |
 
 **Preprocessing & features**
@@ -58,14 +58,14 @@ rv-ml/
 |---|---|
 | `gp_residual_model.py` | Global SVGP + Student-t fit to real residuals (Nicolò's spec; least-squares systemic offset γ) → `models/gp_residual_svgp.pt` |
 | `gp_noise_model.py` | Per-system celerite2 GP noise model |
-| `gp_corpus_fit.py` / `gp_sensitivity.py` / `gp_demo.py` | Corpus-wide GP fit + kernel selection, threshold sensitivity, 3-system demo |
+| `scripts/gp/gp_corpus_fit.py` / `scripts/gp/gp_sensitivity.py` / `scripts/gp/gp_demo.py` | Corpus-wide GP fit + kernel selection, threshold sensitivity, 3-system demo |
 | `cache_residuals.py` | Cache `(t, residual, sigma)` per system for the residual GP |
 
 **Synthetic data generation & validation**
 | File | Purpose |
 |---|---|
 | `synthetic_dataset.py` | Synthetic RV generator for encoder pretraining (empirical priors, GP-residual noise, real-cadence bootstrap); `SyntheticRVDataset`, `generate_cache` |
-| `synthetic_rv.py` | Catalog-resampling generator (300-system sets) + example/classifier plots |
+| `scripts/legacy/synthetic_rv.py` | Catalog-resampling generator (300-system sets) + example/classifier plots |
 | `validate_synthetic_dataset.py` | Real-vs-synthetic validation: classifier, histograms, split-aware diagnostics → `figures/synthetic_validation/` |
 
 **Model & training**
@@ -75,6 +75,7 @@ rv-ml/
 | `slurm/train_encoder.sbatch` | RHUL GPU batch job wrapping `train.py` (pretrain 300 ep on the synthetic cache → finetune 100 ep on real); submit from repo root with `sbatch slurm/train_encoder.sbatch` |
 | `slurm/gp_conformal.sbatch` | RHUL CPU batch job: full-scale SVGP retrain (LS-γ offset) → full-scale `conformal_shift.py` (n_cal=400); submit from repo root with `sbatch slurm/gp_conformal.sbatch` |
 | `injection_recovery.py` | Injection-recovery benchmark for a trained encoder |
+| `regression.py` | MLP regression head on the frozen 74-dim feature encoder → 5 Kepler params (CSV or NPZ corpus) |
 
 **Uncertainty quantification (Step 6)**
 | File | Purpose |
@@ -85,10 +86,10 @@ rv-ml/
 **Diagnostics & misc**
 | File | Purpose |
 |---|---|
-| `diagnostics.py` | Corpus-level diagnostic plots (RMS vs params, galleries, parameter histograms) |
-| `init_experiment.py` | Quantify least-squares corrections to tabulated params (Nicolò's request) |
-| `random_forest_regressor.py` | Standalone RF (log10_P from 64 spectral features on real data) — cautionary baseline |
-| `test_*.py` | Unit tests (parser, time-series features, 300-system generation) |
+| `scripts/diagnostics/diagnostics.py` | Corpus-level diagnostic plots (RMS vs params, galleries, parameter histograms) |
+| `scripts/diagnostics/init_experiment.py` | Quantify least-squares corrections to tabulated params (Nicolò's request) |
+| `scripts/legacy/random_forest_regressor.py` | Standalone RF (log10_P from 64 spectral features on real data) — cautionary baseline |
+| `tests/test_*.py` | Unit tests and smoke checks (parser, time-series features, 300-system generation) |
 
 ### `synthetic_generation/` — regression baselines & real-vs-synthetic analysis
 
@@ -173,13 +174,13 @@ synthetic tuning set) is included as a variant. ψ defaults to the 512-bin raw-L
 (Nicolò OK'd more Fourier bins); the weight discriminator deliberately stays on the 74-dim
 summary features to keep the likelihood-ratio weights non-degenerate.
 
-**Immediate next steps:** (1) full-scale SVGP retrain + `conformal_shift.py` run on the RHUL
-cluster (`slurm/gp_conformal.sbatch`; local artifacts are currently from a `--smoke` run — heavy
-jobs run on the cluster, not locally); (2) full-scale profiled-CP run (`--profile Keomega`,
-default n=400) + a stronger point predictor to tighten the sets; (3) σ-condition the residual GP
-(awaiting Nicolò's sign-off); (4) a full-scale encoder training run (`slurm/train_encoder.sbatch`
-on the RHUL GPU cluster; needs the regenerated `data/pretrain_cache_v3.pt`), evaluated with
-`injection_recovery.py`.
+**Next steps:** (1) full-scale SVGP retrain + `conformal_shift.py` run on the RHUL cluster
+(`slurm/gp_conformal.sbatch`; the committed checkpoint/CSVs still predate the LS-γ and
+train-only-H changes — heavy jobs run on the cluster, not locally); (2) full-scale profiled-CP
+run (`--profile Keomega`, default n=400) + a stronger point predictor to tighten the sets;
+(3) σ-condition the residual GP (awaiting Nicolò's sign-off); (4) a full-scale encoder training
+run (`slurm/train_encoder.sbatch` on the RHUL GPU cluster; needs the regenerated
+`data/pretrain_cache_v3.pt`), evaluated with `injection_recovery.py`.
 
 ## Setup
 
@@ -188,8 +189,8 @@ on the RHUL GPU cluster; needs the regenerated `data/pretrain_cache_v3.pt`), eva
 
 ## Usage
 
-    python download_rv.py    --out data/rv_raw
-    python parse_and_label.py --rv-dir data/rv_raw --out data/labels.csv
+    python scripts/data/download_rv.py    --out data/rv_raw
+    python scripts/data/parse_and_label.py --rv-dir data/rv_raw --out data/labels.csv
 
 ## Data sources
 

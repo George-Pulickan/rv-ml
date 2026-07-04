@@ -40,9 +40,14 @@ from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
+import sys
 
 import numpy as np
 import pandas as pd
+
+ROOT = Path(__file__).resolve().parents[2]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
 from kepler_check import rv_keplerian, semi_amplitude, validate_one
 from parse_and_label import parse_tbl

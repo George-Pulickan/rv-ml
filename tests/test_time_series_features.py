@@ -1,8 +1,14 @@
 """Focused checks for the uneven-series spectral encoder."""
 
 import unittest
+from pathlib import Path
+import sys
 
 import numpy as np
+
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
 from time_series_features import spectral_feature_names, spectral_features
 

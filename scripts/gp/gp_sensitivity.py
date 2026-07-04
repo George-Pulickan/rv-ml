@@ -23,7 +23,7 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 
-ROOT = Path(__file__).parent
+ROOT = Path(__file__).resolve().parents[2]
 GP_FITS = ROOT / 'data' / 'gp_fits.json'
 RESID_IDX = ROOT / 'data' / 'residuals_index.csv'
 OUT_CSV = ROOT / 'data' / 'gp_sensitivity.csv'
