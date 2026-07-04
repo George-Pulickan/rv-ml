@@ -12,7 +12,8 @@ Current steps, task assignments, and status updates live in the shared project l
 
 Check it (and post an update) before you start a task, so work isn't duplicated. The
 "Current state" section below tracks the canonical code/models; the Google Doc tracks the
-*who/what/next* of the ongoing work.
+*who/what/next* of the ongoing work. Session-to-session working state (immediate next
+actions, pending decisions) lives in `handover.md`.
 
 ## Repository structure
 
@@ -120,7 +121,9 @@ canonical** choice for each stage, so collaborators build on the live path, not 
 
 **Noise model — global SVGP + Student-t residual GP.**
 `gp_residual_model.py` → checkpoint `models/gp_residual_svgp.pt` (512 inducing points, ARD
-Matérn-5/2, Student-t likelihood; fit to real single-system residuals). It is the **primary**
+Matérn-5/2, Student-t likelihood; fit to real single-system residuals, with a least-squares
+systemic offset γ per Nicolò 2026-07 — the *committed* checkpoint predates this change and is
+refreshed by `slurm/gp_conformal.sbatch`). It is the **primary**
 backend in `synthetic_dataset._inject_noise`, which falls back in order to: the per-system
 celerite2 `GPNoiseLibrary` (`data/gp_fits.json`, produced by `gp_noise_model.py` /
 `gp_corpus_fit.py` — *legacy/fallback*) → i.i.d. white Gaussian. GP-sample amplitude is scaled
