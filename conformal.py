@@ -128,6 +128,8 @@ def make_synthetic(n: int, seed: int) -> list[dict]:
         systems.append({
             "curve": _curve_from_x(x, info),
             "features": np.array([feats[c] for c in FEATURES], dtype=float),
+            "feat_row": feats,
+            "lsp": np.asarray(lsp, dtype=float),
             "theta5": np.asarray(theta, dtype=float),
         })
     return systems
@@ -150,6 +152,8 @@ def make_real(split: str, sigma_min: float, sigma_max: float) -> list[dict]:
         systems.append({
             "curve": _curve_from_x(x, info),
             "features": np.array([feats[c] for c in FEATURES], dtype=float),
+            "feat_row": feats,
+            "lsp": np.asarray(lsp, dtype=float),
             "theta5": np.asarray([float(theta[k]) for k in range(5)], dtype=float),
         })
     return systems
