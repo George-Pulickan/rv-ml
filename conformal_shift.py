@@ -10,9 +10,10 @@ Fourier bins — the 64-bin sum-normalized spectrum loses the period peak):
   (i)  naive      s_c = | psi(y)_c - theta_bar_c |   with theta_bar the ground-
        truth data-generating parameter (known for every synthetic curve);
   (ii) surrogate  s_c = | psi(y)_c - theta*_c |      with theta* the numerical
-       solution of argmin_t || y - kepler(t) ||  (batched coordinate descent on
-       the empirical grids, warm-started at psi(y)) — computable on real curves
-       too, hence usable under distribution shift.
+       solution of argmin_t mean_i | y_i - kepler(t)_i |  (batched Adam gradient
+       descent through the differentiable KeplerDecoder, initialized at the
+       data-generating / tabulated values — Nicolò's 2026-07 spec) — computable
+       on real curves too (tabulated init), hence usable under shift.
 
 Calibration uses ONLY synthetic (fake) curves drawn from the empirical priors H
 (which are themselves fit on the real TRAIN split only); real val/test systems
@@ -30,16 +31,19 @@ puts mass w(x_test) at +infinity, so sets can be infinite when the test point
 looks very real relative to the calibration cloud; weights are clipped
 (--clip-weights) and the effective sample size is reported.
 
-Noise-model normalization (Nicolò's s' — NOTE: he wrote s' = s/(gamma + s),
-which is a strictly monotone transform of s and therefore changes no split-CP
-set; we read it as the standard locally-normalized score using the uncertainty
-proxy v he defines):
+Noise-model normalization (Nicolò confirmed 2026-07 that s' = s/(gamma + v)
+is what he meant), two variants:
 
-    s'_c = s_c / (gamma_reg + v),   v = RMS predictive std of the trained SVGP
-    residual noise model evaluated on (kepler(psi(y)), psi(y), t), in units of
-    the curve's rv_std (falls back to the median measurement sigma when the
-    checkpoint is unavailable).  gamma_reg > 0 is tuned on a held-out synthetic
-    tuning set to minimize the mean support-normalized median interval width.
+    vnorm   s'_c = s_c / (gamma + v_y)
+    v2norm  s'_c = s_c / (gamma + v_y + v_c)     (his two-factor version)
+
+with v_y = RMS predictive std of the trained SVGP residual noise model
+evaluated on (kepler(psi(y)), psi(y), t), in units of the curve's rv_std
+(falls back to the median measurement sigma when the checkpoint is
+unavailable), and v_c = a per-coordinate model of the surrogate-label error
+E|theta_bar_c - theta*_c| (an RF on the summary features, fit on the synthetic
+tuning set where theta_bar is known).  gamma > 0 is tuned per variant on the
+same tuning set to minimize the mean support-normalized median interval width.
 
 Usage
 -----
@@ -68,7 +72,6 @@ from conformal import (
     D,
     SG,
     Scorer,
-    _set_coord_grid,
     _theta_to_omega,
     _true_coord,
     histogram_grids,
@@ -82,6 +85,7 @@ ROOT = Path(__file__).resolve().parent
 
 ALPHAS = [0.05, 0.10, 0.15, 0.20, 0.30, 0.40]
 STRATEGIES = ["naive", "surrogate"]
+NORMS = ["raw", "vnorm", "v2norm"]
 
 
 # ---------------------------------------------------------------------------
@@ -97,23 +101,68 @@ def _coord_abs_err(theta_a5: np.ndarray, theta_b5: np.ndarray, coord: str) -> fl
 
 
 # ---------------------------------------------------------------------------
-# Surrogate label theta* = argmin_theta || y - kepler(theta) ||
+# Surrogate label theta* = argmin_theta mean_t | y_t - kepler(theta)_t |
 # ---------------------------------------------------------------------------
 
 
-def surrogate_fit(scorer: Scorer, base5: np.ndarray, pgrids: dict, curve: dict,
-                  sweeps: int = 2) -> np.ndarray:
-    """Coordinate-descent minimisation of the reconstruction score over all four
-    coordinates on the empirical grids, warm-started at base5 (= psi(y)).  The
-    incumbent is always kept as a candidate, so the fit can only improve."""
-    th = base5.copy()[None, :]                                   # (1, 5)
-    for _ in range(sweeps):
-        for c in COORDS:
-            big = _set_coord_grid(th, c, pgrids[c])              # (1, G, 5)
-            big = np.concatenate([big, th[:, None, :]], axis=1)  # (1, G+1, 5)
-            sc = scorer.score(big[0], curve)
-            th = big[:, int(sc.argmin())]
-    return th[0]
+def _gd_batch(decoder, init5s: np.ndarray, curves: list, steps: int,
+              lr: float) -> np.ndarray:
+    """Batched Adam minimisation of the masked mean-absolute reconstruction
+    error (Nicolò's E_t |y_t - kepler(theta', t)|, in rv_std units) over a set
+    of curves sharing one padded length.  t_peri / gamma are refit analytically
+    inside the decoder every step (their refit is detached — envelope-style;
+    gradients flow through the RV evaluation).  The best iterate per curve is
+    kept, so the fit can only improve on the initialization."""
+    th = torch.as_tensor(np.asarray(init5s), dtype=torch.float32).clone()  # (B,5)
+    t_norm = torch.from_numpy(np.stack([c["t_norm"] for c in curves]))
+    rv_obs = torch.from_numpy(np.stack([c["rv_obs"] for c in curves]))
+    mask = torch.from_numpy(np.stack([c["mask"] for c in curves]))
+    t_span = torch.tensor([c["t_span"] for c in curves], dtype=torch.float32)
+    t_min = torch.tensor([c["t_min"] for c in curves], dtype=torch.float32)
+    rv_std = torch.tensor([c["rv_std"] for c in curves], dtype=torch.float32)
+    n = mask.sum(dim=1).clamp(min=1.0)
+
+    def losses(theta: torch.Tensor) -> torch.Tensor:
+        rv_pred = decoder(theta, t_norm, t_span, t_min, rv_obs, rv_std, mask)
+        return ((rv_obs - rv_pred).abs() * mask).sum(dim=1) / n            # (B,)
+
+    th.requires_grad_(True)
+    opt = torch.optim.Adam([th], lr=lr)
+    best_loss = torch.full((th.shape[0],), np.inf)
+    best_th = th.detach().clone()
+    for _ in range(steps):
+        opt.zero_grad()
+        loss = losses(th)
+        with torch.no_grad():
+            better = loss < best_loss
+            best_loss[better] = loss.detach()[better]
+            best_th[better] = th.detach()[better]
+        loss.sum().backward()
+        opt.step()
+        with torch.no_grad():
+            th[:, 2].clamp_(0.0, 0.99)
+    with torch.no_grad():
+        loss = losses(th)
+        better = loss < best_loss
+        best_th[better] = th.detach()[better]
+    return best_th.numpy().astype(float)
+
+
+def surrogate_fit_gd(decoder, init5s: list, systems: list, steps: int = 200,
+                     lr: float = 0.02) -> list:
+    """Surrogate labels for a list of systems, batched by padded curve length,
+    initialized at init5s (= theta_bar on synthetic curves, tabulated values on
+    real ones, per Nicolò 2026-07)."""
+    out: list = [None] * len(systems)
+    by_len: dict[int, list[int]] = {}
+    for i, s in enumerate(systems):
+        by_len.setdefault(len(s["curve"]["t_norm"]), []).append(i)
+    for idx in by_len.values():
+        fitted = _gd_batch(decoder, np.asarray([init5s[i] for i in idx]),
+                           [systems[i]["curve"] for i in idx], steps, lr)
+        for k, i in enumerate(idx):
+            out[i] = fitted[k]
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -133,6 +182,8 @@ class NoiseProxy:
         self.decoder = Scorer().decoder
         self.sampler = _load_gp_residual_sampler()
         self.source = "gp_residual_svgp" if self.sampler is not None else "median_sigma"
+        self.wants_sigma = (self.sampler is not None
+                            and "log10_sigma" in self.sampler["feature_names"])
 
     @torch.no_grad()
     def _pred_curve_ms(self, theta5: np.ndarray, curve: dict) -> tuple[np.ndarray, np.ndarray]:
@@ -162,7 +213,8 @@ class NoiseProxy:
             rv_ms, t_days = self._pred_curve_ms(theta5, curve)
             params = {"P": 10.0 ** theta5[0], "K": 10.0 ** theta5[1],
                       "e": theta5[2], "omega": _theta_to_omega(theta5)}
-            X = _gp_residual_features(t_days, rv_ms, params)
+            sig_ms = curve["sig"][m] * curve["rv_std"] if self.wants_sigma else None
+            X = _gp_residual_features(t_days, rv_ms, params, sigma=sig_ms)
             X = (X - self.sampler["mean"]) / np.maximum(self.sampler["std"], 1e-8)
             latent = self.sampler["model"](torch.as_tensor(X, dtype=torch.float32))
             var = latent.variance
@@ -177,6 +229,35 @@ class NoiseProxy:
             return max(v_ms / curve["rv_std"], 1e-6)
         except Exception:
             return max(fallback, 1e-6)
+
+
+# ---------------------------------------------------------------------------
+# Surrogate-label error model v_c(y) ~ E | theta_bar_c - theta*_c |
+# ---------------------------------------------------------------------------
+
+
+def fit_vk_models(feats: np.ndarray, theta_bars: list, theta_stars: list,
+                  seed: int, n_estimators: int = 200):
+    """Per-coordinate model of the surrogate-label error (the second reweighting
+    factor in Nicolò's s'_c = s_c / (gamma + v_y + v_c), 2026-07): an RF
+    regressor of |theta_bar_c - theta*_c| on the summary features, fit on the
+    synthetic tuning set where theta_bar is known.  Returns vk(feats) ->
+    {coord: (n,) nonnegative array}."""
+    from sklearn.ensemble import RandomForestRegressor
+
+    models = {}
+    for c in COORDS:
+        errs = np.array([_coord_abs_err(tb, ts, c)
+                         for tb, ts in zip(theta_bars, theta_stars)])
+        m = RandomForestRegressor(n_estimators=n_estimators, random_state=seed,
+                                  n_jobs=-1)
+        m.fit(feats, errs)
+        models[c] = m
+
+    def vk(f: np.ndarray) -> dict:
+        return {c: np.maximum(models[c].predict(f), 0.0) for c in COORDS}
+
+    return vk
 
 
 # ---------------------------------------------------------------------------
@@ -238,17 +319,19 @@ def _interval_width(coord: str, center: float, half: float, sup: dict) -> float:
     return float(max(0.0, min(center + half, hi) - max(center - half, lo)))
 
 
-def evaluate(cal_scores: dict, v_cal: np.ndarray, systems: list, theta_hats: list,
-             v_sys: np.ndarray, sup: dict, gamma: float | None,
+def evaluate(cal_scores: dict, systems: list, theta_hats: list, sup: dict,
+             den_cal: dict | None = None, den_sys: dict | None = None,
              w_cal: np.ndarray | None = None, w_test: np.ndarray | None = None) -> dict:
     """Coverage/width of the per-coordinate intervals psi(y)_c ± q_c at each alpha.
 
-    gamma=None  -> raw score s;  gamma=float -> normalized s' = s/(gamma+v).
+    den_cal/den_sys=None -> raw score s;  otherwise per-coordinate denominator
+    arrays (gamma + v_y [+ v_c]) and the normalized score s' = s/den is used
+    (interval half-width scales back by den at the test point).
     w_cal/w_test=None -> unweighted split-CP.
     """
     n_test = len(systems)
-    ones = np.ones(len(v_cal))
-    w_cal = ones if w_cal is None else w_cal
+    n_cal = len(next(iter(cal_scores.values())))
+    w_cal = np.ones(n_cal) if w_cal is None else w_cal
     w_test = np.ones(n_test) if w_test is None else w_test
 
     out = {}
@@ -262,9 +345,9 @@ def evaluate(cal_scores: dict, v_cal: np.ndarray, systems: list, theta_hats: lis
             all_c = True
             any_inf = False
             for c in COORDS:
-                sc = cal_scores[c] if gamma is None else cal_scores[c] / (gamma + v_cal)
+                sc = cal_scores[c] if den_cal is None else cal_scores[c] / den_cal[c]
                 q = weighted_quantile(sc, w_cal, float(w_test[i]), level)
-                half = q if gamma is None else q * (gamma + v_sys[i])
+                half = q if den_sys is None else q * float(den_sys[c][i])
                 if not math.isfinite(half):
                     any_inf = True
                     half = sup[c][1] - sup[c][0]     # cap at full support
@@ -284,19 +367,23 @@ def evaluate(cal_scores: dict, v_cal: np.ndarray, systems: list, theta_hats: lis
     return out
 
 
-def tune_gamma(cal_scores: dict, v_cal: np.ndarray, tune_sys: list, tune_hats: list,
-               v_tune: np.ndarray, sup: dict, alpha: float = 0.10) -> float:
-    """Pick gamma_reg minimizing the mean (over coords) support-normalized median
-    width on the synthetic tuning set, at the reference alpha."""
+def tune_gamma(cal_scores: dict, base_cal: dict, tune_hats: list,
+               base_tune: dict, sup: dict, alpha: float = 0.10) -> float:
+    """Pick gamma minimizing the mean (over coords) support-normalized median
+    width on the synthetic tuning set, at the reference alpha.  base_cal /
+    base_tune are per-coordinate denominator bases (v_y or v_y + v_c); the
+    tuned denominator is gamma + base."""
     level = 1.0 - alpha / D
-    grid = np.median(v_cal) * np.array([0.01, 0.03, 0.1, 0.3, 1.0, 3.0, 10.0, 30.0])
+    med = np.median(np.concatenate([base_cal[c] for c in COORDS]))
+    grid = med * np.array([0.01, 0.03, 0.1, 0.3, 1.0, 3.0, 10.0, 30.0])
     best_g, best_obj = float(grid[0]), math.inf
     for g in grid:
         obj = 0.0
         for c in COORDS:
-            q = weighted_quantile(cal_scores[c] / (g + v_cal),
-                                  np.ones(len(v_cal)), 1.0, level)
-            widths = [_interval_width(c, _true_coord(th, c), q * (g + v_tune[i]), sup)
+            q = weighted_quantile(cal_scores[c] / (g + base_cal[c]),
+                                  np.ones(len(base_cal[c])), 1.0, level)
+            widths = [_interval_width(c, _true_coord(th, c),
+                                      q * (g + float(base_tune[c][i])), sup)
                       for i, th in enumerate(tune_hats)]
             obj += float(np.median(widths)) / (sup[c][1] - sup[c][0])
         if obj < best_obj:
@@ -318,7 +405,7 @@ def plot_coverage(results: dict, fig_dir: Path) -> None:
         for cidx, dom in enumerate(doms):
             ax = axs[r][cidx]
             ax.plot([0, 1], [0, 1], "k--", lw=1)
-            for norm in ["raw", "vnorm"]:
+            for norm in NORMS:
                 res = results[strat][norm].get(dom)
                 if res is None:
                     continue
@@ -340,7 +427,7 @@ def plot_widths(results: dict, fig_dir: Path, alpha: float = 0.10) -> None:
     doms = ["synthetic_unweighted", "real_unweighted", "real_weighted"]
     labels, series = [], []
     for strat in STRATEGIES:
-        for norm in ["raw", "vnorm"]:
+        for norm in NORMS:
             labels.append(f"{strat}/{norm}")
             series.append(results[strat][norm])
     fig, axs = plt.subplots(1, len(doms), figsize=(5.2 * len(doms), 4.6))
@@ -374,14 +461,18 @@ def write_report(report: dict, path: Path) -> None:
              f"weights: ESS={report['weights']['ess']:.1f} of n_cal={report['n_cal']}, "
              f"clipped to [{report['weights']['clip_lo']:g}, {report['weights']['clip_hi']:g}], "
              f"{report['weights']['frac_clipped']:.1%} clipped",
+             "v_c median (cal): " + "  ".join(
+                 f"{c}={report['vk_median']['cal'][c]:.3g}" for c in COORDS),
              ""]
     for strat in STRATEGIES:
+        gr = report["gamma_reg"][strat]
         lines.append(f"##### STRATEGY: {strat} "
-                     f"(gamma_reg={report['gamma_reg'][strat]:.4g}) #####")
+                     f"(gamma_vnorm={gr['vnorm']:.4g}, "
+                     f"gamma_v2norm={gr['v2norm']:.4g}) #####")
         med = report["cal_score_median"][strat]
         lines.append("calibration score median per coord: "
                      + "  ".join(f"{c}={med[c]:.3g}" for c in COORDS))
-        for norm in ["raw", "vnorm"]:
+        for norm in NORMS:
             for dom in ["synthetic_unweighted", "real_unweighted", "real_weighted"]:
                 res = report["results"][strat][norm].get(dom)
                 if res is None:
@@ -424,8 +515,10 @@ def main() -> None:
     ap.add_argument("--n-weight-synth", type=int, default=400,
                     help="fresh synthetic sample size for the weight discriminator")
     ap.add_argument("--grid", type=int, default=33,
-                    help="grid resolution for the surrogate coordinate descent")
-    ap.add_argument("--sweeps", type=int, default=2)
+                    help="resolution of the empirical histogram grids (support)")
+    ap.add_argument("--gd-steps", type=int, default=200,
+                    help="Adam steps for the surrogate-label gradient descent")
+    ap.add_argument("--gd-lr", type=float, default=0.02)
     ap.add_argument("--clip-weights", type=float, default=20.0,
                     help="clip likelihood-ratio weights to [1/x, x]")
     ap.add_argument("--real-split", default="test", choices=("all", "train", "val", "test"))
@@ -500,13 +593,27 @@ def main() -> None:
     frac_clipped = float(np.mean((w_cal_raw < 1 / clip) | (w_cal_raw > clip)))
     print(f"weights: ESS={ess:.1f}/{len(w_cal)}  clipped={frac_clipped:.1%}")
 
-    # Surrogate labels on the calibration set (the only place they are needed).
-    scorer = Scorer()
-    print("fitting surrogate labels on calibration curves ...")
+    # Surrogate labels theta* by gradient descent (L1 objective, initialized at
+    # the data-generating theta_bar — Nicolò 2026-07): on the calibration set
+    # (for the surrogate scores) and on the tuning set (to fit the v_c model).
+    print("fitting surrogate labels by gradient descent ...")
     t0 = time.perf_counter()
-    theta_star = [surrogate_fit(scorer, th, grids, s["curve"], args.sweeps)
-                  for s, th in zip(calib, hat["cal"])]
+    theta_star = surrogate_fit_gd(proxy.decoder, [s["theta5"] for s in calib],
+                                  calib, args.gd_steps, args.gd_lr)
+    theta_star_tune = surrogate_fit_gd(proxy.decoder, [s["theta5"] for s in tune],
+                                       tune, args.gd_steps, args.gd_lr)
     print(f"  done in {time.perf_counter() - t0:.0f}s")
+
+    # Surrogate-label error model v_c (second factor of the v2norm denominator),
+    # fit on the tuning set, evaluated everywhere on the summary features.
+    vk_fn = fit_vk_models(np.vstack([s["features"] for s in tune]),
+                          [s["theta5"] for s in tune], theta_star_tune,
+                          args.seed, args.n_estimators)
+    vk = {k: vk_fn(np.vstack([s["features"] for s in sys_]))
+          for k, sys_ in [("cal", calib), ("tune", tune), ("syn", test_syn),
+                          ("real", test_real)]}
+    print("v_c median (cal): " + "  ".join(
+        f"{c}={float(np.median(vk['cal'][c])):.3g}" for c in COORDS))
 
     # Calibration scores per strategy and coordinate.
     cal_scores = {
@@ -516,21 +623,35 @@ def main() -> None:
                                    for j in range(len(calib))]) for c in COORDS},
     }
 
+    # Denominator bases per norm variant: vnorm = v_y, v2norm = v_y + v_c.
+    def base(kind: str, key: str) -> dict:
+        if kind == "vnorm":
+            return {c: v[key] for c in COORDS}
+        return {c: v[key] + vk[key][c] for c in COORDS}
+
     results, gamma_reg = {}, {}
     for strat in STRATEGIES:
         cs = cal_scores[strat]
-        g = tune_gamma(cs, v["cal"], tune, hat["tune"], v["tune"], sup)
-        gamma_reg[strat] = g
-        print(f"[{strat}] gamma_reg={g:.4g}")
+        gamma_reg[strat] = {
+            kind: tune_gamma(cs, base(kind, "cal"), hat["tune"], base(kind, "tune"), sup)
+            for kind in ["vnorm", "v2norm"]}
+        print(f"[{strat}] gamma_vnorm={gamma_reg[strat]['vnorm']:.4g} "
+              f"gamma_v2norm={gamma_reg[strat]['v2norm']:.4g}")
         results[strat] = {}
-        for norm, gval in [("raw", None), ("vnorm", g)]:
+        for norm in NORMS:
+            if norm == "raw":
+                dens = {"cal": None, "syn": None, "real": None}
+            else:
+                g = gamma_reg[strat][norm]
+                dens = {key: {c: g + base(norm, key)[c] for c in COORDS}
+                        for key in ["cal", "syn", "real"]}
             results[strat][norm] = {
-                "synthetic_unweighted": evaluate(cs, v["cal"], test_syn, hat["syn"],
-                                                 v["syn"], sup, gval),
-                "real_unweighted": evaluate(cs, v["cal"], test_real, hat["real"],
-                                            v["real"], sup, gval),
-                "real_weighted": evaluate(cs, v["cal"], test_real, hat["real"],
-                                          v["real"], sup, gval,
+                "synthetic_unweighted": evaluate(cs, test_syn, hat["syn"], sup,
+                                                 dens["cal"], dens["syn"]),
+                "real_unweighted": evaluate(cs, test_real, hat["real"], sup,
+                                            dens["cal"], dens["real"]),
+                "real_weighted": evaluate(cs, test_real, hat["real"], sup,
+                                          dens["cal"], dens["real"],
                                           w_cal=w_cal, w_test=w_real),
             }
             for dom in ["synthetic_unweighted", "real_unweighted", "real_weighted"]:
@@ -548,6 +669,8 @@ def main() -> None:
                     "clip_lo": 1.0 / clip, "clip_hi": clip},
         "cal_score_median": {s: {c: float(np.median(cal_scores[s][c])) for c in COORDS}
                              for s in STRATEGIES},
+        "vk_median": {k: {c: float(np.median(vk[k][c])) for c in COORDS}
+                      for k in ["cal", "real"]},
         "results": results,
     }
     (args.out_dir / "conformal_shift_metrics.json").write_text(

@@ -14,15 +14,18 @@
 # Full-scale GP retrain + dataset regen + conformal-shift run (Nicolò's
 # 2026-07 spec). Sequential, order matters:
 #   1. gp_residual_model.py  — SVGP retrain with the least-squares systemic
-#      offset gamma (fv4 cache). Rebuilds models/gp_residual_svgp.pt +
+#      offset gamma AND the log10_sigma conditioning feature (8-D, fv5 cache;
+#      both Nicolò-approved 2026-07). Rebuilds models/gp_residual_svgp.pt +
 #      models/gp_residual_metrics.json + figures/gp_residual/*.
 #   2. regenerate both synthetic regression CSVs — the committed ones were
 #      drawn from FULL-CORPUS priors H; H is now fit train-only (Nicolò's
 #      call), and the noise sampler is the fresh step-1 checkpoint. Without
 #      this, psi is trained on curves shaped by the real test systems.
 #   3. conformal_shift.py    — split-CP calibrated on fake / tested on real,
-#      naive vs surrogate score, LR-reweighted, at the full n_cal=400 scale.
-#      Uses the checkpoint from step 1 as its noise proxy v.
+#      naive vs surrogate score (surrogate = L1 gradient descent init at
+#      theta_bar), LR-reweighted, plus the s/(gamma+v_y) and two-factor
+#      s/(gamma+v_y+v_c) normalizations, at the full n_cal=400 scale.
+#      Uses the checkpoint from step 1 as its noise proxy v_y.
 #
 # Submit from the repo root:   sbatch slurm/gp_conformal.sbatch
 # -------------------------------------------------------------------------

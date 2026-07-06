@@ -57,7 +57,7 @@ rv-ml/
 **Noise model (Gaussian Processes)**
 | File | Purpose |
 |---|---|
-| `gp_residual_model.py` | Global SVGP + Student-t fit to real residuals (Nicolò's spec; least-squares systemic offset γ) → `models/gp_residual_svgp.pt` |
+| `gp_residual_model.py` | Global SVGP + Student-t fit to real residuals (Nicolò's spec; least-squares systemic offset γ, σ-conditioned via a log10 σ feature) → `models/gp_residual_svgp.pt` |
 | `gp_noise_model.py` | Per-system celerite2 GP noise model |
 | `scripts/gp/gp_corpus_fit.py` / `scripts/gp/gp_sensitivity.py` / `scripts/gp/gp_demo.py` | Corpus-wide GP fit + kernel selection, threshold sensitivity, 3-system demo |
 | `cache_residuals.py` | Cache `(t, residual, sigma)` per system for the residual GP |
@@ -82,7 +82,7 @@ rv-ml/
 | File | Purpose |
 |---|---|
 | `conformal.py` | Unsupervised conformal prediction: turns the Step-5 regressor's point predictions into prediction sets via the reconstruction-residual score `‖Kepler(θ)−y‖` (no ground-truth θ). Runs coverage (E1) + monotonicity (E2). Score variants: profiled over nuisance coords (`--profile {none,K,Keomega}`, default K) and σ-normalized χ² (`--chi2`, opt-in) |
-| `conformal_shift.py` | Split-CP calibrated on fake data, tested on real (Nicolò's 2026-07 spec): naive score `\|ψ(y)−θ̄\|` (ground-truth θ̄) vs surrogate score (θ̄ → argmin‖y−Kepler(θ)‖), likelihood-ratio reweighting `p_real/p_fake` via a real-vs-fake discriminator (Tibshirani et al. 2019 weighted quantile), and a noise-model-normalized score `s/(γ+v)` with tuned γ. ψ trains on the 512-bin raw-LSP dataset by default (feature columns follow `--csv`) |
+| `conformal_shift.py` | Split-CP calibrated on fake data, tested on real (Nicolò's 2026-07 spec): naive score `\|ψ(y)−θ̄\|` (ground-truth θ̄) vs surrogate score (θ* = argmin of the L1 reconstruction error by gradient descent, init at θ̄/tabulated), likelihood-ratio reweighting `p_real/p_fake` via a real-vs-fake discriminator (Tibshirani et al. 2019 weighted quantile), and the normalized scores `s/(γ+v_y)` and two-factor `s_c/(γ+v_y+v_c)` (v_c = surrogate-label-error model) with tuned γ. ψ trains on the 512-bin raw-LSP dataset by default (feature columns follow `--csv`) |
 
 **Diagnostics & misc**
 | File | Purpose |
@@ -122,13 +122,17 @@ canonical** choice for each stage, so collaborators build on the live path, not 
 **Noise model — global SVGP + Student-t residual GP.**
 `gp_residual_model.py` → checkpoint `models/gp_residual_svgp.pt` (512 inducing points, ARD
 Matérn-5/2, Student-t likelihood; fit to real single-system residuals, with a least-squares
-systemic offset γ per Nicolò 2026-07 — the *committed* checkpoint predates this change and is
-refreshed by `slurm/gp_conformal.sbatch`). It is the **primary**
+systemic offset γ and a **log10 σ conditioning feature** — the per-obs measurement uncertainty,
+so the GP can track per-system noise amplitude; both per Nicolò 2026-07. The *committed*
+checkpoint predates these changes (7 features, first-obs γ) and is
+refreshed by `slurm/gp_conformal.sbatch`; consumers detect the feature set from the
+checkpoint's `feature_names`). It is the **primary**
 backend in `synthetic_dataset._inject_noise`, which falls back in order to: the per-system
 celerite2 `GPNoiseLibrary` (`data/gp_fits.json`, produced by `gp_noise_model.py` /
 `gp_corpus_fit.py` — *legacy/fallback*) → i.i.d. white Gaussian. GP-sample amplitude is scaled
-by env `RVML_GP_RESIDUAL_SCALE` (default **0.85**). *Known limitation:* the residual amplitude
-is not predictable from orbit features — next step is to condition it on measurement σ.
+by env `RVML_GP_RESIDUAL_SCALE` (default **0.85**). The σ feature targets the known
+per-system-amplitude miscalibration (generative-validation std ratio 1.76 with ~zero
+std log-correlation) — verify std log-corr on the retrained checkpoint.
 
 **Synthetic generator — `synthetic_dataset.py`** (canonical for encoder pretraining). Current
 priors, all bootstrapped from the **train split** of the real corpus (Nicolò, 2026-07: H is
@@ -169,21 +173,27 @@ question. See the Overleaf draft (§2.2.1) linked at the bottom.
 
 **Nicolò's 2026-07 CP spec is implemented in `conformal_shift.py`** — the paper's comparison is
 now: split-CP calibrated *only on fake data* and tested on real, (i) naive score `|ψ(y)−θ̄|`
-with the ground-truth generating parameter θ̄ vs (ii) the surrogate-label strategy
-(θ̄ → argmin_θ‖y−Kepler(θ)‖), the latter reweighted by the likelihood ratio `p_real/p_fake`
+with the ground-truth generating parameter θ̄ vs (ii) the surrogate-label strategy — per his
+Slack follow-up, θ* = argmin_θ E_t|y_t−Kepler(θ,t)| solved by Adam gradient descent through the
+differentiable decoder, initialized at the data-generating (synthetic) / tabulated (real)
+values — the latter reweighted by the likelihood ratio `p_real/p_fake`
 (estimated by a real-vs-fake logistic discriminator; weighted quantile per Tibshirani et al.
-2019). A noise-model-normalized score `s/(γ+v)` (v = SVGP predictive std proxy, γ tuned on a
-synthetic tuning set) is included as a variant. ψ defaults to the 512-bin raw-LSP feature set
-(Nicolò OK'd more Fourier bins); the weight discriminator deliberately stays on the 74-dim
-summary features to keep the likelihood-ratio weights non-degenerate.
+2019). Two normalized-score variants (γ tuned per variant on a synthetic tuning set):
+`s/(γ+v_y)` (v_y = SVGP predictive-std proxy; Nicolò confirmed this reading of his `s/(γ+s)`)
+and the two-factor `s_c/(γ+v_y+v_c)` with v_c a per-coordinate RF model of the surrogate-label
+error E|θ̄_c−θ*_c| fit on the tuning set. ψ defaults to the 512-bin raw-LSP feature set
+(Nicolò OK'd more Fourier bins); the weight discriminator and the v_c model deliberately stay
+on the 74-dim summary features to keep the likelihood-ratio weights non-degenerate.
 
 **Next steps:** (1) full-scale SVGP retrain + `conformal_shift.py` run on the RHUL cluster
-(`slurm/gp_conformal.sbatch`; the committed checkpoint/CSVs still predate the LS-γ and
-train-only-H changes — heavy jobs run on the cluster, not locally); (2) full-scale profiled-CP
+(`slurm/gp_conformal.sbatch`; the committed checkpoint/CSVs still predate the LS-γ,
+σ-conditioning and train-only-H changes — heavy jobs run on the cluster, not locally);
+(2) full-scale profiled-CP
 run (`--profile Keomega`, default n=400) + a stronger point predictor to tighten the sets;
-(3) σ-condition the residual GP (awaiting Nicolò's sign-off); (4) a full-scale encoder training
+(3) a full-scale encoder training
 run (`slurm/train_encoder.sbatch` on the RHUL GPU cluster; needs the regenerated
-`data/pretrain_cache_v3.pt`), evaluated with `injection_recovery.py`.
+`data/pretrain_cache_v3.pt`), evaluated with `injection_recovery.py`. Nicolò is writing the
+full-pipeline section in the Overleaf draft — treat it as the reference spec when it lands.
 
 ## Setup
 

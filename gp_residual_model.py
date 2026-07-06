@@ -6,7 +6,7 @@ per-system celerite2 GP over time t only (1-D). Here we fit a single global
 Gaussian Process whose features are multi-dimensional,
 
     features  X = ( phase = t mod T / T ,  log10 P , log10 K , e ,
-                    cos w , sin w ,  y(t) )
+                    cos w , sin w ,  y(t) ,  log10 sigma(t) )
     label     r = y(t) - yhat(t)
 
 across all single-planet systems, where y(t) is the noiseless Keplerian
@@ -15,6 +15,14 @@ K = (P, K, e, w) plus a least-squares systemic offset gamma (inverse-variance-
 weighted mean of yhat - y; Nicolò approved replacing the earlier first-
 observation anchor, 2026-07). T = P, so t mod T projects every system into a
 single orbital period (George's phase-folded view).
+
+log10 sigma(t) — the tabulated per-observation measurement uncertainty — is an
+extra conditioning feature (Nicolò approved, 2026-07): per-system residual
+amplitude is set by instrument precision + stellar activity, not orbital
+geometry, so orbit features alone cannot predict it (generative validation
+found std ratio ~1.76 with ~zero std log-correlation). sigma IS known at
+synthetic-generation time (the generators sample it), so conditioning on it is
+legitimate.
 
 Measurement uncertainty is propagated by sampling yhat uniformly within its
 error bar (Nicolo: "sample uniformly haty within the measurement noise bars")
@@ -59,7 +67,8 @@ LABELS_CSV = ROOT / "data" / "labels.csv"
 MODELS_DIR = ROOT / "models"
 FIG_DIR = ROOT / "figures" / "gp_residual"
 
-FEATURE_NAMES = ["phase", "log10_P", "log10_K", "e", "cos_omega", "sin_omega", "y_rel"]
+FEATURE_NAMES = ["phase", "log10_P", "log10_K", "e", "cos_omega", "sin_omega",
+                 "y_rel", "log10_sigma"]
 MIN_OBS = 10
 
 
@@ -116,7 +125,7 @@ def build_split(split: str, n_aug: int, seed: int = 0,
     """Build the (features, label) table for one split over single-planet
     systems. The first draw is always the nominal (un-resampled) residual;
     the remaining n_aug-1 draws resample yhat ~ U(yhat-sigma, yhat+sigma) and
-    re-anchor. Returns (X [N,7], r [N], meta dict).
+    re-anchor. Returns (X [N,8], r [N], meta dict).
 
     Quality cuts (a *noise* model must see noise, not junk / model failure):
       * median sigma in [sigma_min, sigma_max] m/s  — drops instrument-precision
@@ -202,7 +211,9 @@ def build_split(split: str, n_aug: int, seed: int = 0,
         e_col = np.full_like(t, float(np.clip(planet.e, 0.0, 0.99)))
         cosw = np.full_like(t, float(np.cos(planet.omega)))
         sinw = np.full_like(t, float(np.sin(planet.omega)))
-        X_sys = np.column_stack([phase, log10_P, log10_K, e_col, cosw, sinw, y_rel])
+        log10_sig = np.log10(np.maximum(sigma, 1e-6)).astype(float)
+        X_sys = np.column_stack([phase, log10_P, log10_K, e_col, cosw, sinw,
+                                 y_rel, log10_sig])
 
         for draw in range(n_aug):
             yh = yhat if draw == 0 else yhat + rng.uniform(-sigma, sigma)
@@ -212,7 +223,7 @@ def build_split(split: str, n_aug: int, seed: int = 0,
             r_rows.append(r)
             g_rows.append(np.full(len(r), gid, dtype=np.int64))
 
-    X = np.concatenate(X_rows, axis=0) if X_rows else np.zeros((0, 7))
+    X = np.concatenate(X_rows, axis=0) if X_rows else np.zeros((0, len(FEATURE_NAMES)))
     r = np.concatenate(r_rows, axis=0) if r_rows else np.zeros((0,))
     groups = np.concatenate(g_rows) if g_rows else np.zeros((0,), dtype=np.int64)
     meta = dict(split=split, n_systems=n_sys, n_catalog_tperi=n_catalog,
@@ -464,9 +475,10 @@ def make_plots(packs, svgp_eval, exact_pack, out_dir):
     fig.tight_layout(); fig.savefig(out_dir / "phase_residual.png", dpi=130)
     plt.close(fig)
 
-    # 3. partial dependence: GP mean vs phase, vs log10_K, vs y_model (test)
-    fig, axes = plt.subplots(1, 3, figsize=(15, 4.5))
-    for ax, j, name in zip(axes, [0, 2, 6], ["phase", "log10_K", "y_rel"]):
+    # 3. partial dependence: GP mean vs phase, log10_K, y_model, log10_sigma (test)
+    fig, axes = plt.subplots(1, 4, figsize=(20, 4.5))
+    for ax, j, name in zip(axes, [0, 2, 6, 7],
+                           ["phase", "log10_K", "y_rel", "log10_sigma"]):
         order = np.argsort(X_raw[:, j])
         ax.plot(X_raw[order, j], mean[order], ".", ms=2, alpha=0.3)
         ax.set_xlabel(name); ax.set_ylabel("GP mean residual [m/s]")
@@ -673,7 +685,7 @@ def main():
     cache_dir = ROOT / "data" / "gp_residual_cache"
 
     def cached_build(split, n_aug):
-        key = f"{split}_aug{n_aug}_seed{args.seed}_sig{args.sigma_max:g}_rms{args.max_rms_over_sigma:g}_fv4"
+        key = f"{split}_aug{n_aug}_seed{args.seed}_sig{args.sigma_max:g}_rms{args.max_rms_over_sigma:g}_fv5"
         path = cache_dir / f"{key}.npz"
         if not args.no_cache and path.exists():
             z = np.load(path, allow_pickle=True)

@@ -592,8 +592,14 @@ def _gp_residual_features(
     t: np.ndarray,
     rv_clean_dominant: np.ndarray,
     dominant_params: dict[str, float],
+    sigma: np.ndarray | None = None,
 ) -> np.ndarray:
-    """Build feature rows matching gp_residual_model.FEATURE_NAMES."""
+    """Build feature rows matching gp_residual_model.FEATURE_NAMES.
+
+    Passing sigma appends the log10_sigma column (8-feature checkpoints,
+    sigma-conditioned per Nicolò 2026-07); omit it for the older 7-feature
+    checkpoints.
+    """
     P = float(dominant_params["P"])
     K = float(dominant_params["K"])
     e = float(np.clip(dominant_params["e"], 0.0, 0.99))
@@ -602,17 +608,18 @@ def _gp_residual_features(
 
     phase = np.mod(t - float(t.min()), P) / P
     y_rel = rv_clean_dominant - float(rv_clean_dominant[t0])
-    return np.column_stack(
-        [
-            phase,
-            np.full_like(t, np.log10(max(P, 1e-3)), dtype=np.float64),
-            np.full_like(t, np.log10(max(K, 1e-3)), dtype=np.float64),
-            np.full_like(t, e, dtype=np.float64),
-            np.full_like(t, np.cos(omega), dtype=np.float64),
-            np.full_like(t, np.sin(omega), dtype=np.float64),
-            y_rel,
-        ]
-    ).astype(np.float32)
+    cols = [
+        phase,
+        np.full_like(t, np.log10(max(P, 1e-3)), dtype=np.float64),
+        np.full_like(t, np.log10(max(K, 1e-3)), dtype=np.float64),
+        np.full_like(t, e, dtype=np.float64),
+        np.full_like(t, np.cos(omega), dtype=np.float64),
+        np.full_like(t, np.sin(omega), dtype=np.float64),
+        y_rel,
+    ]
+    if sigma is not None:
+        cols.append(np.log10(np.maximum(np.asarray(sigma, dtype=np.float64), 1e-6)))
+    return np.column_stack(cols).astype(np.float32)
 
 
 def _sample_gp_residual_noise(
@@ -620,6 +627,7 @@ def _sample_gp_residual_noise(
     rv_clean_dominant: np.ndarray | None,
     dominant_params: dict[str, float] | None,
     rng: np.random.Generator,
+    sigma: np.ndarray | None = None,
 ) -> np.ndarray | None:
     """Draw residual noise from the trained global SVGP model, if available."""
     if rv_clean_dominant is None or dominant_params is None:
@@ -632,7 +640,11 @@ def _sample_gp_residual_noise(
     try:
         import gpytorch
 
-        X = _gp_residual_features(t, rv_clean_dominant, dominant_params)
+        wants_sigma = "log10_sigma" in sampler["feature_names"]
+        if wants_sigma and sigma is None:
+            return None
+        X = _gp_residual_features(t, rv_clean_dominant, dominant_params,
+                                  sigma=sigma if wants_sigma else None)
         X = (X - sampler["mean"]) / np.maximum(sampler["std"], 1e-8)
         Xt = torch.as_tensor(X, dtype=torch.float32)
         seed = int(rng.integers(0, 2**31 - 1))
@@ -690,7 +702,8 @@ def _inject_noise(
     — the noise process is a property of the instrument and stellar activity,
     independent of the planetary configuration.
     """
-    residual_noise = _sample_gp_residual_noise(t, rv_clean_dominant, dominant_params, rng)
+    residual_noise = _sample_gp_residual_noise(t, rv_clean_dominant, dominant_params, rng,
+                                               sigma=sigma)
     if residual_noise is not None:
         return residual_noise, "gp_residual_svgp"
 
