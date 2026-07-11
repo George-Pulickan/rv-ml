@@ -22,6 +22,9 @@ if str(ROOT) not in sys.path:
 from preprocess import LSP_PERIODS, RVDataset
 from generate_synthetic_regression_csv import (
     CSV_COLUMNS,
+    CSV_COLUMNS_PHASEFOLD,
+    PHASE_FOLD_COLUMNS,
+    PHASE_FOLD_N_BINS,
     SPECTRAL_COLUMNS,
     SUMMARY_COLUMNS,
     TARGET_COLUMNS,
@@ -38,11 +41,18 @@ def _masked_observations(x: np.ndarray) -> np.ndarray:
     return x[:, mask]
 
 
-def collect_real_summary(real_split: str, sigma_min: float, sigma_max: float) -> pd.DataFrame:
+def collect_real_summary(
+    real_split: str,
+    sigma_min: float,
+    sigma_max: float,
+    *,
+    with_phasefold: bool = False,
+) -> pd.DataFrame:
     """Collect real single-planet rows using the same regression columns as the CSV."""
     ds = RVDataset(split=real_split, normalize=False, single_planet=True)
     rows: list[dict[str, float]] = []
     rejected_sigma = 0
+    columns = CSV_COLUMNS_PHASEFOLD if with_phasefold else CSV_COLUMNS
 
     for i in range(len(ds)):
         x, lsp, theta, info = ds.get_numpy(i)
@@ -60,7 +70,7 @@ def collect_real_summary(real_split: str, sigma_min: float, sigma_max: float) ->
         if not (sigma_min <= med_sigma <= sigma_max):
             rejected_sigma += 1
             continue
-        t_days = xm[0] * float(info["t_span_days"])
+        t_days = xm[0] * float(info["t_span_days"]) + float(info["t_min_days"])
         gaps = np.diff(np.sort(t_days))
 
         spectral = spectral_features(xm[0], xm[1], d=len(SPECTRAL_COLUMNS), grid_size=1024)
@@ -83,6 +93,10 @@ def collect_real_summary(real_split: str, sigma_min: float, sigma_max: float) ->
             "p90_gap_d": float(np.percentile(gaps, 90)) if len(gaps) else np.nan,
         }
         row.update({name: float(value) for name, value in zip(SPECTRAL_COLUMNS, spectral)})
+        if with_phasefold:
+            # Real RVDataset lacks catalog t_peri; phase-fold features are undefined.
+            row["has_t_peri"] = 0.0
+            row.update({name: np.nan for name in PHASE_FOLD_COLUMNS})
         rows.append(row)
 
     if rejected_sigma:
@@ -90,7 +104,7 @@ def collect_real_summary(real_split: str, sigma_min: float, sigma_max: float) ->
             f"rejected {rejected_sigma} real systems with median sigma outside "
             f"[{sigma_min}, {sigma_max}] m/s"
         )
-    return pd.DataFrame(rows, columns=CSV_COLUMNS)
+    return pd.DataFrame(rows, columns=columns)
 
 
 def _hist_overlay(
