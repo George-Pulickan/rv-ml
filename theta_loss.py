@@ -128,7 +128,7 @@ def circular_omega_loss(
     """
     Mean circular loss 1 - cos(delta_omega) on unit-normalized (cos, sin) pairs.
 
-    sample_weight: (B, 5) combined sample x dim weights; uses mean of omega dims.
+    sample_weight: (B, 5) per-sample weights; uses mean of the omega dims.
     Returns scalar loss (0 if no omega-weighted samples).
     """
     pred_om = normalize_omega_tensor(denorm_omega_components(pred_norm, y_mean, y_std))
@@ -153,26 +153,32 @@ def regression_theta_loss(
     """
     Combined training loss: MSE on log10_P, log10_K, e; circular or MSE on omega.
 
-    sample_weight: (B, 5), dim_weight: (5,)
+    sample_weight: (B, 5) per-sample weights only — dim_weight (5,) is applied
+    here, exactly once. In the circular path each dim's term is a sample-weighted
+    mean, so dim weights must scale the combination of terms (scaling the sample
+    weights would cancel in the normalization).
     """
-    w = sample_weight * dim_weight.unsqueeze(0)
     sq = (pred_norm - target_norm) ** 2
 
     if circular_omega:
-        mse_dims = [0, 1, 2]
         parts: list[torch.Tensor] = []
-        for j in mse_dims:
-            wj = w[:, j]
+        part_w: list[torch.Tensor] = []
+        for j in (0, 1, 2):
+            wj = sample_weight[:, j]
             denom = wj.sum().clamp(min=1e-8)
             parts.append((sq[:, j] * wj).sum() / denom)
-        om_loss = circular_omega_loss(
-            pred_norm, target_norm, y_mean=y_mean, y_std=y_std, sample_weight=w
-        )
-        w_om = 0.5 * (w[:, OMEGA_COS_IDX] + w[:, OMEGA_SIN_IDX])
+            part_w.append(dim_weight[j])
+        w_om = 0.5 * (sample_weight[:, OMEGA_COS_IDX] + sample_weight[:, OMEGA_SIN_IDX])
         if w_om.sum() > 1e-8:
+            om_loss = circular_omega_loss(
+                pred_norm, target_norm, y_mean=y_mean, y_std=y_std, sample_weight=sample_weight
+            )
             parts.append(om_loss)
-        return torch.stack(parts).mean()
+            part_w.append(0.5 * (dim_weight[OMEGA_COS_IDX] + dim_weight[OMEGA_SIN_IDX]))
+        pw = torch.stack(part_w)
+        return (torch.stack(parts) * pw).sum() / pw.sum().clamp(min=1e-8)
 
+    w = sample_weight * dim_weight.unsqueeze(0)
     denom = w.sum().clamp(min=1e-8)
     return (sq * w).sum() / denom
 

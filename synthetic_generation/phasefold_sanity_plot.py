@@ -23,32 +23,29 @@ if str(ROOT) not in sys.path:
 
 from generate_synthetic_regression_csv import (  # noqa: E402
     _masked_observations,
+    corpus_orbital_params,
     replay_synthetic_sample,
 )
 from time_series_features import phase_fold_curve  # noqa: E402
 
 
-def _pick_indices(seed: int, n_scan: int, e_high: float, e_low: float) -> tuple[list[int], list[int]]:
-    high: list[int] = []
-    low: list[int] = []
-    for i in range(n_scan):
-        _, _, theta, _ = replay_synthetic_sample(i, seed)
-        e = float(theta[2])
-        if e > e_high and len(high) < 5:
-            high.append(i)
-        if e < e_low and len(low) < 5:
-            low.append(i)
-        if len(high) >= 5 and len(low) >= 5:
-            break
+def _pick_indices(
+    params: dict[str, np.ndarray], e_high: float, e_low: float
+) -> tuple[list[int], list[int]]:
+    e = params["e"]
+    high = [int(i) for i in np.flatnonzero(e > e_high)[:5]]
+    low = [int(i) for i in np.flatnonzero(e < e_low)[:5]]
     if len(high) < 5 or len(low) < 5:
         raise RuntimeError(
-            f"could not find 5 high-e (>{e_high}) and 5 low-e (<{e_low}) samples in {n_scan} draws"
+            f"could not find 5 high-e (>{e_high}) and 5 low-e (<{e_low}) samples in {len(e)} draws"
         )
     return high, low
 
 
-def _folded_curve(i: int, seed: int) -> tuple[np.ndarray, np.ndarray, float]:
-    x, _, theta, info = replay_synthetic_sample(i, seed)
+def _folded_curve(
+    i: int, seed: int, n_scan: int, params: dict[str, np.ndarray]
+) -> tuple[np.ndarray, np.ndarray, float]:
+    x, _, theta, info = replay_synthetic_sample(i, seed, n_scan, params=params)
     xm = _masked_observations(x)
     rv_std = float(info["rv_std_ms"])
     t_days = xm[0] * float(info["t_span_days"])
@@ -75,11 +72,12 @@ def main() -> None:
     )
     args = p.parse_args()
 
-    high_idx, low_idx = _pick_indices(args.seed, args.n_scan, args.e_high, args.e_low)
+    params = corpus_orbital_params(args.seed, args.n_scan)
+    high_idx, low_idx = _pick_indices(params, args.e_high, args.e_low)
 
     fig, axes = plt.subplots(2, 5, figsize=(14, 5), sharex=True, sharey=False)
     for col, i in enumerate(high_idx):
-        phase, rv, e = _folded_curve(i, args.seed)
+        phase, rv, e = _folded_curve(i, args.seed, args.n_scan, params)
         ax = axes[0, col]
         ax.plot(phase, rv, color="#d62728", lw=1.5)
         ax.set_title(f"high e={e:.2f}")
@@ -87,7 +85,7 @@ def main() -> None:
     axes[0, 0].set_ylabel("RV (m/s)")
 
     for col, i in enumerate(low_idx):
-        phase, rv, e = _folded_curve(i, args.seed)
+        phase, rv, e = _folded_curve(i, args.seed, args.n_scan, params)
         ax = axes[1, col]
         ax.plot(phase, rv, color="#1f77b4", lw=1.5)
         ax.set_title(f"low e={e:.2f}")

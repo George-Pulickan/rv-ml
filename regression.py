@@ -52,6 +52,7 @@ from generate_synthetic_regression_csv import (  # noqa: E402
     SPECTRAL_COLUMNS,
     SUMMARY_COLUMNS,
     _masked_observations,
+    corpus_orbital_params,
     replay_synthetic_sample,
 )
 from plot_synthetic_regression_csv import collect_real_summary  # noqa: E402
@@ -267,12 +268,14 @@ def recompute_phasefold_block(
     log10_P: np.ndarray,
     *,
     seed: int,
+    n_samples: int,
     f_multi: float = 0.0,
 ) -> np.ndarray:
     """Recompute phase-fold features folding at ``10**log10_P`` (Gate C)."""
+    params = corpus_orbital_params(seed, n_samples)
     out = np.zeros((len(row_indices), len(PHASE_FOLD_COLUMNS)), dtype=np.float64)
     for j, (idx, lp) in enumerate(zip(row_indices, log10_P)):
-        x, _, _, info = replay_synthetic_sample(int(idx), seed, f_multi=f_multi)
+        x, _, _, info = replay_synthetic_sample(int(idx), seed, n_samples, f_multi=f_multi, params=params)
         xm = _masked_observations(x)
         t_days = xm[0] * float(info["t_span_days"])
         rv_ms = xm[1] * float(info["rv_std_ms"])
@@ -482,8 +485,6 @@ def train_model(
         mask_omega=mask_omega,
         hard_omega_mask=hard_omega_mask,
     )
-    val_loss_weights = val_sample_w * loss_weights[np.newaxis, :]
-
     y_mean_t = torch.from_numpy(y_mean.astype(np.float32)).to(device)
     y_std_t = torch.from_numpy(y_std.astype(np.float32)).to(device)
 
@@ -508,11 +509,10 @@ def train_model(
             xb, yb, wb = xb.to(device), yb.to(device), wb.to(device)
             optim.zero_grad()
             pred = model(xb)
-            w_batch = wb * dim_w.unsqueeze(0)
             loss = regression_theta_loss(
                 pred,
                 yb,
-                w_batch,
+                wb,
                 dim_w,
                 y_mean=y_mean_t,
                 y_std=y_std_t,
@@ -524,7 +524,7 @@ def train_model(
         model.eval()
         with torch.no_grad():
             val_pred_fit = model(torch.from_numpy(X_val_n).float().to(device))
-            val_w = torch.from_numpy(val_loss_weights.astype(np.float32)).to(device)
+            val_w = torch.from_numpy(val_sample_w.astype(np.float32)).to(device)
             val_loss_t = regression_theta_loss(
                 val_pred_fit,
                 torch.from_numpy(y_val_fit).float().to(device),
@@ -625,7 +625,9 @@ def eval_predicted_p_fold(
     """Gate C: replace oracle phase features with folds at predicted P."""
     val_row_idx = preds["val_row_idx"]
     pred_log10_P = preds["y_pred"][:, 0]
-    phase_block = recompute_phasefold_block(val_row_idx, pred_log10_P, seed=CSV_SEED)
+    phase_block = recompute_phasefold_block(
+        val_row_idx, pred_log10_P, seed=CSV_SEED, n_samples=len(bundle.df)
+    )
     X_val_pred = replace_phase_features(preds["X_val"], feature_set, phase_block)
     y_pred = predict(model, X_val_pred, norm_stats, device, constrain_e=constrain_e, constrain_omega=constrain_omega)
     y_true = preds["y_true"]
@@ -894,7 +896,9 @@ def eval_two_step(
     )
     pred_log10_P = pred_74[:, 0]
 
-    phase_block = recompute_phasefold_block(val_row_idx, pred_log10_P, seed=CSV_SEED)
+    phase_block = recompute_phasefold_block(
+        val_row_idx, pred_log10_P, seed=CSV_SEED, n_samples=len(bundle_109.df)
+    )
     X_two_step = replace_phase_features(X_val, "109", phase_block)
     pred_109 = predict(
         model_109,
@@ -1531,7 +1535,9 @@ def main() -> None:
             device=device,
             **_predict_kwargs(args),
         )
-        metrics["predicted_p_fold_eval"] = gate_c
+        metrics["predicted_p_fold_eval"] = {
+            k: v for k, v in gate_c.items() if k not in ("y_true", "y_pred")
+        }
         preds["y_pred"] = gate_c["y_pred"]
 
     args.out.mkdir(parents=True, exist_ok=True)
@@ -1566,33 +1572,44 @@ def main() -> None:
     if n_excluded:
         print(f"real transfer: excluded {n_excluded} rows (missing phase-fold / non-finite)")
 
-    y_pred_real = predict(model, X_real, metrics["norm_stats"], device, **pred_kw)
-    real_bundle = DatasetBundle(
-        X_real,
-        y_real,
-        row_idx=np.arange(len(y_real)),
-        e=y_real[:, 2],
-        has_t_peri=real_df.get("has_t_peri", pd.Series(0.0)).to_numpy(dtype=float)[valid_real],
-        has_ecc=np.ones(len(y_real), dtype=bool),
-        df=real_df,
-    )
-    metrics["real_transfer"] = {
-        "n_real": int(len(y_real)),
-        "n_excluded": n_excluded,
-        "real_split": args.real_split,
-        "mse": float(np.mean((y_pred_real - y_real) ** 2)),
-        "per_target": _per_target_metrics(y_real, y_pred_real),
-        "subsets": _subset_metrics(real_bundle, y_real, y_pred_real),
-    }
+    if len(y_real) == 0:
+        # Real systems have no catalog t_peri, so phase-fold features are NaN
+        # and every row is dropped for feature sets 35 / 109.
+        print("real transfer: no real systems with finite features; skipping transfer eval")
+        metrics["real_transfer"] = {
+            "n_real": 0,
+            "n_excluded": n_excluded,
+            "real_split": args.real_split,
+            "note": "skipped: no real rows with finite features (phase-fold needs t_peri)",
+        }
+    else:
+        y_pred_real = predict(model, X_real, metrics["norm_stats"], device, **pred_kw)
+        real_bundle = DatasetBundle(
+            X_real,
+            y_real,
+            row_idx=np.arange(len(y_real)),
+            e=y_real[:, 2],
+            has_t_peri=real_df.get("has_t_peri", pd.Series(0.0)).to_numpy(dtype=float)[valid_real],
+            has_ecc=np.ones(len(y_real), dtype=bool),
+            df=real_df,
+        )
+        metrics["real_transfer"] = {
+            "n_real": int(len(y_real)),
+            "n_excluded": n_excluded,
+            "real_split": args.real_split,
+            "mse": float(np.mean((y_pred_real - y_real) ** 2)),
+            "per_target": _per_target_metrics(y_real, y_pred_real),
+            "subsets": _subset_metrics(real_bundle, y_real, y_pred_real),
+        }
 
-    plot_combined_scatter(
-        preds["y_true"],
-        preds["y_pred"],
-        y_real,
-        y_pred_real,
-        args.combined_target,
-        args.out / f"combined_scatter_{args.combined_target}.png",
-    )
+        plot_combined_scatter(
+            preds["y_true"],
+            preds["y_pred"],
+            y_real,
+            y_pred_real,
+            args.combined_target,
+            args.out / f"combined_scatter_{args.combined_target}.png",
+        )
 
     metrics_path = args.out / "metrics.json"
     metrics_path.write_text(json.dumps(metrics, indent=2))
@@ -1602,8 +1619,9 @@ def main() -> None:
         t = metrics["per_target"][name]
         print(f"  {name:12s}  R2={t['r2']:.3f}  MSE={t['mse']:.5f}")
     _print_omega_headline(metrics)
-    rt = metrics["real_transfer"]["per_target"][args.combined_target]
-    print(f"real transfer ({args.combined_target}): R2={rt['r2']:.3f}  MSE={rt['mse']:.5f}")
+    if "per_target" in metrics["real_transfer"]:
+        rt = metrics["real_transfer"]["per_target"][args.combined_target]
+        print(f"real transfer ({args.combined_target}): R2={rt['r2']:.3f}  MSE={rt['mse']:.5f}")
 
 
 if __name__ == "__main__":

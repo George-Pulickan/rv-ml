@@ -67,14 +67,30 @@ def _masked_observations(x: np.ndarray) -> np.ndarray:
     return x[:, mask]
 
 
+def corpus_orbital_params(seed: int, n_samples: int) -> dict[str, np.ndarray]:
+    """Redraw the full parameter corpus exactly as ``generate_rows`` did."""
+    rng = np.random.default_rng(seed)
+    return _sample_orbital_params(rng, n_samples)
+
+
 def replay_synthetic_sample(
     i: int,
     seed: int,
+    n_samples: int,
     f_multi: float = 0.0,
+    *,
+    params: dict[str, np.ndarray] | None = None,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, dict]:
-    """Replay synthetic sample ``i`` with the same RNG scheme as ``generate_rows``."""
-    rng = np.random.default_rng(seed)
-    params = _sample_orbital_params(rng, i + 1)
+    """Replay synthetic sample ``i`` with the same RNG scheme as ``generate_rows``.
+
+    ``n_samples`` must be the corpus size used at generation time: the shared
+    parameter RNG stream depends on it, so drawing fewer samples yields a
+    different system for the same ``i``. Batch callers should pass a
+    precomputed ``params`` from ``corpus_orbital_params`` to avoid redrawing
+    the corpus per sample.
+    """
+    if params is None:
+        params = corpus_orbital_params(seed, n_samples)
     p = {k: float(v[i]) for k, v in params.items()}
     sample_rng = np.random.default_rng(seed + 10_000 + i)
     return generate_one(p, sample_rng, f_multi=f_multi)
@@ -88,8 +104,7 @@ def generate_rows(n_samples: int, seed: int, f_multi: float, *, with_phasefold: 
     synthetic_dataset.generate_one. Input columns are the spectral encoding and
     summary features derived from the generated observation tensor.
     """
-    rng = np.random.default_rng(seed)
-    params = _sample_orbital_params(rng, n_samples)
+    params = corpus_orbital_params(seed, n_samples)
     rows: list[dict[str, float]] = []
 
     for i in range(n_samples):
