@@ -14,3 +14,12 @@ checkpoints/
 
 # Large regenerable experiment dataset (512-bin LSP regression, ~130 MB)
 synthetic_generation/datasets/synthetic_lsp_regression_10000.csv
+
+# Regenerable regression experiment outputs
+debug-*.log
+figures/regression_synthetic/diagnostics/
+figures/regression_synthetic/before_74d/
+figures/regression_synthetic/after_109d/
+figures/regression_synthetic/74d/
+figures/regression_synthetic/pred_vs_true_two_step*.png
+figures/regression_synthetic/two_step_metrics.json
