@@ -21,7 +21,12 @@ if str(ROOT) not in sys.path:
 
 from preprocess import LSP_PERIODS
 from synthetic_dataset import _sample_orbital_params, generate_one
-from time_series_features import spectral_feature_names, spectral_features
+from time_series_features import (
+    phase_fold_feature_names,
+    phase_fold_features,
+    spectral_feature_names,
+    spectral_features,
+)
 
 
 SPECTRAL_DIM = 64
@@ -36,6 +41,8 @@ TARGET_COLUMNS = [
 ]
 
 SPECTRAL_COLUMNS = spectral_feature_names(SPECTRAL_DIM)
+PHASE_FOLD_N_BINS = 32
+PHASE_FOLD_COLUMNS = phase_fold_feature_names(PHASE_FOLD_N_BINS)
 
 SUMMARY_COLUMNS = [
     "n_obs",
@@ -51,6 +58,7 @@ SUMMARY_COLUMNS = [
 ]
 
 CSV_COLUMNS = [*TARGET_COLUMNS, *SPECTRAL_COLUMNS, *SUMMARY_COLUMNS]
+CSV_COLUMNS_PHASEFOLD = [*CSV_COLUMNS, *PHASE_FOLD_COLUMNS, "has_t_peri"]
 
 
 def _masked_observations(x: np.ndarray) -> np.ndarray:
@@ -59,7 +67,35 @@ def _masked_observations(x: np.ndarray) -> np.ndarray:
     return x[:, mask]
 
 
-def generate_rows(n_samples: int, seed: int, f_multi: float) -> list[dict[str, float]]:
+_CORPUS_PARAMS_CACHE: dict[tuple[int, int], dict[str, np.ndarray]] = {}
+
+
+def corpus_orbital_params(n_samples: int, seed: int) -> dict[str, np.ndarray]:
+    """Orbital params for the full corpus — same draw as ``generate_rows``."""
+    key = (n_samples, seed)
+    if key not in _CORPUS_PARAMS_CACHE:
+        rng = np.random.default_rng(seed)
+        _CORPUS_PARAMS_CACHE[key] = _sample_orbital_params(rng, n_samples)
+    return _CORPUS_PARAMS_CACHE[key]
+
+
+def replay_synthetic_sample(
+    i: int,
+    seed: int,
+    f_multi: float = 0.0,
+    *,
+    n_samples: int,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, dict]:
+    """Replay synthetic sample ``i`` with the same RNG scheme as ``generate_rows``."""
+    if i < 0 or i >= n_samples:
+        raise IndexError(f"row index {i} out of range for corpus size {n_samples}")
+    params = corpus_orbital_params(n_samples, seed)
+    p = {k: float(v[i]) for k, v in params.items()}
+    sample_rng = np.random.default_rng(seed + 10_000 + i)
+    return generate_one(p, sample_rng, f_multi=f_multi)
+
+
+def generate_rows(n_samples: int, seed: int, f_multi: float, *, with_phasefold: bool) -> list[dict[str, float]]:
     """
     Generate regression rows from the synthetic RV generator.
 
@@ -67,8 +103,7 @@ def generate_rows(n_samples: int, seed: int, f_multi: float) -> list[dict[str, f
     synthetic_dataset.generate_one. Input columns are the spectral encoding and
     summary features derived from the generated observation tensor.
     """
-    rng = np.random.default_rng(seed)
-    params = _sample_orbital_params(rng, n_samples)
+    params = corpus_orbital_params(n_samples, seed)
     rows: list[dict[str, float]] = []
 
     for i in range(n_samples):
@@ -107,6 +142,16 @@ def generate_rows(n_samples: int, seed: int, f_multi: float) -> list[dict[str, f
             "p90_gap_d": float(np.percentile(gaps, 90)) if len(gaps) else np.nan,
         }
         row.update({name: float(value) for name, value in zip(SPECTRAL_COLUMNS, spectral)})
+        if with_phasefold:
+            phase = phase_fold_features(
+                t_days,
+                rv_ms,
+                float(info["P"]),
+                n_bins=PHASE_FOLD_N_BINS,
+                t_peri=float(info["t_peri"]),
+            )
+            row.update({name: float(value) for name, value in zip(PHASE_FOLD_COLUMNS, phase)})
+            row["has_t_peri"] = 1.0
         rows.append(row)
 
         if (i + 1) % 1000 == 0:
@@ -125,6 +170,11 @@ def parse_args() -> argparse.Namespace:
         type=Path,
         default=Path("synthetic_generation") / "datasets" / "synthetic_regression_10000.csv",
     )
+    p.add_argument(
+        "--with-phasefold",
+        action="store_true",
+        help="append 35 phase-fold features and has_t_peri column",
+    )
     return p.parse_args()
 
 
@@ -134,8 +184,9 @@ def main() -> None:
         raise ValueError("--n-samples must be positive")
 
     args.out.parent.mkdir(parents=True, exist_ok=True)
-    rows = generate_rows(args.n_samples, args.seed, args.f_multi)
-    df = pd.DataFrame(rows, columns=CSV_COLUMNS)
+    rows = generate_rows(args.n_samples, args.seed, args.f_multi, with_phasefold=args.with_phasefold)
+    columns = CSV_COLUMNS_PHASEFOLD if args.with_phasefold else CSV_COLUMNS
+    df = pd.DataFrame(rows, columns=columns)
     df.to_csv(args.out, index=False)
 
     print(f"wrote {len(df):,} rows to {args.out}")
