@@ -59,6 +59,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from preprocess import LSP_N, THETA_NAMES, THETA_DIM
+from theta_loss import theta_loss_weights_torch
 
 _STATS_PATH = Path("data/dataset_stats.json")
 
@@ -275,25 +276,14 @@ def encoder_loss(
     """
     sq = (theta_pred - theta_target) ** 2   # (B, 5)
 
-    # Mask 1: zero out e / cos_ω / sin_ω for systems without measured eccentricity
-    if has_ecc is not None:
-        ecc_known = has_ecc.float().unsqueeze(1)   # (B, 1)  1=known, 0=imputed
-        w_ecc = torch.ones_like(sq)
-        w_ecc[:, 2:5] = ecc_known                  # dims 2,3,4 only
-        sq = sq * w_ecc
-
-    # Mask 2: down-weight cos_ω / sin_ω for near-circular orbits
-    if mask_omega and stats is not None:
-        e_mean = stats["e"]["mean"]
-        e_std  = max(stats["e"]["std"], 1e-8)
-        e_phys = (theta_target[:, 2] * e_std + e_mean).clamp(0.0, 1.0)
-        # Gate: ≈0 for e<0.05, ≈1 for e>0.15.  Lucy & Sweeney (1971, AJ 76, 544)
-        # showed that RV orbits with e<0.05 are statistically indistinguishable
-        # from circular, making ω degenerate below that threshold.
-        w_omega = torch.sigmoid((e_phys - 0.05) * 40.0).unsqueeze(1)   # (B, 1)
-        w = torch.ones_like(sq)
-        w[:, 3:5] = w_omega
-        sq = sq * w
+    w = theta_loss_weights_torch(
+        theta_target,
+        stats=stats,
+        has_ecc=has_ecc,
+        mask_omega=mask_omega,
+        hard_omega_mask=False,
+    )
+    sq = sq * w
 
     per_dim = sq.mean(dim=0)    # (5,)
     total   = per_dim.mean()
