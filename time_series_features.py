@@ -85,3 +85,92 @@ def spectral_features(
     n_copy = min(d, len(power))
     features[:n_copy] = power[:n_copy]
     return features
+
+
+PHASE_SCALAR_NAMES = ["phase_ptp", "phase_skew", "phase_half_diff"]
+
+
+def phase_fold_bin_names(n_bins: int) -> list[str]:
+    """Return names for ``n_bins`` orbital-phase RV mean bins."""
+    if n_bins <= 0:
+        raise ValueError("n_bins must be positive")
+    return [f"phase_bin_{i + 1:03d}" for i in range(n_bins)]
+
+
+def phase_fold_feature_names(n_bins: int = 32) -> list[str]:
+    """All phase-fold feature names: bins plus shape scalars."""
+    return [*phase_fold_bin_names(n_bins), *PHASE_SCALAR_NAMES]
+
+
+def phase_fold_features(
+    t,
+    y,
+    P_days: float,
+    *,
+    n_bins: int = 32,
+    t_peri: float | None = None,
+) -> np.ndarray:
+    """Encode an RV curve in orbital phase for eccentricity / omega shape analysis.
+
+    Phase is ``((t - t_peri) / P) mod 1``. ``t_peri`` is required because omega is
+    the orientation of the folded asymmetry; an arbitrary phase origin makes
+    omega labels meaningless even when eccentricity-sensitive scalars remain.
+
+    Returns ``n_bins`` mean-RV bins plus three shape scalars (35 features when
+    ``n_bins=32``): peak-to-peak, skewness, and first-half minus second-half mean.
+    """
+    if n_bins <= 0:
+        raise ValueError("n_bins must be positive")
+    if t_peri is None or not np.isfinite(t_peri):
+        raise ValueError("t_peri is required for phase-fold features")
+    if P_days <= 0 or not np.isfinite(P_days):
+        raise ValueError("P_days must be positive and finite")
+
+    t = np.asarray(t, dtype=float).reshape(-1)
+    y = np.asarray(y, dtype=float).reshape(-1)
+    if len(t) != len(y) or len(t) < 2:
+        raise ValueError("need at least two (t, y) observations")
+    if not (np.isfinite(t).all() and np.isfinite(y).all()):
+        raise ValueError("t and y must be finite")
+
+    phase = ((t - float(t_peri)) / float(P_days)) % 1.0
+    edges = np.linspace(0.0, 1.0, n_bins + 1)
+    bin_means = np.zeros(n_bins, dtype=np.float64)
+    for j in range(n_bins):
+        if j < n_bins - 1:
+            mask = (phase >= edges[j]) & (phase < edges[j + 1])
+        else:
+            mask = (phase >= edges[j]) & (phase <= edges[j + 1])
+        if mask.any():
+            bin_means[j] = float(np.mean(y[mask]))
+
+    ptp = float(bin_means.max() - bin_means.min())
+    std = float(np.std(bin_means))
+    if std > 1e-12:
+        skew = float(np.mean(((bin_means - bin_means.mean()) / std) ** 3))
+    else:
+        skew = 0.0
+    half = n_bins // 2
+    half_diff = float(bin_means[:half].mean() - bin_means[half:].mean())
+
+    return np.concatenate([bin_means, np.array([ptp, skew, half_diff], dtype=np.float64)])
+
+
+def phase_fold_curve(
+    t,
+    y,
+    P_days: float,
+    *,
+    t_peri: float,
+    n_plot: int = 200,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Return (phase_grid, rv_on_grid) for plotting a folded curve."""
+    t = np.asarray(t, dtype=float).reshape(-1)
+    y = np.asarray(y, dtype=float).reshape(-1)
+    phase = ((t - float(t_peri)) / float(P_days)) % 1.0
+    order = np.argsort(phase)
+    phase_sorted = phase[order]
+    y_sorted = y[order]
+    grid = np.linspace(0.0, 1.0, n_plot)
+    rv_grid = np.interp(grid, phase_sorted, y_sorted, period=1.0)
+    return grid, rv_grid
