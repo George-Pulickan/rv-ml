@@ -10,7 +10,7 @@ Priors (applied to every planet, primary and companion alike)
     P      ~ empirical histogram in log10(P / d)
     K      ~ empirical histogram in log10(K / m/s)
     e      ~ empirical histogram from known catalog eccentricities
-    ω      ~ Uniform(0, 2π)
+    ω      ~ Uniform(0, 2π) for e > OMEGA_EPS; ω = 0 when near-circular (degenerate)
     T_peri ~ Uniform(t_min, t_min + P)   (random orbital phase)
     γ = 0  (median-subtracted in normalised tensor)
 
@@ -70,6 +70,7 @@ import torch
 from torch.utils.data import Dataset
 
 from preprocess import LSP_N, T_MAX, THETA_NAMES, compute_lsp
+from theta_loss import OMEGA_EPS
 
 _GP_LIB_PATH = Path("data/gp_fits.json")
 _GP_RESIDUAL_PATH = Path("models/gp_residual_svgp.pt")
@@ -329,7 +330,9 @@ def _sample_orbital_params(rng: np.random.Generator, n: int) -> dict[str, np.nda
     form. If the real corpus files are not available, the sampler falls back to
     the older period mixture, K log-uniform prior, and Kipping-style
     Beta(0.867, 3.03) eccentricity prior.
-    ω and phase are uniform — no preferred orientation or epoch.
+    ω is uniform on [0, 2π) for eccentric orbits (e > OMEGA_EPS); for near-circular
+    orbits ω is set to 0 (degenerate), matching preprocess.py real-data convention.
+    phase is uniform — no preferred epoch.
 
     The same function is called for both primary and companion planets,
     ensuring all planets are drawn from the same marginal prior.
@@ -337,7 +340,11 @@ def _sample_orbital_params(rng: np.random.Generator, n: int) -> dict[str, np.nda
     P     = _sample_period(rng, n)
     K     = _sample_k(rng, n)
     e     = _sample_eccentricity(rng, n)
-    omega = rng.uniform(0.0, 2 * np.pi, size=n)
+    omega = np.zeros(n, dtype=np.float64)
+    ecc_mask = e > OMEGA_EPS
+    n_ecc = int(ecc_mask.sum())
+    if n_ecc:
+        omega[ecc_mask] = rng.uniform(0.0, 2 * np.pi, size=n_ecc)
     phase = rng.uniform(0.0, 1.0, size=n)
     return {"P": P, "K": K, "e": e, "omega": omega, "phase": phase}
 
