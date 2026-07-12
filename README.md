@@ -76,7 +76,7 @@ rv-ml/
 | `slurm/train_encoder.sbatch` | RHUL GPU batch job wrapping `train.py` (pretrain 300 ep on the synthetic cache → finetune 100 ep on real); submit from repo root with `sbatch slurm/train_encoder.sbatch` |
 | `slurm/gp_conformal.sbatch` | RHUL CPU batch job: full-scale SVGP retrain (LS-γ offset) → full-scale `conformal_shift.py` (n_cal=400); submit from repo root with `sbatch slurm/gp_conformal.sbatch` |
 | `injection_recovery.py` | Injection-recovery benchmark for a trained encoder |
-| `regression.py` | MLP regression head on the frozen 74-dim feature encoder → 5 Kepler params (CSV or NPZ corpus) |
+| `regression.py` | MLP regression on 74-dim encoder features → 5 Kepler params (default: 74-D CSV). For **e / ω**, use `--feature-set 109` with the phasefold CSV (`--with-phasefold` in `generate_synthetic_regression_csv.py`). Run **`--diagnose`** for SNR/P-baseline/LSP/sanity diagnostics before changing targets. |
 
 **Uncertainty quantification (Step 6)**
 | File | Purpose |
@@ -104,6 +104,7 @@ CSV (power spectrum + summary features → true Keplerian params) and analyses i
 | `validate_synthetic_regression_csv.py` | Structural/physical sanity checks on a CSV |
 | `plot_synthetic_regression_csv.py` | Real-vs-synthetic comparison plots (+ `collect_real_summary`) |
 | `train_regression_models.py` | RF regression baseline: joint vs separate, feature-block ablation, CV, synthetic→real transfer |
+| `regression_diagnostics.py` | Automated MLP diagnostics: SNR-sliced errors, P/baseline identifiability, LSP vs MLP period recovery, e-prior histogram, raw-output saturation check, sanity JSON |
 | `pca_real_vs_synthetic.py` | 2D PCA of real (white) vs synthetic (black) systems |
 | `lsp_resolution_experiment.py` | 64-bin vs 512-bin power-spectrum recovery comparison |
 | `eval_omega_nn_vs_rf.py` | ω recovery: trained NN encoder vs RF, on matched real systems |
@@ -156,6 +157,25 @@ the current priors.
 `datasets/synthetic_regression_10000.csv` (74-D: 64 spectral bins + 10 summaries → 5 targets).
 Baseline for the encoder task; key result — summaries recover P/K well, the raw power spectrum
 only helps at full 512-bin resolution (`lsp_resolution_experiment.py`).
+
+**Regression diagnostics — run before changing targets or priors:**
+
+```powershell
+.venv\Scripts\python.exe regression.py --diagnose --feature-set 109 `
+  --csv synthetic_generation/datasets/synthetic_regression_10000_phasefold.csv `
+  --checkpoint checkpoints/regression_mlp_109.pt
+```
+
+Outputs land in `figures/regression_synthetic/diagnostics/`:
+
+| Artifact | What it answers |
+|---|---|
+| `metrics_by_snr.json`, `pred_vs_true_*_by_snr*.png` | Is error dominated by low-SNR systems? |
+| `p_baseline_metrics.json` | Does P error blow up when P > baseline? |
+| `period_recovery.json` | Does Lomb–Scargle argmax beat the MLP on period? |
+| `raw_output_hist.png` | Are ±1 pileups from unit-circle projection vs saturation? |
+| `e_prior_train_hist.png` | Is e banding from the discrete histogram prior? |
+| `sanity_report.json` | Train/val gap, residual vs covariates, ω MAE vs e, leakage notes |
 
 **Uncertainty quantification (the paper's main contribution) — implemented in `conformal.py`.**
 *Unsupervised* conformal prediction: the conformity score is the reconstruction residual
