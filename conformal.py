@@ -84,7 +84,7 @@ SG = ROOT / "synthetic_generation"
 if str(SG) not in sys.path:
     sys.path.insert(0, str(SG))
 
-from generate_synthetic_regression_csv import TARGET_COLUMNS  # noqa: E402
+from feature_columns import TARGET_COLUMNS  # noqa: E402
 from train_regression_models import _build  # noqa: E402
 from eval_omega_nn_vs_rf import FEATURES, _summary_row  # noqa: E402
 from generate_synthetic_regression_csv import _masked_observations  # noqa: E402

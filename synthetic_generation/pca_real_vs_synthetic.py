@@ -45,10 +45,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from generate_synthetic_regression_csv import (  # noqa: E402
-    SPECTRAL_COLUMNS,
-    SUMMARY_COLUMNS,
-)
+from feature_columns import SPECTRAL_COLUMNS, SUMMARY_COLUMNS  # noqa: E402
 from plot_synthetic_regression_csv import collect_real_summary  # noqa: E402
 
 

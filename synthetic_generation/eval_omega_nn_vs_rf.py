@@ -45,13 +45,15 @@ if str(ROOT) not in sys.path:
 import torch
 
 from preprocess import RVDataset, THETA_NAMES
-from time_series_features import spectral_features
-from generate_synthetic_regression_csv import (
+from feature_columns import (
     SPECTRAL_COLUMNS,
     SPECTRAL_DIM,
     SPECTRAL_GRID_SIZE,
     SUMMARY_COLUMNS,
     TARGET_COLUMNS,
+)
+from time_series_features import spectral_features
+from generate_synthetic_regression_csv import (
     _masked_observations,
 )
 from train_regression_models import _build

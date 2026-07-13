@@ -48,14 +48,16 @@ if str(ROOT) not in sys.path:
 import matplotlib.pyplot as plt
 
 from preprocess import LSP_PERIODS, RVDataset
-from time_series_features import spectral_features
-
-from generate_synthetic_regression_csv import (
+from feature_columns import (
     SPECTRAL_COLUMNS,
     SPECTRAL_DIM,
     SPECTRAL_GRID_SIZE,
     SUMMARY_COLUMNS,
     TARGET_COLUMNS,
+)
+from time_series_features import spectral_features
+
+from generate_synthetic_regression_csv import (
     _masked_observations,
 )
 from generate_lsp_regression_csv import LSP_COLUMNS

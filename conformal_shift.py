@@ -78,7 +78,7 @@ from conformal import (
     make_real,
     make_synthetic,
 )
-from generate_synthetic_regression_csv import TARGET_COLUMNS  # noqa: E402
+from feature_columns import TARGET_COLUMNS  # noqa: E402
 from train_regression_models import _build  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent

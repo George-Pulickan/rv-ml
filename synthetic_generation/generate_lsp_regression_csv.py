@@ -38,14 +38,16 @@ if str(ROOT) not in sys.path:
 
 from preprocess import LSP_N, LSP_PERIODS
 from synthetic_dataset import _sample_orbital_params, generate_one
-from time_series_features import spectral_features
-
-from generate_synthetic_regression_csv import (
+from feature_columns import (
     SPECTRAL_COLUMNS,
     SPECTRAL_DIM,
     SPECTRAL_GRID_SIZE,
     SUMMARY_COLUMNS,
     TARGET_COLUMNS,
+)
+from time_series_features import spectral_features
+
+from generate_synthetic_regression_csv import (
     _masked_observations,
 )
 

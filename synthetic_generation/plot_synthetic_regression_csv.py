@@ -20,7 +20,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from preprocess import LSP_PERIODS, RVDataset
-from generate_synthetic_regression_csv import (
+from feature_columns import (
     CSV_COLUMNS,
     CSV_COLUMNS_PHASEFOLD,
     PHASE_FOLD_COLUMNS,
