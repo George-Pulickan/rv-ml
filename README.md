@@ -55,6 +55,10 @@ rv-ml/
 | `time_series_features.py` | Fixed-length spectral + summary features for unevenly-sampled RV |
 | `feature_columns.py` | Canonical target/input column names for 74-D, 35-D phase-fold, and 109-D regression feature sets |
 
+New scripts should import regression target and feature-column lists from
+`feature_columns.py` directly, rather than redefining them or importing them
+indirectly through a CSV-generation script.
+
 **Noise model (Gaussian Processes)**
 | File | Purpose |
 |---|---|
