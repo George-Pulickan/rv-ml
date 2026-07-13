@@ -46,27 +46,27 @@ if str(SYNGEN) not in sys.path:
     sys.path.insert(0, str(SYNGEN))
 
 from generate_synthetic_regression_csv import (  # noqa: E402
-    CSV_COLUMNS_PHASEFOLD,
-    PHASE_FOLD_COLUMNS,
-    PHASE_FOLD_N_BINS,
-    SPECTRAL_COLUMNS,
-    SUMMARY_COLUMNS,
     _masked_observations,
     corpus_orbital_params,
     replay_synthetic_sample,
 )
 from plot_synthetic_regression_csv import collect_real_summary  # noqa: E402
 from preprocess import LSP_PERIODS, THETA_NAMES, compute_lsp
+from feature_columns import (  # noqa: E402
+    BASE_74_COLUMNS,
+    FEATURE_SET_COLUMNS,
+    PHASE_FOLD_COLUMNS,
+    PHASE_FOLD_N_BINS,
+    SPECTRAL_DIM,
+    SPECTRAL_GRID_SIZE,
+)
 from theta_loss import (
     apply_theta_constraints,
     regression_theta_loss,
     theta_loss_weights_numpy,
 )
-from time_series_features import phase_fold_features, spectral_feature_names, spectral_features
-from validate_synthetic_dataset import OBSERVATION_SUMMARY_FEATURES
+from time_series_features import phase_fold_features, spectral_features
 
-SPECTRAL_DIM = 64
-SPECTRAL_GRID_SIZE = 1024
 DEFAULT_CSV = Path("synthetic_generation") / "datasets" / "synthetic_regression_10000.csv"
 DEFAULT_FEATURE_SET = "74"
 DEFAULT_OUT = Path("figures") / "regression_synthetic"
@@ -76,15 +76,7 @@ CHECKPOINT_109 = Path("checkpoints") / "regression_mlp_109.pt"
 PHASEFOLD_CSV = Path("synthetic_generation") / "datasets" / "synthetic_regression_10000_phasefold.csv"
 CSV_SEED = 123
 
-SPECTRAL_FEATURE_COLUMNS = spectral_feature_names(SPECTRAL_DIM)
-SUMMARY_FEATURE_COLUMNS = OBSERVATION_SUMMARY_FEATURES
-BASE_74_COLUMNS = [*SPECTRAL_FEATURE_COLUMNS, *SUMMARY_FEATURE_COLUMNS]
-
-FEATURE_SETS: dict[str, list[str]] = {
-    "74": BASE_74_COLUMNS,
-    "35": PHASE_FOLD_COLUMNS,
-    "109": [*BASE_74_COLUMNS, *PHASE_FOLD_COLUMNS],
-}
+FEATURE_SETS = FEATURE_SET_COLUMNS
 
 TARGET_LABELS = {
     "log10_P": r"$\log_{10} P$",

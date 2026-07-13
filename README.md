@@ -53,6 +53,7 @@ rv-ml/
 |---|---|
 | `preprocess.py` | `RVDataset`: normalised `(x, lsp, theta)` tensors, Lomb–Scargle periodogram, splits, `dataset_stats.json` |
 | `time_series_features.py` | Fixed-length spectral + summary features for unevenly-sampled RV |
+| `feature_columns.py` | Canonical target/input column names for 74-D, 35-D phase-fold, and 109-D regression feature sets |
 
 **Noise model (Gaussian Processes)**
 | File | Purpose |

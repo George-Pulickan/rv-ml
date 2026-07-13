@@ -21,44 +21,21 @@ if str(ROOT) not in sys.path:
 
 from preprocess import LSP_PERIODS
 from synthetic_dataset import _sample_orbital_params, generate_one
+from feature_columns import (
+    CSV_COLUMNS,
+    CSV_COLUMNS_PHASEFOLD,
+    PHASE_FOLD_COLUMNS,
+    PHASE_FOLD_N_BINS,
+    SPECTRAL_COLUMNS,
+    SPECTRAL_DIM,
+    SPECTRAL_GRID_SIZE,
+    SUMMARY_COLUMNS,
+    TARGET_COLUMNS,
+)
 from time_series_features import (
-    phase_fold_feature_names,
     phase_fold_features,
-    spectral_feature_names,
     spectral_features,
 )
-
-
-SPECTRAL_DIM = 64
-SPECTRAL_GRID_SIZE = 1024
-
-TARGET_COLUMNS = [
-    "log10_P",
-    "log10_K",
-    "e",
-    "cos_omega",
-    "sin_omega",
-]
-
-SPECTRAL_COLUMNS = spectral_feature_names(SPECTRAL_DIM)
-PHASE_FOLD_N_BINS = 32
-PHASE_FOLD_COLUMNS = phase_fold_feature_names(PHASE_FOLD_N_BINS)
-
-SUMMARY_COLUMNS = [
-    "n_obs",
-    "baseline_d",
-    "rv_std_ms",
-    "rv_iqr_ms",
-    "median_sigma_ms",
-    "sigma_iqr_ms",
-    "lsp_peak_period_d",
-    "lsp_peak_power",
-    "median_gap_d",
-    "p90_gap_d",
-]
-
-CSV_COLUMNS = [*TARGET_COLUMNS, *SPECTRAL_COLUMNS, *SUMMARY_COLUMNS]
-CSV_COLUMNS_PHASEFOLD = [*CSV_COLUMNS, *PHASE_FOLD_COLUMNS, "has_t_peri"]
 
 
 def _masked_observations(x: np.ndarray) -> np.ndarray:

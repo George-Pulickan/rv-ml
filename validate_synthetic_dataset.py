@@ -37,25 +37,12 @@ from synthetic_dataset import (
     generate_one,
     get_noise_model_status,
 )
+from feature_columns import OBSERVATION_SUMMARY_FEATURES, SPECTRAL_DIM, SPECTRAL_GRID_SIZE
 from time_series_features import spectral_feature_names, spectral_features
 
 
 VALIDATION_OUT = Path("figures") / "synthetic_validation"
 DEFAULT_OUT = VALIDATION_OUT / "real_all"
-SPECTRAL_DIM = 64
-SPECTRAL_GRID_SIZE = 1024
-OBSERVATION_SUMMARY_FEATURES = [
-    "n_obs",
-    "baseline_d",
-    "rv_std_ms",
-    "rv_iqr_ms",
-    "median_sigma_ms",
-    "sigma_iqr_ms",
-    "lsp_peak_period_d",
-    "lsp_peak_power",
-    "median_gap_d",
-    "p90_gap_d",
-]
 
 
 def _masked(x: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
