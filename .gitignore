@@ -23,3 +23,6 @@ figures/regression_synthetic/after_109d/
 figures/regression_synthetic/74d/
 figures/regression_synthetic/pred_vs_true_two_step*.png
 figures/regression_synthetic/two_step_metrics.json
+figures/regression_synthetic/e_head_ablate/
+figures/regression_synthetic/two_step_smoke_*/
+figures/regression_synthetic/e_head_*/
