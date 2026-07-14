@@ -109,7 +109,7 @@ CSV (power spectrum + summary features → true Keplerian params) and analyses i
 | `validate_synthetic_regression_csv.py` | Structural/physical sanity checks on a CSV |
 | `plot_synthetic_regression_csv.py` | Real-vs-synthetic comparison plots (+ `collect_real_summary`) |
 | `train_regression_models.py` | RF regression baseline: joint vs separate, feature-block ablation, CV, synthetic→real transfer |
-| `regression_diagnostics.py` | Automated MLP diagnostics: SNR-sliced errors, P/baseline identifiability, LSP vs MLP period recovery, e-prior histogram, raw-output saturation check, sanity JSON |
+| `regression_diagnostics.py` | Automated MLP diagnostics: SNR slicing, P/baseline, LSP vs MLP, e prior, ω-vs-e pair plots (blue=true / red=pred), sanity JSON |
 | `pca_real_vs_synthetic.py` | 2D PCA of real (white) vs synthetic (black) systems |
 | `lsp_resolution_experiment.py` | 64-bin vs 512-bin power-spectrum recovery comparison |
 | `eval_omega_nn_vs_rf.py` | ω recovery: trained NN encoder vs RF, on matched real systems |
@@ -180,6 +180,7 @@ Outputs land in `figures/regression_synthetic/diagnostics/`:
 | `period_recovery.json` | Does Lomb–Scargle argmax beat the MLP on period? |
 | `raw_output_hist.png` | Are ±1 pileups from unit-circle projection vs saturation? |
 | `e_prior_train_hist.png` | Is e banding from the discrete histogram prior? |
+| `omega_vs_e.png`, `parameter_pairs.png` | ω vs e (and other pairs): blue=true, red=pred — investigates ω=0 pileup |
 | `sanity_report.json` | Train/val gap, residual vs covariates, ω MAE vs e, leakage notes |
 
 **Uncertainty quantification (the paper's main contribution) — implemented in `conformal.py`.**

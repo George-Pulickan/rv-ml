@@ -1566,6 +1566,11 @@ def main() -> None:
                 "e (e>0.1)",
             )
         plot_omega_diagnostics(y_true, y_pred, args.out)
+        from regression_diagnostics import plot_omega_vs_e, plot_parameter_pair_grid
+
+        pair_out = args.out / "diagnostics"
+        plot_omega_vs_e(y_true, y_pred, pair_out)
+        plot_parameter_pair_grid(y_true, y_pred, pair_out)
         print("per-target R2:")
         for name in THETA_NAMES:
             print(f"  {name:12s}  R2={metrics['per_target'][name]['r2']:.3f}")
