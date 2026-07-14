@@ -49,7 +49,12 @@ from regression import (  # noqa: E402
     predict,
 )
 from synthetic_dataset import _load_eccentricity_prior  # noqa: E402
-from theta_loss import apply_theta_constraints  # noqa: E402
+from theta_loss import OMEGA_EPS, apply_theta_constraints  # noqa: E402
+
+
+def _omega_deg(y: np.ndarray) -> np.ndarray:
+    """Argument of periastron in degrees on [-180, 180] from (cos, sin)."""
+    return np.degrees(np.arctan2(y[:, 4], y[:, 3]))
 
 
 def _json_default(o: Any) -> Any:
@@ -497,6 +502,113 @@ def _spearman_residuals(
     return out
 
 
+def plot_omega_vs_e(
+    y_true: np.ndarray,
+    y_pred: np.ndarray,
+    out_dir: Path,
+) -> dict:
+    """
+    Scatter omega (deg) vs e: blue = true, red = predicted.
+
+    Highlights the omega=0 pileup at low e (sampler + loss gate at OMEGA_EPS).
+    """
+    out_dir.mkdir(parents=True, exist_ok=True)
+    e_t, e_p = y_true[:, 2], y_pred[:, 2]
+    w_t, w_p = _omega_deg(y_true), _omega_deg(y_pred)
+
+    frac_e_le_eps = float(np.mean(e_t <= OMEGA_EPS))
+    # near-zero omega: |omega| < 1 deg (matches circular-orbit label omega=0)
+    frac_omega_near0 = float(np.mean(np.abs(w_t) < 1.0))
+    frac_both = float(np.mean((e_t <= OMEGA_EPS) & (np.abs(w_t) < 1.0)))
+
+    fig, ax = plt.subplots(figsize=(7, 5))
+    ax.scatter(e_t, w_t, s=10, alpha=0.45, c="blue", edgecolors="none", label="true")
+    ax.scatter(e_p, w_p, s=10, alpha=0.35, c="red", edgecolors="none", label="predicted")
+    ax.axvline(OMEGA_EPS, color="k", ls="--", lw=1.0, alpha=0.7, label=f"e={OMEGA_EPS:g} (OMEGA_EPS)")
+    ax.set_xlabel("eccentricity e")
+    ax.set_ylabel(r"$\omega$ (deg)")
+    ax.set_ylim(-185, 185)
+    ax.set_title(
+        rf"$\omega$ vs $e$  |  val: $e\leq${OMEGA_EPS:g}={frac_e_le_eps:.1%}, "
+        rf"$|\omega_{{\rm true}}|<1^\circ$={frac_omega_near0:.1%}"
+    )
+    ax.legend(loc="upper right", fontsize=8)
+    ax.grid(alpha=0.25)
+    fig.tight_layout()
+    path = out_dir / "omega_vs_e.png"
+    fig.savefig(path, dpi=150)
+    plt.close(fig)
+    print(f"saved -> {path}")
+
+    # Same plot restricted to e > 0.1 (physically meaningful omega)
+    mask = e_t > 0.1
+    fig2, ax2 = plt.subplots(figsize=(7, 5))
+    if mask.any():
+        ax2.scatter(e_t[mask], w_t[mask], s=12, alpha=0.5, c="blue", edgecolors="none", label="true")
+        ax2.scatter(e_p[mask], w_p[mask], s=12, alpha=0.4, c="red", edgecolors="none", label="predicted")
+    ax2.axvline(OMEGA_EPS, color="k", ls="--", lw=1.0, alpha=0.7)
+    ax2.set_xlabel("eccentricity e")
+    ax2.set_ylabel(r"$\omega$ (deg)")
+    ax2.set_ylim(-185, 185)
+    ax2.set_title(rf"$\omega$ vs $e$ (true $e>0.1$, n={int(mask.sum())})")
+    ax2.legend(loc="upper right", fontsize=8)
+    ax2.grid(alpha=0.25)
+    fig2.tight_layout()
+    path2 = out_dir / "omega_vs_e_gt_0.1.png"
+    fig2.savefig(path2, dpi=150)
+    plt.close(fig2)
+    print(f"saved -> {path2}")
+
+    return {
+        "n": int(len(e_t)),
+        "frac_e_le_omega_eps": frac_e_le_eps,
+        "frac_true_omega_near_0_deg": frac_omega_near0,
+        "frac_e_le_eps_and_omega_near_0": frac_both,
+        "omega_eps": float(OMEGA_EPS),
+    }
+
+
+def plot_parameter_pair_grid(
+    y_true: np.ndarray,
+    y_pred: np.ndarray,
+    out_dir: Path,
+) -> None:
+    """
+    Small pair grid (not full 5x5): blue=true, red=predicted.
+
+    Pairs: (e, log10_P), (e, log10_K), (e, cos_omega), (e, sin_omega).
+    """
+    out_dir.mkdir(parents=True, exist_ok=True)
+    pairs = [
+        (2, 0, r"$e$", r"$\log_{10} P$"),
+        (2, 1, r"$e$", r"$\log_{10} K$"),
+        (2, 3, r"$e$", r"$\cos\omega$"),
+        (2, 4, r"$e$", r"$\sin\omega$"),
+    ]
+    fig, axes = plt.subplots(2, 2, figsize=(10, 8))
+    for ax, (ix, iy, xlab, ylab) in zip(axes.ravel(), pairs):
+        ax.scatter(
+            y_true[:, ix], y_true[:, iy],
+            s=8, alpha=0.4, c="blue", edgecolors="none", label="true",
+        )
+        ax.scatter(
+            y_pred[:, ix], y_pred[:, iy],
+            s=8, alpha=0.3, c="red", edgecolors="none", label="predicted",
+        )
+        if ix == 2:
+            ax.axvline(OMEGA_EPS, color="k", ls="--", lw=0.8, alpha=0.6)
+        ax.set_xlabel(xlab)
+        ax.set_ylabel(ylab)
+        ax.grid(alpha=0.25)
+    axes[0, 0].legend(fontsize=7, loc="best")
+    fig.suptitle("Parameter pairs (blue=true, red=predicted)", y=1.01)
+    fig.tight_layout()
+    path = out_dir / "parameter_pairs.png"
+    fig.savefig(path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    print(f"saved -> {path}")
+
+
 def omega_mae_vs_e_bins(y_true: np.ndarray, y_pred: np.ndarray, out_dir: Path) -> dict:
     out_dir.mkdir(parents=True, exist_ok=True)
     e = y_true[:, 2]
@@ -653,6 +765,10 @@ def run_regression_diagnostics(
 
     print("=== Raw output histograms ===")
     summary["raw_outputs"] = plot_raw_output_histograms(y_raw_val, y_constrained_val, out_dir)
+
+    print("=== Parameter pairs (omega vs e) ===")
+    summary["omega_vs_e"] = plot_omega_vs_e(y_val, y_pred_val, out_dir)
+    plot_parameter_pair_grid(y_val, y_pred_val, out_dir)
 
     print("=== Sanity report ===")
     val_bundle = DatasetBundle(

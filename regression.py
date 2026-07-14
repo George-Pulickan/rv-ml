@@ -1,33 +1,14 @@
 """
-regression.py — MLP regression on RV encoder features (74 / 35 / 109-D).
+regression.py — MLP on RV features (74 / 35 / 109-D) → Kepler params.
 
-Architecture
-------------
-    Feature vector  ->  MLP head  ->  5 Kepler params
+Feature sets: 74 (spectral+summary), 35 (phase-fold), 109 (74+35).
+Targets: log10_P, log10_K, e, cos_omega, sin_omega.
 
-Feature sets (--feature-set)
-----------------------------
-    74   spectral (64) + observation summaries (10)  [default]
-    35   phase-fold bins + shape scalars only (Gate A sanity)
-    109  74 + 35 (oracle or predicted-P phase fold) — recommended for e / omega
-
-Targets (theta, 5-dim)
-----------------------
-    log10_P, log10_K, e, cos_omega, sin_omega
-
-The e target is zero-inflated (~24% exact zeros from the empirical prior).
-Two opt-in counters (comparable via --benchmark-gates / --two-step):
-    --e-balance        inverse-frequency reweighting of the e loss
-    --e-head hurdle    classify e>0 (6th output, BCE) + regress e on e>0 rows;
-                       at predict, e=0 where P(e>0) < 0.5
-
-Usage
------
-    python regression.py
-    python regression.py --feature-set 109 --csv synthetic_generation/datasets/synthetic_regression_10000_phasefold.csv
-    python regression.py --feature-set 109 --e-head hurdle --e-balance
-    python regression.py --two-step --loss-weights-ecc
+    python regression.py --feature-set 109 --csv .../synthetic_regression_10000_phasefold.csv
+    python regression.py --two-step --stage2-fold predicted --period-source lsp_peak
     python regression.py --benchmark-gates
+    python regression.py --period-tolerance --feature-set 109 --checkpoint checkpoints/regression_mlp_109.pt
+    python regression.py --e-head-ablate
 """
 
 from __future__ import annotations
@@ -193,7 +174,7 @@ class DatasetBundle:
         self.df = df
 
 
-def load_from_csv(csv_path: Path, feature_set: str) -> DatasetBundle:
+def load_from_csv(csv_path: Path, feature_set: str, *, max_rows: int | None = None) -> DatasetBundle:
     """Load precomputed features and targets from the synthetic regression CSV."""
     df = pd.read_csv(csv_path)
     feature_cols = _feature_columns(feature_set)
@@ -211,15 +192,25 @@ def load_from_csv(csv_path: Path, feature_set: str) -> DatasetBundle:
 
     has_t_peri_col = df["has_t_peri"].to_numpy(dtype=float) if "has_t_peri" in df.columns else np.ones(len(df))
     has_ecc = np.ones(len(df), dtype=bool)
+    row_idx = np.arange(len(df), dtype=int)[valid]
+    X_v, y_v = X[valid], y[valid]
+    e_v = df["e"].to_numpy(dtype=float)[valid]
+    tp_v = has_t_peri_col[valid]
+    ecc_v = has_ecc[valid]
+    if max_rows is not None and max_rows < len(X_v):
+        print(f"[load_csv] truncating to first {max_rows} rows")
+        X_v, y_v = X_v[:max_rows], y_v[:max_rows]
+        row_idx = row_idx[:max_rows]
+        e_v, tp_v, ecc_v = e_v[:max_rows], tp_v[:max_rows], ecc_v[:max_rows]
 
     return DatasetBundle(
-        X[valid],
-        y[valid],
-        row_idx=np.arange(len(df), dtype=int)[valid],
-        e=df["e"].to_numpy(dtype=float)[valid],
-        has_t_peri=has_t_peri_col[valid],
-        has_ecc=has_ecc[valid],
-        df=df,
+        X_v,
+        y_v,
+        row_idx=row_idx,
+        e=e_v,
+        has_t_peri=tp_v,
+        has_ecc=ecc_v,
+        df=df,  # keep full CSV for replay indexing
     )
 
 
@@ -274,6 +265,8 @@ def recompute_phasefold_block(
     """Recompute phase-fold features folding at ``10**log10_P`` (Gate C)."""
     params = corpus_orbital_params(seed, n_samples)
     out = np.zeros((len(row_indices), len(PHASE_FOLD_COLUMNS)), dtype=np.float64)
+    n = len(row_indices)
+    report_every = max(1, n // 10)
     for j, (idx, lp) in enumerate(zip(row_indices, log10_P)):
         x, _, _, info = replay_synthetic_sample(int(idx), seed, n_samples, f_multi=f_multi, params=params)
         xm = _masked_observations(x)
@@ -288,6 +281,8 @@ def recompute_phasefold_block(
             t_peri=float(info["t_peri"]),
         )
         out[j] = phase
+        if (j + 1) % report_every == 0 or (j + 1) == n:
+            print(f"    phase-fold progress {j + 1}/{n}", flush=True)
     return out
 
 
@@ -302,6 +297,113 @@ def replace_phase_features(X: np.ndarray, feature_set: str, phase_block: np.ndar
     X_new = X.copy()
     X_new[:, phase_start : phase_start + len(PHASE_FOLD_COLUMNS)] = phase_block
     return X_new
+
+
+def lsp_peak_log10_P(bundle: DatasetBundle) -> np.ndarray:
+    """log10 of the CSV Lomb-Scargle peak period for each loaded row."""
+    if "lsp_peak_period_d" not in bundle.df.columns:
+        raise ValueError("CSV missing lsp_peak_period_d (needed for --period-source lsp_peak)")
+    p = bundle.df["lsp_peak_period_d"].to_numpy(dtype=float)[bundle.row_idx]
+    return np.log10(np.clip(p, 1e-6, None))
+
+
+def resolve_fold_log10_P(
+    source: str,
+    *,
+    pred_log10_P: np.ndarray | None = None,
+    lsp_log10_P: np.ndarray | None = None,
+    true_log10_P: np.ndarray | None = None,
+) -> np.ndarray:
+    """Pick fold period: mlp74, lsp_peak, hybrid, or oracle."""
+    if source == "oracle":
+        if true_log10_P is None:
+            raise ValueError("oracle fold requires true_log10_P")
+        return np.asarray(true_log10_P, dtype=np.float64)
+    if source == "mlp74":
+        if pred_log10_P is None:
+            raise ValueError("mlp74 fold requires pred_log10_P")
+        return np.asarray(pred_log10_P, dtype=np.float64)
+    if source == "lsp_peak":
+        if lsp_log10_P is None:
+            raise ValueError("lsp_peak fold requires lsp_log10_P")
+        return np.asarray(lsp_log10_P, dtype=np.float64)
+    if source == "hybrid":
+        if pred_log10_P is None or lsp_log10_P is None:
+            raise ValueError("hybrid fold requires pred_log10_P and lsp_log10_P")
+        pred = np.asarray(pred_log10_P, dtype=np.float64)
+        lsp = np.asarray(lsp_log10_P, dtype=np.float64)
+        close = np.abs(pred - lsp) <= 0.05
+        return np.where(close, lsp, pred)
+    raise ValueError(f"unknown period source {source!r}")
+
+
+def apply_log10_p_jitter(
+    log10_P: np.ndarray,
+    residuals: np.ndarray,
+    rng: np.random.Generator,
+) -> np.ndarray:
+    """Add samples from residual_pool to log10_P."""
+    residuals = np.asarray(residuals, dtype=np.float64)
+    residuals = residuals[np.isfinite(residuals)]
+    if len(residuals) == 0:
+        return np.asarray(log10_P, dtype=np.float64).copy()
+    noise = rng.choice(residuals, size=len(log10_P), replace=True)
+    return np.asarray(log10_P, dtype=np.float64) + noise
+
+
+def predict_log10_P_all(
+    model: RegressionHead,
+    bundle: DatasetBundle,
+    preds: dict,
+    norm_stats: dict,
+    device: torch.device,
+    *,
+    constrain_e: bool = True,
+    constrain_omega: bool = True,
+) -> np.ndarray:
+    """log10_P for all rows from a trained stage-1 model."""
+    out = np.empty(len(bundle.X), dtype=np.float64)
+    out[preds["val_idx"]] = preds["y_pred"][:, 0]
+    train_idx = preds["train_idx"]
+    if len(train_idx):
+        out[train_idx] = predict(
+            model,
+            bundle.X[train_idx],
+            norm_stats,
+            device,
+            constrain_e=constrain_e,
+            constrain_omega=constrain_omega,
+        )[:, 0]
+    return out
+
+
+def rebuild_bundle_phasefold(
+    bundle: DatasetBundle,
+    feature_set: str,
+    fold_log10_P: np.ndarray,
+    *,
+    seed: int = CSV_SEED,
+    f_multi: float = 0.0,
+) -> DatasetBundle:
+    """Copy bundle with phase-fold features recomputed at fold_log10_P."""
+    print(f"  recomputing phase-fold for {len(bundle.row_idx):,} rows ...")
+    phase_block = recompute_phasefold_block(
+        bundle.row_idx,
+        fold_log10_P,
+        seed=seed,
+        n_samples=len(bundle.df),
+        f_multi=f_multi,
+    )
+    X_new = replace_phase_features(bundle.X, feature_set, phase_block)
+    return DatasetBundle(
+        X_new,
+        bundle.y.copy(),
+        row_idx=bundle.row_idx.copy(),
+        e=bundle.e.copy(),
+        has_t_peri=bundle.has_t_peri.copy(),
+        has_ecc=bundle.has_ecc.copy(),
+        df=bundle.df,
+    )
 
 
 class RegressionHead(nn.Module):
@@ -716,6 +818,29 @@ def _scatter_limits(yt: np.ndarray, yp: np.ndarray) -> tuple[float, float]:
     return lo - pad, hi + pad
 
 
+OMEGA_EVAL_E_MIN = 0.1  # skip near-circular rows when scoring omega
+
+
+def _omega_eval_mask(y_true: np.ndarray, *, e_min: float = OMEGA_EVAL_E_MIN) -> np.ndarray:
+    """True where e > e_min (omega is well-defined)."""
+    return np.asarray(y_true[:, 2], dtype=np.float64) > e_min
+
+
+def _omega_panel_arrays(
+    y_true: np.ndarray,
+    y_pred: np.ndarray,
+    target: str,
+) -> tuple[np.ndarray, np.ndarray, float, int]:
+    """Arrays/R² for a scatter panel; omega uses e > 0.1 only."""
+    j = THETA_NAMES.index(target)
+    if target in ("cos_omega", "sin_omega"):
+        mask = _omega_eval_mask(y_true)
+        yt, yp = y_true[mask, j], y_pred[mask, j]
+        return yt, yp, _r2(yt, yp), int(mask.sum())
+    yt, yp = y_true[:, j], y_pred[:, j]
+    return yt, yp, _r2(yt, yp), len(yt)
+
+
 def plot_single_target(
     y_true: np.ndarray,
     y_pred: np.ndarray,
@@ -724,10 +849,11 @@ def plot_single_target(
     *,
     title: str | None = None,
 ) -> None:
-    """Save one large true-vs-predicted scatter for a single target."""
-    j = THETA_NAMES.index(target)
-    yt, yp = y_true[:, j], y_pred[:, j]
-    r2 = _r2(yt, yp)
+    """True-vs-pred scatter; omega plots use e > 0.1 only."""
+    yt, yp, r2, n = _omega_panel_arrays(y_true, y_pred, target)
+    if len(yt) == 0:
+        print(f"skip plot {out_path}: no rows for {target}")
+        return
     mse = float(np.mean((yp - yt) ** 2))
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -740,7 +866,15 @@ def plot_single_target(
     ax.set_aspect("equal", adjustable="box")
     ax.set_xlabel(f"true {TARGET_LABELS[target]}")
     ax.set_ylabel(f"predicted {TARGET_LABELS[target]}")
-    ax.set_title(title or f"{TARGET_LABELS[target]}  $R^2$={r2:.3f}  MSE={mse:.4f}")
+    if title is None:
+        if target in ("cos_omega", "sin_omega"):
+            title = (
+                f"{TARGET_LABELS[target]}  ($e>{OMEGA_EVAL_E_MIN:g}$, n={n})  "
+                f"$R^2$={r2:.3f}  MSE={mse:.4f}"
+            )
+        else:
+            title = f"{TARGET_LABELS[target]}  $R^2$={r2:.3f}  MSE={mse:.4f}"
+    ax.set_title(title)
     ax.grid(alpha=0.25)
     fig.tight_layout()
     fig.savefig(out_path, dpi=140, bbox_inches="tight")
@@ -749,25 +883,30 @@ def plot_single_target(
 
 
 def plot_pred_vs_true(y_true: np.ndarray, y_pred: np.ndarray, out_path: Path, metrics: dict) -> None:
+    """5-panel validation scatter; omega panels use e > 0.1."""
     out_path.parent.mkdir(parents=True, exist_ok=True)
     fig, axes = plt.subplots(1, 5, figsize=(16, 3.2))
+    omega_sub = metrics.get("subsets", {}).get("e_gt_0.1", {}).get("per_target", {})
 
     for j, (ax, name) in enumerate(zip(axes, THETA_NAMES)):
-        yt = y_true[:, j]
-        yp = y_pred[:, j]
+        yt, yp, r2_panel, n_panel = _omega_panel_arrays(y_true, y_pred, name)
         ax.scatter(yt, yp, s=8, alpha=0.45, edgecolors="none")
         lo, hi = _scatter_limits(yt, yp)
         ax.plot([lo, hi], [lo, hi], "k--", lw=0.8, alpha=0.6)
         ax.set_xlim(lo, hi)
         ax.set_ylim(lo, hi)
         ax.set_aspect("equal", adjustable="box")
-        r2 = metrics["per_target"][name]["r2"]
-        ax.set_title(f"{TARGET_LABELS[name]}\n$R^2$={r2:.3f}")
+        if name in ("cos_omega", "sin_omega"):
+            r2 = omega_sub.get(name, {}).get("r2", r2_panel)
+            ax.set_title(f"{TARGET_LABELS[name]} ($e>{OMEGA_EVAL_E_MIN:g}$)\n$R^2$={r2:.3f}  n={n_panel}")
+        else:
+            r2 = metrics["per_target"][name]["r2"]
+            ax.set_title(f"{TARGET_LABELS[name]}\n$R^2$={r2:.3f}")
         ax.set_xlabel("true")
         ax.set_ylabel("pred")
         ax.grid(alpha=0.25)
 
-    fig.suptitle("Synthetic regression: predicted vs true (validation split)")
+    fig.suptitle(f"pred vs true (val; omega: e>{OMEGA_EVAL_E_MIN:g})")
     fig.tight_layout()
     fig.savefig(out_path, dpi=130, bbox_inches="tight")
     plt.close(fig)
@@ -781,7 +920,7 @@ def plot_all_targets_individual(
     *,
     prefix: str = "pred_vs_true",
 ) -> None:
-    """Save one true-vs-predicted scatter per target."""
+    """One scatter per target (omega restricted to e > 0.1)."""
     out_dir.mkdir(parents=True, exist_ok=True)
     for name in THETA_NAMES:
         plot_single_target(
@@ -929,14 +1068,11 @@ def eval_two_step(
     preds_109: dict,
     device: torch.device,
     *,
+    period_source: str = "mlp74",
     constrain_e: bool = True,
     constrain_omega: bool = True,
 ) -> dict:
-    """
-    Two-step deployment eval: P from 74-D model; re-fold at that P; e/omega from 109-D.
-
-    preds_109 must contain X_val (109-D oracle layout), y_true, val_row_idx, val_idx.
-    """
+    """Fold at period_source period, then run the 109-D shape head."""
     X_val = preds_109["X_val"]
     y_true = preds_109["y_true"]
     val_row_idx = preds_109["val_row_idx"]
@@ -953,9 +1089,16 @@ def eval_two_step(
         constrain_omega=constrain_omega,
     )
     pred_log10_P = pred_74[:, 0]
+    lsp_log10_P = lsp_peak_log10_P(bundle_109)[val_idx]
+    fold_log10_P = resolve_fold_log10_P(
+        period_source,
+        pred_log10_P=pred_log10_P,
+        lsp_log10_P=lsp_log10_P,
+        true_log10_P=y_true[:, 0],
+    )
 
     phase_block = recompute_phasefold_block(
-        val_row_idx, pred_log10_P, seed=CSV_SEED, n_samples=len(bundle_109.df)
+        val_row_idx, fold_log10_P, seed=CSV_SEED, n_samples=len(bundle_109.df)
     )
     X_two_step = replace_phase_features(X_val, "109", phase_block)
     pred_109 = predict(
@@ -968,7 +1111,7 @@ def eval_two_step(
     )
 
     y_pred = pred_109.copy()
-    y_pred[:, 0] = pred_log10_P
+    y_pred[:, 0] = pred_log10_P if period_source in ("mlp74", "hybrid") else fold_log10_P
 
     val_bundle = DatasetBundle(
         X_two_step,
@@ -979,11 +1122,16 @@ def eval_two_step(
         has_ecc=bundle_109.has_ecc[val_idx],
         df=bundle_109.df,
     )
-    p_r2 = _r2(y_true[:, 0], pred_log10_P)
+    p_r2_mlp = _r2(y_true[:, 0], pred_log10_P)
+    p_r2_fold = _r2(y_true[:, 0], fold_log10_P)
+    frac_5pct = float(np.mean(np.abs(10 ** fold_log10_P / 10 ** y_true[:, 0] - 1.0) <= 0.05))
     return {
         "mode": "two_step",
         "p_stage": "74",
-        "p_r2_stage1": float(p_r2),
+        "period_source": period_source,
+        "p_r2_stage1": float(p_r2_mlp),
+        "p_r2_fold": float(p_r2_fold),
+        "fold_within_5pct": frac_5pct,
         "val_mse": float(np.mean((y_pred - y_true) ** 2)),
         "per_target": _per_target_metrics(y_true, y_pred),
         "subsets": _subset_metrics(val_bundle, y_true, y_pred),
@@ -992,8 +1140,22 @@ def eval_two_step(
     }
 
 
+def _omega_r2_e_gt(metrics: dict) -> float:
+    sub = metrics.get("subsets", {}).get("e_gt_0.1_has_t_peri", metrics.get("subsets", {}).get("e_gt_0.1", {}))
+    pt = sub.get("per_target", {})
+    return float(np.nanmean([
+        pt.get("cos_omega", {}).get("r2", float("nan")),
+        pt.get("sin_omega", {}).get("r2", float("nan")),
+    ]))
+
+
+def _omega_mae_e_gt(metrics: dict) -> float:
+    sub = metrics.get("subsets", {}).get("e_gt_0.1_has_t_peri", metrics.get("subsets", {}).get("e_gt_0.1", {}))
+    return float(sub.get("per_target", {}).get("omega_angular", {}).get("mae_deg", float("nan")))
+
+
 def run_two_step_pipeline(args: argparse.Namespace, device: torch.device) -> dict:
-    """Train 74-D + 109-D oracle models and evaluate two-step vs single-shot Gate C."""
+    """Train 74-D then 109-D and evaluate the fold-then-shape path."""
     csv_path = PHASEFOLD_CSV
     if not csv_path.exists():
         raise FileNotFoundError(f"two-step requires {csv_path}")
@@ -1003,11 +1165,15 @@ def run_two_step_pipeline(args: argparse.Namespace, device: torch.device) -> dic
     train_kw = _theta_train_kwargs(args)
     pred_kw = _predict_kwargs(args)
     loss_w = _parse_loss_weights(args.loss_weights)
+    period_source = args.period_source
+    stage2_fold = args.stage2_fold
+    use_jitter = bool(args.stage2_p_jitter)
 
     print("=" * 60)
     print("Two-step Stage 1: train 74-D (P/K baseline features)")
-    bundle_74 = load_from_csv(csv_path, "74")
-    model_74, _, metrics_74 = train_model(
+    max_rows = getattr(args, "max_rows", None)
+    bundle_74 = load_from_csv(csv_path, "74", max_rows=max_rows)
+    model_74, preds_74, metrics_74 = train_model(
         bundle_74,
         feature_set="74",
         epochs=args.epochs,
@@ -1024,11 +1190,57 @@ def run_two_step_pipeline(args: argparse.Namespace, device: torch.device) -> dic
     )
     print(f"  74-D log10_P R2={metrics_74['per_target']['log10_P']['r2']:.3f}")
 
+    pred_p_all = predict_log10_P_all(
+        model_74, bundle_74, preds_74, metrics_74["norm_stats"], device, **pred_kw
+    )
+    lsp_p_all = lsp_peak_log10_P(bundle_74)
+    true_p_all = bundle_74.y[:, 0]
+    mlp_residuals = pred_p_all[preds_74["train_idx"]] - true_p_all[preds_74["train_idx"]]
+    lsp_residuals = lsp_p_all[preds_74["train_idx"]] - true_p_all[preds_74["train_idx"]]
+    residual_pool = mlp_residuals if period_source == "mlp74" else lsp_residuals
+
+    if stage2_fold == "oracle":
+        fold_base = true_p_all.copy()
+    elif stage2_fold == "predicted":
+        fold_base = resolve_fold_log10_P(
+            period_source,
+            pred_log10_P=pred_p_all,
+            lsp_log10_P=lsp_p_all,
+            true_log10_P=true_p_all,
+        )
+    elif stage2_fold == "jitter":
+        fold_base = apply_log10_p_jitter(
+            true_p_all, residual_pool, np.random.default_rng(args.seed + 17)
+        )
+    else:
+        raise ValueError(f"unknown --stage2-fold {stage2_fold!r}")
+
+    fold_train = fold_base.copy()
+    if use_jitter and stage2_fold != "jitter":
+        rng_j = np.random.default_rng(args.seed + 19)
+        fold_train[preds_74["train_idx"]] = apply_log10_p_jitter(
+            fold_base[preds_74["train_idx"]], residual_pool, rng_j
+        )
+
     print("=" * 60)
-    print("Two-step Stage 2: train 109-D (oracle phase-fold)")
-    bundle_109 = load_from_csv(csv_path, "109")
+    print(
+        f"Two-step Stage 2: train 109-D "
+        f"(stage2_fold={stage2_fold}, period_source={period_source}, jitter={use_jitter})"
+    )
+    bundle_109_oracle = load_from_csv(csv_path, "109", max_rows=max_rows)
+    if stage2_fold == "oracle" and not use_jitter:
+        bundle_109_train = bundle_109_oracle
+    else:
+        bundle_109_train = rebuild_bundle_phasefold(
+            bundle_109_oracle, "109", fold_train, seed=CSV_SEED
+        )
+
+    ckpt_109 = CHECKPOINT_109
+    if stage2_fold != "oracle" or period_source != "mlp74" or use_jitter:
+        ckpt_109 = Path("checkpoints") / f"regression_mlp_109_{stage2_fold}_{period_source}.pt"
+
     model_109, preds_109, metrics_109 = train_model(
-        bundle_109,
+        bundle_109_train,
         feature_set="109",
         epochs=args.epochs,
         batch_size=args.batch_size,
@@ -1039,17 +1251,50 @@ def run_two_step_pipeline(args: argparse.Namespace, device: torch.device) -> dic
         patience=args.patience,
         target_norm=not args.no_target_norm,
         loss_weights=loss_w,
-        checkpoint_path=CHECKPOINT_109,
+        checkpoint_path=ckpt_109,
         **train_kw,
     )
-    print(f"  109-D oracle e R2={metrics_109['per_target']['e']['r2']:.3f}")
+    print(f"  109-D stage2-train e R2={metrics_109['per_target']['e']['r2']:.3f}")
     _print_omega_headline(metrics_109)
 
     print("=" * 60)
-    print("Gate C baseline: 109-D fold at P predicted by same 109-D model")
+    print("Oracle-fold check on stage-2 model")
+    X_oracle = replace_phase_features(
+        preds_109["X_val"],
+        "109",
+        recompute_phasefold_block(
+            preds_109["val_row_idx"],
+            preds_109["y_true"][:, 0],
+            seed=CSV_SEED,
+            n_samples=len(bundle_109_oracle.df),
+        ),
+    )
+    y_oracle = predict(
+        model_109, X_oracle, metrics_109["norm_stats"], device, **pred_kw
+    )
+    oracle_probe = {
+        "per_target": _per_target_metrics(preds_109["y_true"], y_oracle),
+        "subsets": _subset_metrics(
+            DatasetBundle(
+                X_oracle,
+                preds_109["y_true"],
+                row_idx=preds_109["val_row_idx"],
+                e=bundle_109_oracle.e[preds_109["val_idx"]],
+                has_t_peri=bundle_109_oracle.has_t_peri[preds_109["val_idx"]],
+                has_ecc=bundle_109_oracle.has_ecc[preds_109["val_idx"]],
+                df=bundle_109_oracle.df,
+            ),
+            preds_109["y_true"],
+            y_oracle,
+        ),
+    }
+    print(f"  oracle-fold omega R2 (e>0.1)={_omega_r2_e_gt(oracle_probe):.3f}")
+
+    print("=" * 60)
+    print("Gate C: fold at 109-D predicted P")
     gate_c = eval_predicted_p_fold(
         model_109,
-        bundle_109,
+        bundle_109_train,
         preds_109,
         metrics_109["norm_stats"],
         feature_set="109",
@@ -1057,26 +1302,31 @@ def run_two_step_pipeline(args: argparse.Namespace, device: torch.device) -> dic
         device=device,
         **pred_kw,
     )
-    om_c = gate_c["subsets"]["e_gt_0.1_has_t_peri"]["per_target"]
-    om_c_r2 = np.nanmean([om_c.get("cos_omega", {}).get("r2", float("nan")), om_c.get("sin_omega", {}).get("r2", float("nan"))])
+    om_c_r2 = _omega_r2_e_gt(gate_c)
     print(f"  Gate C omega R2 (e>0.1): {om_c_r2:.3f}")
 
     print("=" * 60)
-    print("Two-step eval: P from 74-D, re-fold, e/omega from 109-D")
+    print(f"Two-step eval (period_source={period_source})")
+    preds_for_ts = {
+        **preds_109,
+        "X_val": bundle_109_oracle.X[preds_109["val_idx"]],
+        "val_idx": preds_109["val_idx"],
+    }
     two_step = eval_two_step(
-        bundle_109,
+        bundle_109_oracle,
         model_74,
         metrics_74["norm_stats"],
         model_109,
         metrics_109["norm_stats"],
-        {**preds_109, "val_idx": preds_109["val_idx"]},
+        preds_for_ts,
         device,
+        period_source=period_source,
         **pred_kw,
     )
-    om_ts = two_step["subsets"]["e_gt_0.1_has_t_peri"]["per_target"]
-    om_ts_r2 = np.nanmean([om_ts.get("cos_omega", {}).get("r2", float("nan")), om_ts.get("sin_omega", {}).get("r2", float("nan"))])
-    om_ts_mae = om_ts.get("omega_angular", {}).get("mae_deg", float("nan"))
-    print(f"  two-step P R2 (stage1)={two_step['p_r2_stage1']:.3f}")
+    om_ts_r2 = _omega_r2_e_gt(two_step)
+    om_ts_mae = _omega_mae_e_gt(two_step)
+    print(f"  two-step P R2 (stage1 MLP)={two_step['p_r2_stage1']:.3f}")
+    print(f"  two-step P R2 (fold source)={two_step['p_r2_fold']:.3f}  within5%={two_step['fold_within_5pct']:.3f}")
     print(f"  two-step e R2={two_step['per_target']['e']['r2']:.3f}")
     print(f"  two-step omega R2 (e>0.1)={om_ts_r2:.3f}  angular MAE={om_ts_mae:.1f} deg")
     _print_omega_headline({"subsets": two_step["subsets"]})
@@ -1086,35 +1336,31 @@ def run_two_step_pipeline(args: argparse.Namespace, device: torch.device) -> dic
         "loss_weights": loss_w.tolist(),
         "circular_omega": not args.no_circular_omega,
         "hard_omega_mask": not args.soft_omega_mask,
+        "period_source": period_source,
+        "stage2_fold": stage2_fold,
+        "stage2_p_jitter": use_jitter,
         "stage1_74": metrics_74,
-        "stage2_109_oracle": metrics_109,
+        "stage2_109_train": metrics_109,
+        "stage2_oracle_fold": oracle_probe,
         "gate_c_109_self_p": {k: v for k, v in gate_c.items() if k not in ("y_true", "y_pred")},
-        "two_step_74_p_109_shape": {k: v for k, v in two_step.items() if k not in ("y_true", "y_pred")},
+        "two_step": {k: v for k, v in two_step.items() if k not in ("y_true", "y_pred")},
         "omega_r2_e_gt_0.1": {
-            "oracle_109": float(np.nanmean([
-                metrics_109["subsets"]["e_gt_0.1_has_t_peri"]["per_target"].get("cos_omega", {}).get("r2", float("nan")),
-                metrics_109["subsets"]["e_gt_0.1_has_t_peri"]["per_target"].get("sin_omega", {}).get("r2", float("nan")),
-            ])),
+            "stage2_train_val": _omega_r2_e_gt(metrics_109),
+            "oracle_fold": _omega_r2_e_gt(oracle_probe),
             "gate_c_self_p": float(om_c_r2),
             "two_step": float(om_ts_r2),
         },
+        "omega_mae_e_gt_0.1_deg": {
+            "stage2_train_val": _omega_mae_e_gt(metrics_109),
+            "two_step": float(om_ts_mae),
+        },
     }
-    if om_ts_r2 > 0.05 and om_ts_r2 > om_c_r2 + 0.05:
-        report["story"] = (
-            "Two-step inference (P from 74-D, then re-fold) improves omega vs folding at "
-            "109-D self-predicted P. Deploy as stage-1 period + stage-2 shape."
-        )
+    if om_ts_r2 > 0.05 and om_ts_mae < 40.0:
+        report["note"] = f"two-step ok (source={period_source}, fold={stage2_fold}): omega MAE={om_ts_mae:.1f} deg"
     elif om_ts_r2 > om_c_r2:
-        report["story"] = (
-            "Two-step slightly beats Gate C on omega R2 but both remain poor. Period error "
-            "still scrambles phase-fold features; need better P or train stage-2 on predicted-P folds."
-        )
+        report["note"] = "two-step better than Gate C, but omega still weak"
     else:
-        report["story"] = (
-            "Two-step did not beat Gate C on omega. Period accuracy (R2~0.74) is insufficient "
-            "for phase folding, and stage-2 was trained on oracle folds only. Next: 512-bin LSP, "
-            "period refinement, or fine-tune 109-D on predicted-P phase features."
-        )
+        report["note"] = "omega still collapses at predicted/LSP period; need tighter P or more fold noise in training"
 
     plot_pred_vs_true(two_step["y_true"], two_step["y_pred"], out_dir / "pred_vs_true_two_step.png", two_step)
     plot_all_targets_individual(two_step["y_true"], two_step["y_pred"], out_dir, prefix="pred_vs_true_two_step")
@@ -1424,6 +1670,186 @@ def _predict_kwargs(args: argparse.Namespace) -> dict:
     }
 
 
+PERIOD_TOLERANCE_FRACS = (0.0, 0.001, 0.005, 0.01, 0.02, 0.05, 0.10)
+
+
+def run_period_tolerance(
+    args: argparse.Namespace,
+    device: torch.device,
+    *,
+    rel_fracs: tuple[float, ...] = PERIOD_TOLERANCE_FRACS,
+) -> dict:
+    """Omega MAE vs fold-period error on an oracle checkpoint."""
+    csv_path = args.csv if args.csv != DEFAULT_CSV else PHASEFOLD_CSV
+    if args.feature_set not in ("35", "109"):
+        raise ValueError("--period-tolerance requires --feature-set 35 or 109")
+    if not csv_path.exists():
+        raise FileNotFoundError(f"period-tolerance requires {csv_path}")
+    if not args.checkpoint.exists():
+        raise FileNotFoundError(f"checkpoint not found: {args.checkpoint}")
+
+    out_dir = args.diagnose_out or (args.out / "diagnostics")
+    out_dir.mkdir(parents=True, exist_ok=True)
+    pred_kw = _predict_kwargs(args)
+
+    bundle = load_from_csv(csv_path, args.feature_set, max_rows=getattr(args, "max_rows", None))
+    ckpt = torch.load(args.checkpoint, map_location=device, weights_only=False)
+    norm_stats = ckpt["norm_stats"]
+    in_dim = int(norm_stats.get("in_dim", bundle.X.shape[1]))
+    out_dim = int(norm_stats.get("out_dim", len(THETA_NAMES)))
+    model = RegressionHead(in_dim=in_dim, out_dim=out_dim).to(device)
+    model.load_state_dict(ckpt["model"])
+    model.eval()
+
+    _, val_idx = _val_split_indices(len(bundle.X), args.val_frac, args.seed)
+    y_true = bundle.y[val_idx]
+    row_idx = bundle.row_idx[val_idx]
+    true_log10_P = y_true[:, 0]
+    rng = np.random.default_rng(args.seed + 31)
+    signs = rng.choice(np.array([-1.0, 1.0]), size=len(val_idx))
+
+    curve: list[dict] = []
+    print("=" * 60)
+    print("Period tolerance (fold P = true P × (1±eps))")
+    for frac in rel_fracs:
+        if frac == 0.0:
+            fold_log10_P = true_log10_P
+        else:
+            fold_P = (10 ** true_log10_P) * (1.0 + signs * frac)
+            fold_log10_P = np.log10(np.clip(fold_P, 1e-6, None))
+        phase_block = recompute_phasefold_block(
+            row_idx, fold_log10_P, seed=CSV_SEED, n_samples=len(bundle.df)
+        )
+        X_val = replace_phase_features(bundle.X[val_idx], args.feature_set, phase_block)
+        y_pred = predict(model, X_val, norm_stats, device, **pred_kw)
+        mask = y_true[:, 2] > 0.1
+        mae = _omega_mae_deg(y_true[mask], y_pred[mask]) if mask.any() else float("nan")
+        r2s = [_r2(y_true[mask, j], y_pred[mask, j]) for j in (3, 4)] if mask.any() else []
+        entry = {
+            "rel_period_error": float(frac),
+            "n_e_gt_0.1": int(mask.sum()),
+            "omega_mae_deg": float(mae),
+            "omega_r2_mean": float(np.nanmean(r2s)) if r2s else float("nan"),
+            "e_r2": float(_r2(y_true[:, 2], y_pred[:, 2])),
+        }
+        curve.append(entry)
+        print(
+            f"  eps={frac * 100:5.1f}%  omega MAE={mae:6.1f} deg  "
+            f"omega R2={entry['omega_r2_mean']:.3f}  e R2={entry['e_r2']:.3f}"
+        )
+
+    report = {
+        "checkpoint": str(args.checkpoint),
+        "csv": str(csv_path),
+        "feature_set": args.feature_set,
+        "curve": curve,
+    }
+
+    fig, ax = plt.subplots(figsize=(6, 4))
+    xs = [100.0 * c["rel_period_error"] for c in curve]
+    ys = [c["omega_mae_deg"] for c in curve]
+    ax.plot(xs, ys, "o-", lw=1.5)
+    ax.set_xlabel("relative period error [%]")
+    ax.set_ylabel(r"$\omega$ MAE [deg] ($e>0.1$)")
+    ax.set_title("Phase-fold omega vs period error")
+    ax.grid(alpha=0.3)
+    fig.tight_layout()
+    plot_path = out_dir / "period_tolerance_omega.png"
+    fig.savefig(plot_path, dpi=140, bbox_inches="tight")
+    plt.close(fig)
+    print(f"saved plot -> {plot_path}")
+
+    out_json = out_dir / "period_tolerance.json"
+    _write_benchmark(report, out_json)
+    return report
+
+
+def run_e_head_ablate(args: argparse.Namespace, device: torch.device) -> dict:
+    """Compare direct / e-balance / hurdle / both on 109-D."""
+    csv_path = args.csv if args.csv != DEFAULT_CSV else PHASEFOLD_CSV
+    if not csv_path.exists():
+        raise FileNotFoundError(f"e-head ablate requires {csv_path}")
+
+    variants = [
+        ("baseline", {"e_head": "direct", "e_balance": False}),
+        ("e_balance", {"e_head": "direct", "e_balance": True}),
+        ("hurdle", {"e_head": "hurdle", "e_balance": False}),
+        ("hurdle_e_balance", {"e_head": "hurdle", "e_balance": True}),
+    ]
+    base_train = {
+        k: v
+        for k, v in _theta_train_kwargs(args).items()
+        if k not in ("e_head", "e_balance")
+    }
+    bundle = load_from_csv(csv_path, "109", max_rows=getattr(args, "max_rows", None))
+    results: dict[str, dict] = {}
+    out_root = args.out / "e_head_ablate"
+    out_root.mkdir(parents=True, exist_ok=True)
+
+    for name, overrides in variants:
+        print("=" * 60)
+        print(f"e-head ablation: {name}")
+        train_kw = {**base_train, **overrides}
+        out_dir = out_root / name
+        out_dir.mkdir(parents=True, exist_ok=True)
+        ckpt = Path("checkpoints") / f"regression_mlp_109_{name}.pt"
+        _, preds, metrics = train_model(
+            bundle,
+            feature_set="109",
+            epochs=args.epochs,
+            batch_size=args.batch_size,
+            lr=args.lr,
+            val_frac=args.val_frac,
+            seed=args.seed,
+            device=device,
+            patience=args.patience,
+            target_norm=not args.no_target_norm,
+            loss_weights=_parse_loss_weights(args.loss_weights),
+            checkpoint_path=ckpt,
+            **train_kw,
+        )
+        slim = {
+            "per_target": metrics["per_target"],
+            "subsets": metrics.get("subsets", {}),
+            "e_zero_classifier": metrics.get("e_zero_classifier"),
+            "val_mse": metrics.get("val_mse"),
+        }
+        results[name] = slim
+        _write_benchmark(slim, out_dir / "metrics.json")
+        plot_pred_vs_true(preds["y_true"], preds["y_pred"], out_dir / "pred_vs_true.png", metrics)
+        print(
+            f"  e R2={metrics['per_target']['e']['r2']:.3f}  "
+            f"log10_P R2={metrics['per_target']['log10_P']['r2']:.3f}  "
+            f"omega MAE={_omega_mae_e_gt(metrics):.1f}"
+        )
+
+    summary = {
+        "csv": str(csv_path),
+        "variants": {
+            name: {
+                "e_r2": results[name]["per_target"]["e"]["r2"],
+                "log10_P_r2": results[name]["per_target"]["log10_P"]["r2"],
+                "log10_K_r2": results[name]["per_target"]["log10_K"]["r2"],
+                "omega_mae_e_gt_0.1": _omega_mae_e_gt(results[name]),
+                "e_zero_classifier": results[name].get("e_zero_classifier"),
+            }
+            for name in results
+        },
+        "note": "pick the e setting that helps without hurting P/K/omega",
+    }
+    _write_benchmark(summary, out_root / "comparison.json")
+    print("=" * 60)
+    print("e-head ablation summary")
+    for name, row in summary["variants"].items():
+        print(
+            f"  {name:20s}  e R2={row['e_r2']:.3f}  "
+            f"P R2={row['log10_P_r2']:.3f}  K R2={row['log10_K_r2']:.3f}  "
+            f"omega MAE={row['omega_mae_e_gt_0.1']:.1f}"
+        )
+    return summary
+
+
+
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     src = p.add_mutually_exclusive_group()
@@ -1489,6 +1915,39 @@ def parse_args() -> argparse.Namespace:
         help="train 74-D + 109-D and evaluate two-step P-then-shape pipeline",
     )
     p.add_argument(
+        "--stage2-fold",
+        choices=("oracle", "predicted", "jitter"),
+        default="predicted",
+        help="train stage-2 on oracle / predicted / jittered folds",
+    )
+    p.add_argument(
+        "--period-source",
+        choices=("mlp74", "lsp_peak", "hybrid"),
+        default="lsp_peak",
+        help="which period to fold at (default: lsp_peak)",
+    )
+    p.add_argument(
+        "--stage2-p-jitter",
+        action="store_true",
+        help="add residual noise to stage-2 fold periods on the train set",
+    )
+    p.add_argument(
+        "--period-tolerance",
+        action="store_true",
+        help="plot omega MAE vs fold-period error",
+    )
+    p.add_argument(
+        "--e-head-ablate",
+        action="store_true",
+        help="compare e-head variants on 109-D",
+    )
+    p.add_argument(
+        "--max-rows",
+        type=int,
+        default=None,
+        help="cap CSV rows (debug)",
+    )
+    p.add_argument(
         "--plot-only",
         action="store_true",
         help="load checkpoint and regenerate pred-vs-true plots (no training)",
@@ -1513,6 +1972,22 @@ def main() -> None:
 
     if args.loss_weights_ecc:
         args.loss_weights = "1,1,5,5,5"
+
+    if args.period_tolerance:
+        if args.checkpoint == DEFAULT_CHECKPOINT:
+            args.checkpoint = CHECKPOINT_109
+        if args.feature_set == DEFAULT_FEATURE_SET:
+            args.feature_set = "109"
+        if args.csv == DEFAULT_CSV:
+            args.csv = PHASEFOLD_CSV
+        run_period_tolerance(args, device)
+        return
+
+    if args.e_head_ablate:
+        if args.csv == DEFAULT_CSV:
+            args.csv = PHASEFOLD_CSV
+        run_e_head_ablate(args, device)
+        return
 
     if args.benchmark_gates:
         run_benchmark_gates(args, device)
@@ -1557,19 +2032,44 @@ def main() -> None:
         args.out.mkdir(parents=True, exist_ok=True)
         plot_pred_vs_true(y_true, y_pred, args.out / "pred_vs_true.png", metrics)
         plot_all_targets_individual(y_true, y_pred, args.out)
-        e_mask = y_true[:, 2] > 0.1
+        e_mask = y_true[:, 2] > OMEGA_EVAL_E_MIN
         if e_mask.any():
             plot_e_scatter(
                 y_true[e_mask],
                 y_pred[e_mask],
                 args.out / "pred_vs_true_e_gt_0.1.png",
-                "e (e>0.1)",
+                f"e (e>{OMEGA_EVAL_E_MIN:g})",
             )
         plot_omega_diagnostics(y_true, y_pred, args.out)
-        print("per-target R2:")
+        from regression_diagnostics import plot_omega_vs_e, plot_parameter_pair_grid
+
+        pair_out = args.out / "diagnostics"
+        plot_omega_vs_e(y_true, y_pred, pair_out)
+        plot_parameter_pair_grid(y_true, y_pred, pair_out)
+        print("per-target R2 (omega on e>0.1):")
         for name in THETA_NAMES:
+            if name in ("cos_omega", "sin_omega"):
+                continue
             print(f"  {name:12s}  R2={metrics['per_target'][name]['r2']:.3f}")
         _print_omega_headline(metrics)
+        omega_sub = metrics.get("subsets", {}).get("e_gt_0.1", {}).get("per_target", {})
+        baseline = {
+            "e_min": OMEGA_EVAL_E_MIN,
+            "n_e_gt_0.1": int(e_mask.sum()),
+            "n_val": int(len(y_true)),
+            "cos_omega_r2": omega_sub.get("cos_omega", {}).get("r2"),
+            "sin_omega_r2": omega_sub.get("sin_omega", {}).get("r2"),
+            "omega_mae_deg": omega_sub.get("omega_angular", {}).get("mae_deg"),
+            "full_sample": {
+                "cos_omega_r2": metrics["per_target"]["cos_omega"]["r2"],
+                "sin_omega_r2": metrics["per_target"]["sin_omega"]["r2"],
+                "omega_mae_deg": metrics["per_target"].get("omega_angular", {}).get("mae_deg"),
+            },
+            "checkpoint": str(args.checkpoint),
+            "csv": str(args.csv),
+        }
+        pair_out.mkdir(parents=True, exist_ok=True)
+        _write_benchmark(baseline, pair_out / "omega_e_gt_0.1.json")
         return
 
     if args.data_dir is not None:
@@ -1579,7 +2079,7 @@ def main() -> None:
             raise ValueError("NPZ mode only supports --feature-set 74")
     else:
         print(f"loading CSV from {args.csv} (feature-set={args.feature_set}) ...")
-        bundle = load_from_csv(args.csv, args.feature_set)
+        bundle = load_from_csv(args.csv, args.feature_set, max_rows=args.max_rows)
 
     print(f"dataset: {len(bundle.X):,} samples, {bundle.X.shape[1]} features -> {bundle.y.shape[1]} targets")
 
