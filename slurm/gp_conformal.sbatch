@@ -22,10 +22,14 @@
 #      call), and the noise sampler is the fresh step-1 checkpoint. Without
 #      this, psi is trained on curves shaped by the real test systems.
 #   3. conformal_shift.py    — split-CP calibrated on fake / tested on real,
-#      naive vs surrogate score (surrogate = L1 gradient descent init at
-#      theta_bar), LR-reweighted, plus the s/(gamma+v_y) and two-factor
-#      s/(gamma+v_y+v_c) normalizations, at the full n_cal=400 scale.
-#      Uses the checkpoint from step 1 as its noise proxy v_y.
+#      naive / naive_adj (paper eq 41 quantile adjustment) / surrogate
+#      (L1 gradient descent init at theta_bar), LR-reweighted, with the
+#      raw / vnorm / v2norm / papernorm (paper eqs 18-24) score variants,
+#      Assumption 2.1 noise filter + Assumption 2.3 constants, at the full
+#      n_cal=400 scale. Uses the checkpoint from step 1 as noise proxy v_y.
+#      Run TWICE: gamma tuned on the synthetic tuning set (default) and on
+#      the real val split (the paper's D_val) — both of Nicolò's candidate
+#      answers land in one job (second run -> regression/gamma_real_val/).
 #
 # Submit from the repo root:   sbatch slurm/gp_conformal.sbatch
 # -------------------------------------------------------------------------
@@ -52,10 +56,14 @@ test -f models/gp_residual_svgp.pt || { echo "retrain did not produce models/gp_
 srun python synthetic_generation/generate_synthetic_regression_csv.py
 srun python synthetic_generation/generate_lsp_regression_csv.py
 
-# ---- 3. Full-scale conformal shift run ------------------------------------
+# ---- 3. Full-scale conformal shift run (both gamma tuning sets) -----------
 srun python conformal_shift.py
+srun python conformal_shift.py --gamma-tune-on real-val \
+    --out-dir synthetic_generation/regression/gamma_real_val \
+    --fig-dir synthetic_generation/figures/synthetic_regression_10000/gamma_real_val
 
 echo "Done."
 echo "  GP metrics:  models/gp_residual_metrics.json"
 echo "  CP report:   synthetic_generation/regression/conformal_shift_report.txt"
 echo "  CP metrics:  synthetic_generation/regression/conformal_shift_metrics.json"
+echo "  CP (gamma on real val): synthetic_generation/regression/gamma_real_val/"

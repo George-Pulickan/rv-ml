@@ -43,8 +43,10 @@ evaluated on (kepler(psi(y)), psi(y), t), in units of the curve's rv_std
 (falls back to the median measurement sigma when the checkpoint is
 unavailable), and v_c = a per-coordinate model of the surrogate-label error
 E|theta_bar_c - theta*_c| (an RF on the summary features, fit on the synthetic
-tuning set where theta_bar is known).  gamma > 0 is tuned per variant on the
-same tuning set to minimize the mean support-normalized median interval width.
+tuning set where theta_bar is known).  gamma > 0 is tuned per variant to
+minimize the mean support-normalized median interval width, on the synthetic
+tuning set by default or on the real val split with --gamma-tune-on real-val
+(the paper's D_val; label-free, since only widths are measured).
 
 papernorm follows the paper draft's "Profiled uncertainty estimation" section
 literally: delta_c(y) models the re-encoding residual |psi_c(h(psi(y))) -
@@ -707,6 +709,12 @@ def main() -> None:
     ap.add_argument("--sigma-min", type=float, default=0.1)
     ap.add_argument("--sigma-max", type=float, default=100.0)
     ap.add_argument("--n-estimators", type=int, default=200)
+    ap.add_argument("--gamma-tune-on", choices=("synthetic", "real-val"),
+                    default="synthetic",
+                    help="set used to tune gamma per norm variant: the synthetic "
+                         "tuning set (default, keeps all real data held out) or "
+                         "the real val split (the paper's D_val; tuning needs no "
+                         "labels — only interval widths)")
     ap.add_argument("--no-noise-filter", action="store_true",
                     help="disable the Assumption 2.1 bounded-noise discard rule "
                          "on synthetic draws")
@@ -779,12 +787,22 @@ def main() -> None:
           f"n_test_real={len(test_real)} (weight fit: {len(wsynth)} synth vs "
           f"{len(real_train)} real-train; delta fit: {len(dnorm)})")
 
-    hat = {k: hats(v) for k, v in
-           [("cal", calib), ("tune", tune), ("syn", test_syn), ("real", test_real)]}
+    # gamma tuning set: synthetic tune (default) or the real val split (the
+    # paper's D_val — legal because tune_gamma only measures interval widths,
+    # which need psi(y) and the denominators, never labels).
+    keyed_sets = [("cal", calib), ("tune", tune), ("syn", test_syn), ("real", test_real)]
+    if args.gamma_tune_on == "real-val":
+        if args.real_split in ("val", "all"):
+            print("WARNING: --gamma-tune-on real-val overlaps --real-split "
+                  f"{args.real_split} — gamma is tuned on (part of) the test systems")
+        gtune = make_real("val", args.sigma_min, args.sigma_max)
+        print(f"gamma tuning on real val split: {len(gtune)} systems")
+        keyed_sets.append(("gtune", gtune))
+
+    hat = {k: hats(sys_) for k, sys_ in keyed_sets}
 
     v = {k: np.array([proxy.value(th, s["curve"]) for s, th in zip(sys_, hat[k])])
-         for k, sys_ in [("cal", calib), ("tune", tune), ("syn", test_syn),
-                         ("real", test_real)]}
+         for k, sys_ in keyed_sets}
 
     # Likelihood-ratio weights (fit: fresh synth vs real TRAIN; applied to cal +
     # real test). Deliberately kept on the 74-dim summary FEATURES (s["features"])
@@ -818,9 +836,7 @@ def main() -> None:
     vk_fn = fit_vk_models(np.vstack([s["features"] for s in tune]),
                           [s["theta5"] for s in tune], theta_star_tune,
                           args.seed, args.n_estimators)
-    vk = {k: vk_fn(np.vstack([s["features"] for s in sys_]))
-          for k, sys_ in [("cal", calib), ("tune", tune), ("syn", test_syn),
-                          ("real", test_real)]}
+    vk = {k: vk_fn(np.vstack([s["features"] for s in sys_])) for k, sys_ in keyed_sets}
     print("v_c median (cal): " + "  ".join(
         f"{c}={float(np.median(vk['cal'][c])):.3g}" for c in COORDS))
 
@@ -837,9 +853,10 @@ def main() -> None:
                                for j in range(len(dnorm))]) for c in COORDS}
     delta_fn = fit_delta_models(np.vstack([s["features"] for s in dnorm]),
                                 dk_targets, dy_targets, args.seed, args.n_estimators)
-    delta = {k: delta_fn(np.vstack([s["features"] for s in sys_]))
-             for k, sys_ in [("cal", calib), ("tune", tune), ("syn", test_syn),
-                             ("real", test_real)]}
+    delta = {k: delta_fn(np.vstack([s["features"] for s in sys_])) for k, sys_ in keyed_sets}
+    if args.gamma_tune_on != "real-val":
+        for d in (hat, v, vk, delta):
+            d["gtune"] = d["tune"]
     print("delta_c median (cal): " + "  ".join(
         f"{c}={float(np.median(delta['cal'][0][c])):.3g}" for c in COORDS)
         + f"  delta_y={float(np.median(delta['cal'][1])):.3g}")
@@ -878,7 +895,7 @@ def main() -> None:
     for strat in STRATEGIES:
         cs = cal_scores[strat]
         gamma_reg[strat] = {
-            kind: tune_gamma(cs, base(kind, "cal"), hat["tune"], base(kind, "tune"), sup)
+            kind: tune_gamma(cs, base(kind, "cal"), hat["gtune"], base(kind, "gtune"), sup)
             for kind in norm_kinds}
         print(f"[{strat}] " + "  ".join(
             f"gamma_{k}={gamma_reg[strat][k]:.4g}" for k in norm_kinds))
@@ -917,6 +934,7 @@ def main() -> None:
         "n_test_syn": len(test_syn), "n_test_real": len(test_real),
         "alphas": ALPHAS, "coords": COORDS,
         "proxy_source": proxy.source,
+        "gamma_tune_on": args.gamma_tune_on,
         "gamma_reg": gamma_reg,
         "weights": {"ess": ess, "frac_clipped": frac_clipped,
                     "clip_lo": 1.0 / clip, "clip_hi": clip},
