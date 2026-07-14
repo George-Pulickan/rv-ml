@@ -21,9 +21,8 @@ set -uo pipefail
 cd "$(dirname "$0")/.."
 mkdir -p slurm/logs
 
-git merge-base --is-ancestor 357632c1 HEAD 2>/dev/null || \
-    git merge-base --is-ancestor 08eb3293654b7976c6748496d3884f78a95a94fc HEAD || {
-    echo "repo predates the follow-up code — merge origin/main first"; exit 1; }
+git merge-base --is-ancestor 357632c57f1514e039cb4c17a89fc2a8ea52ec09 HEAD || {
+    echo "repo predates PR #5 (357632c) — merge origin/main first"; exit 1; }
 
 echo "$(date): follow-up 1/2 — CP rerun"
 ./slurm/run_cp_rerun.sh
