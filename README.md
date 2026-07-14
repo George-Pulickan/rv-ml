@@ -81,7 +81,7 @@ indirectly through a CSV-generation script.
 | `slurm/train_encoder.sbatch` | RHUL GPU batch job wrapping `train.py` (pretrain 300 ep on the synthetic cache → finetune 100 ep on real); submit from repo root with `sbatch slurm/train_encoder.sbatch` |
 | `slurm/gp_conformal.sbatch` | RHUL CPU batch job: full-scale SVGP retrain (LS-γ offset) → full-scale `conformal_shift.py` (n_cal=400); submit from repo root with `sbatch slurm/gp_conformal.sbatch` |
 | `injection_recovery.py` | Injection-recovery benchmark for a trained encoder |
-| `regression.py` | MLP regression on 74-dim encoder features → 5 Kepler params (default: 74-D CSV). For **e / ω**, use `--feature-set 109` with the phasefold CSV (`--with-phasefold` in `generate_synthetic_regression_csv.py`). Run **`--diagnose`** for SNR/P-baseline/LSP/sanity diagnostics before changing targets. |
+| `regression.py` | MLP regression on 74-dim encoder features → 5 Kepler params (default: 74-D CSV). For **e / ω**, use `--feature-set 109` with the phasefold CSV (`--with-phasefold` in `generate_synthetic_regression_csv.py`). The zero-inflated **e** prior (~24% exact zeros) has two opt-in counters: `--e-balance` (inverse-frequency e-loss reweighting) and `--e-head hurdle` (classify e>0 + regress on e>0 rows; compared at full scale by `slurm/regression_benchmark.sbatch` step 6). Run **`--diagnose`** for SNR/P-baseline/LSP/sanity diagnostics before changing targets. |
 
 **Uncertainty quantification (Step 6)**
 | File | Purpose |

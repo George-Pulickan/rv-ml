@@ -15,10 +15,17 @@ Targets (theta, 5-dim)
 ----------------------
     log10_P, log10_K, e, cos_omega, sin_omega
 
+The e target is zero-inflated (~24% exact zeros from the empirical prior).
+Two opt-in counters (comparable via --benchmark-gates / --two-step):
+    --e-balance        inverse-frequency reweighting of the e loss
+    --e-head hurdle    classify e>0 (6th output, BCE) + regress e on e>0 rows;
+                       at predict, e=0 where P(e>0) < 0.5
+
 Usage
 -----
     python regression.py
     python regression.py --feature-set 109 --csv synthetic_generation/datasets/synthetic_regression_10000_phasefold.csv
+    python regression.py --feature-set 109 --e-head hurdle --e-balance
     python regression.py --two-step --loss-weights-ecc
     python regression.py --benchmark-gates
 """
@@ -62,6 +69,7 @@ from feature_columns import (  # noqa: E402
 )
 from theta_loss import (
     apply_theta_constraints,
+    e_balance_weights,
     regression_theta_loss,
     theta_loss_weights_numpy,
 )
@@ -400,11 +408,19 @@ def predict(
     X_n = (X - x_mean) / x_std
     model.eval()
     with torch.no_grad():
-        pred = model(torch.from_numpy(X_n).float().to(device)).cpu().numpy()
+        raw = model(torch.from_numpy(X_n).float().to(device)).cpu().numpy()
+    n_theta = len(THETA_NAMES)
+    pred = raw[:, :n_theta].copy()
     if denorm_targets and norm_stats.get("y_mean") is not None:
         y_mean = np.asarray(norm_stats["y_mean"], dtype=np.float64)
         y_std = np.asarray(norm_stats["y_std"], dtype=np.float64)
         pred = pred * y_std + y_mean
+        if raw.shape[1] > n_theta:
+            # hurdle e head: column n_theta is the e>0 logit; the combined
+            # prediction only makes sense in physical units, so it is skipped
+            # when denorm_targets=False (raw-output inspection).
+            p_pos = 1.0 / (1.0 + np.exp(-raw[:, n_theta]))
+            pred[:, 2] = np.where(p_pos >= 0.5, pred[:, 2], 0.0)
     if constrain_e or constrain_omega:
         pred = apply_theta_constraints(pred, constrain_e=constrain_e, constrain_omega=constrain_omega)
     return pred
@@ -429,6 +445,9 @@ def train_model(
     circular_omega: bool = True,
     constrain_e: bool = True,
     constrain_omega: bool = True,
+    e_head: str = "direct",
+    e_balance: bool = False,
+    hurdle_bce_weight: float = 1.0,
 ) -> tuple[RegressionHead, dict, dict]:
     """Train the MLP and return model, predictions, and metrics."""
     X, y = bundle.X, bundle.y
@@ -477,6 +496,22 @@ def train_model(
         mask_omega=mask_omega,
         hard_omega_mask=hard_omega_mask,
     )
+
+    if e_head not in ("direct", "hurdle"):
+        raise ValueError(f"unknown e_head {e_head!r}; choose 'direct' or 'hurdle'")
+    has_ecc_train = bundle.has_ecc[train_idx].astype(bool)
+    has_ecc_val = bundle.has_ecc[val_idx].astype(bool)
+    if e_balance:
+        e_fit = y_train[has_ecc_train, 2]
+        train_sample_w[:, 2] *= e_balance_weights(e_fit, y_train[:, 2])
+        val_sample_w[:, 2] *= e_balance_weights(e_fit, y_val[:, 2])
+    if e_head == "hurdle":
+        # zero rows train the e>0 classifier only, not the e regression
+        train_sample_w[:, 2] *= (y_train[:, 2] > 0).astype(np.float64)
+        val_sample_w[:, 2] *= (y_val[:, 2] > 0).astype(np.float64)
+    train_aux = np.stack([y_train[:, 2] > 0, has_ecc_train], axis=1).astype(np.float32)
+    val_aux = np.stack([y_val[:, 2] > 0, has_ecc_val], axis=1).astype(np.float32)
+
     y_mean_t = torch.from_numpy(y_mean.astype(np.float32)).to(device)
     y_std_t = torch.from_numpy(y_std.astype(np.float32)).to(device)
 
@@ -484,12 +519,37 @@ def train_model(
         torch.from_numpy(X_train_n).float(),
         torch.from_numpy(y_train_fit).float(),
         torch.from_numpy(train_sample_w.astype(np.float32)),
+        torch.from_numpy(train_aux),
     )
     loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True)
 
+    n_theta = len(THETA_NAMES)
+    out_dim = n_theta + 1 if e_head == "hurdle" else n_theta
     in_dim = X.shape[1]
-    model = RegressionHead(in_dim=in_dim).to(device)
+    model = RegressionHead(in_dim=in_dim, out_dim=out_dim).to(device)
     optim = torch.optim.AdamW(model.parameters(), lr=lr)
+
+    def _loss(pred: torch.Tensor, target: torch.Tensor, w: torch.Tensor, aux: torch.Tensor) -> torch.Tensor:
+        loss = regression_theta_loss(
+            pred[:, :n_theta],
+            target,
+            w,
+            dim_w,
+            y_mean=y_mean_t,
+            y_std=y_std_t,
+            circular_omega=circular_omega,
+        )
+        if e_head == "hurdle":
+            bce = nn.functional.binary_cross_entropy_with_logits(
+                pred[:, n_theta], aux[:, 0], weight=aux[:, 1], reduction="sum"
+            ) / aux[:, 1].sum().clamp(min=1.0)
+            loss = loss + hurdle_bce_weight * bce
+        return loss
+
+    X_val_t = torch.from_numpy(X_val_n).float().to(device)
+    y_val_fit_t = torch.from_numpy(y_val_fit).float().to(device)
+    val_w_t = torch.from_numpy(val_sample_w.astype(np.float32)).to(device)
+    val_aux_t = torch.from_numpy(val_aux).to(device)
 
     best_val = float("inf")
     best_state: dict | None = None
@@ -497,35 +557,16 @@ def train_model(
 
     for epoch in range(1, epochs + 1):
         model.train()
-        for xb, yb, wb in loader:
-            xb, yb, wb = xb.to(device), yb.to(device), wb.to(device)
+        for xb, yb, wb, ab in loader:
+            xb, yb, wb, ab = xb.to(device), yb.to(device), wb.to(device), ab.to(device)
             optim.zero_grad()
-            pred = model(xb)
-            loss = regression_theta_loss(
-                pred,
-                yb,
-                wb,
-                dim_w,
-                y_mean=y_mean_t,
-                y_std=y_std_t,
-                circular_omega=circular_omega,
-            )
+            loss = _loss(model(xb), yb, wb, ab)
             loss.backward()
             optim.step()
 
         model.eval()
         with torch.no_grad():
-            val_pred_fit = model(torch.from_numpy(X_val_n).float().to(device))
-            val_w = torch.from_numpy(val_sample_w.astype(np.float32)).to(device)
-            val_loss_t = regression_theta_loss(
-                val_pred_fit,
-                torch.from_numpy(y_val_fit).float().to(device),
-                val_w,
-                dim_w,
-                y_mean=y_mean_t,
-                y_std=y_std_t,
-                circular_omega=circular_omega,
-            )
+            val_loss_t = _loss(model(X_val_t), y_val_fit_t, val_w_t, val_aux_t)
         val_loss = float(val_loss_t.cpu())
 
         if val_loss < best_val - 1e-6:
@@ -545,11 +586,26 @@ def train_model(
     if best_state is not None:
         model.load_state_dict(best_state)
 
-    model.eval()
-    with torch.no_grad():
-        val_pred_fit = model(torch.from_numpy(X_val_n).float().to(device)).cpu().numpy()
-    val_pred = val_pred_fit * y_std + y_mean
-    val_pred = apply_theta_constraints(val_pred, constrain_e=constrain_e, constrain_omega=constrain_omega)
+    norm_stats = {
+        "x_mean": x_mean.tolist(),
+        "x_std": x_std.tolist(),
+        "y_mean": y_mean.tolist(),
+        "y_std": y_std.tolist(),
+        "target_norm": target_norm,
+        "feature_set": feature_set,
+        "in_dim": in_dim,
+        "out_dim": out_dim,
+        "e_head": e_head,
+    }
+
+    val_pred = predict(
+        model,
+        X_val,
+        norm_stats,
+        device,
+        constrain_e=constrain_e,
+        constrain_omega=constrain_omega,
+    )
 
     val_bundle = DatasetBundle(
         X_val,
@@ -560,16 +616,6 @@ def train_model(
         has_ecc=bundle.has_ecc[val_idx],
         df=bundle.df,
     )
-
-    norm_stats = {
-        "x_mean": x_mean.tolist(),
-        "x_std": x_std.tolist(),
-        "y_mean": y_mean.tolist(),
-        "y_std": y_std.tolist(),
-        "target_norm": target_norm,
-        "feature_set": feature_set,
-        "in_dim": in_dim,
-    }
 
     metrics: dict = {
         "feature_set": feature_set,
@@ -584,7 +630,27 @@ def train_model(
         "hard_omega_mask": hard_omega_mask,
         "circular_omega": circular_omega,
         "target_norm": target_norm,
+        "e_head": e_head,
+        "e_balance": bool(e_balance),
     }
+
+    if e_head == "hurdle":
+        metrics["hurdle_bce_weight"] = float(hurdle_bce_weight)
+        with torch.no_grad():
+            logits = model(X_val_t)[:, n_theta].cpu().numpy()
+        pred_zero = logits < 0.0
+        true_zero = y_val[:, 2] <= 0.0
+        m = has_ecc_val
+        n_pred_zero = int((pred_zero & m).sum())
+        n_true_zero = int((true_zero & m).sum())
+        n_hit = int((pred_zero & true_zero & m).sum())
+        metrics["e_zero_classifier"] = {
+            "n": int(m.sum()),
+            "frac_true_zero": float(true_zero[m].mean()) if m.any() else float("nan"),
+            "acc": float((pred_zero[m] == true_zero[m]).mean()) if m.any() else float("nan"),
+            "recall_zero": n_hit / n_true_zero if n_true_zero else float("nan"),
+            "precision_zero": n_hit / n_pred_zero if n_pred_zero else float("nan"),
+        }
 
     if checkpoint_path is not None:
         checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1281,7 +1347,8 @@ def load_checkpoint_and_predict_val(
     ckpt = torch.load(checkpoint_path, map_location=device, weights_only=False)
     norm_stats = ckpt["norm_stats"]
     in_dim = int(norm_stats["in_dim"])
-    model = RegressionHead(in_dim=in_dim).to(device)
+    out_dim = int(norm_stats.get("out_dim", len(THETA_NAMES)))
+    model = RegressionHead(in_dim=in_dim, out_dim=out_dim).to(device)
     model.load_state_dict(ckpt["model"])
     model.eval()
 
@@ -1344,6 +1411,9 @@ def _theta_train_kwargs(args: argparse.Namespace) -> dict:
         "circular_omega": not args.no_circular_omega,
         "constrain_e": not args.no_constrain_e,
         "constrain_omega": not args.no_constrain_omega,
+        "e_head": args.e_head,
+        "e_balance": args.e_balance,
+        "hurdle_bce_weight": args.hurdle_bce_weight,
     }
 
 
@@ -1386,6 +1456,23 @@ def parse_args() -> argparse.Namespace:
         "--no-circular-omega",
         action="store_true",
         help="use MSE on cos/sin instead of circular 1-cos(delta omega) loss",
+    )
+    p.add_argument(
+        "--e-head",
+        choices=("direct", "hurdle"),
+        default="direct",
+        help="hurdle: classify e>0 (6th output) and regress e on e>0 rows only",
+    )
+    p.add_argument(
+        "--e-balance",
+        action="store_true",
+        help="inverse-frequency reweighting of the e loss (counters the zero-inflated e prior)",
+    )
+    p.add_argument(
+        "--hurdle-bce-weight",
+        type=float,
+        default=1.0,
+        help="weight of the e>0 classifier BCE term (only with --e-head hurdle)",
     )
     p.add_argument("--no-constrain-e", action="store_true", help="do not clip e to [0, 0.99] at predict")
     p.add_argument("--no-constrain-omega", action="store_true", help="do not L2-normalize cos/sin omega at predict")
@@ -1581,7 +1668,11 @@ def main() -> None:
             y_real,
             row_idx=np.arange(len(y_real)),
             e=y_real[:, 2],
-            has_t_peri=real_df.get("has_t_peri", pd.Series(0.0)).to_numpy(dtype=float)[valid_real],
+            has_t_peri=(
+                real_df["has_t_peri"].to_numpy(dtype=float)[valid_real]
+                if "has_t_peri" in real_df.columns
+                else np.zeros(len(y_real))
+            ),
             has_ecc=np.ones(len(y_real), dtype=bool),
             df=real_df,
         )

@@ -100,6 +100,42 @@ def theta_loss_weights_torch(
     return w
 
 
+def e_balance_weights(
+    e_train: np.ndarray,
+    e_query: np.ndarray | None = None,
+    *,
+    n_bins: int = 20,
+    max_ratio: float = 10.0,
+) -> np.ndarray:
+    """
+    Inverse-frequency loss weights for the zero-inflated e target.
+
+    e == 0 (the prior's point mass) is its own category; e > 0 is binned into
+    n_bins equal bins over (0, 1]. Per-sample weight is 1/freq(category) on
+    e_train, capped at max_ratio x the most-populated category's weight so
+    sparse high-e bins can't dominate, then normalized to mean 1 over e_train.
+    Returns weights for e_query (default: e_train); categories unseen in
+    e_train get the cap.
+    """
+    e_train = np.asarray(e_train, dtype=np.float64)
+    if len(e_train) == 0:
+        raise ValueError("e_train is empty")
+
+    def _cats(e: np.ndarray) -> np.ndarray:
+        e = np.clip(np.asarray(e, dtype=np.float64), 0.0, 1.0)
+        binned = 1 + np.minimum((e * n_bins).astype(int), n_bins - 1)
+        return np.where(e <= 0.0, 0, binned)
+
+    cats_train = _cats(e_train)
+    counts = np.bincount(cats_train, minlength=n_bins + 1).astype(np.float64)
+    seen = counts > 0
+    w_bin = np.full(n_bins + 1, np.inf)
+    w_bin[seen] = len(e_train) / counts[seen]
+    w_bin = np.minimum(w_bin, max_ratio * w_bin[seen].min())
+    w_bin /= np.mean(w_bin[cats_train])
+    return w_bin[_cats(e_train if e_query is None else e_query)]
+
+
 def normalize_omega_tensor(cos_sin: torch.Tensor) -> torch.Tensor:
     """L2-normalize (cos, sin) pairs along last dim. Input shape (..., 2)."""
     norm = torch.linalg.norm(cos_sin, dim=-1, keepdim=True).clamp(min=1e-8)

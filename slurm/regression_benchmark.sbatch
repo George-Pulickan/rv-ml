@@ -3,7 +3,7 @@
 #SBATCH --partition=compute        # <-- ADJUST: RHUL CPU partition name (CPU-only job)
 #SBATCH --cpus-per-task=16
 #SBATCH --mem=16G
-#SBATCH --time=12:00:00            # CSV regen (10k systems) + ~7 MLP trainings + refolds
+#SBATCH --time=12:00:00            # CSV regen (10k systems) + ~10 MLP trainings + refolds
 #SBATCH --output=slurm/logs/%x-%j.out
 #SBATCH --error=slurm/logs/%x-%j.err
 ##SBATCH --account=YOUR_ACCOUNT    # <-- UNCOMMENT + set if the cluster requires an allocation
@@ -21,6 +21,9 @@
 #   3. Gates A/B/C + loss-weight ablation -> figures/regression_synthetic/benchmark.json
 #   4. two-step P-then-shape eval -> two_step_metrics.json + checkpoints 74/109
 #   5. diagnostics suite on the 109-D checkpoint from step 4
+#   6. zero-inflated-e counters on 109-D: --e-balance / --e-head hurdle /
+#      both, vs the gate-B 109-D oracle baseline (Nicolo's e==0 pile-up
+#      concern; compare per_target.e + e_zero_classifier across variants)
 #
 # Submit from the repo root:   sbatch slurm/regression_benchmark.sbatch
 # Rsync back + commit: figures/regression_synthetic/ (benchmark.json,
@@ -62,7 +65,24 @@ srun python regression.py --two-step --device cpu
 srun python regression.py --diagnose --feature-set 109 \
     --csv "$PHASEFOLD_CSV" --checkpoint checkpoints/regression_mlp_109.pt --device cpu
 
+# ---- 6. Zero-inflated-e counters on 109-D ----------------------------------
+# Baseline for comparison = gate_b_109_oracle in benchmark.json (same
+# settings, default e head, no balancing).
+srun python regression.py --feature-set 109 --csv "$PHASEFOLD_CSV" --device cpu \
+    --e-balance \
+    --out figures/regression_synthetic/e_head_balance \
+    --checkpoint checkpoints/regression_mlp_109_ebalance.pt
+srun python regression.py --feature-set 109 --csv "$PHASEFOLD_CSV" --device cpu \
+    --e-head hurdle \
+    --out figures/regression_synthetic/e_head_hurdle \
+    --checkpoint checkpoints/regression_mlp_109_hurdle.pt
+srun python regression.py --feature-set 109 --csv "$PHASEFOLD_CSV" --device cpu \
+    --e-head hurdle --e-balance \
+    --out figures/regression_synthetic/e_head_hurdle_balance \
+    --checkpoint checkpoints/regression_mlp_109_hurdle_ebalance.pt
+
 echo "Done."
 echo "  Gates:      figures/regression_synthetic/benchmark.json"
 echo "  Two-step:   figures/regression_synthetic/two_step_metrics.json"
 echo "  Diagnostics figures/regression_synthetic/diagnostics/"
+echo "  e-head:     figures/regression_synthetic/e_head_{balance,hurdle,hurdle_balance}/metrics.json"

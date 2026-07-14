@@ -72,7 +72,8 @@ def _load_model(checkpoint_path: Path, device: torch.device) -> tuple[Regression
     ckpt = torch.load(checkpoint_path, map_location=device, weights_only=False)
     norm_stats = ckpt["norm_stats"]
     in_dim = int(norm_stats["in_dim"])
-    model = RegressionHead(in_dim=in_dim).to(device)
+    out_dim = int(norm_stats.get("out_dim", len(THETA_NAMES)))
+    model = RegressionHead(in_dim=in_dim, out_dim=out_dim).to(device)
     model.load_state_dict(ckpt["model"])
     model.eval()
     return model, norm_stats
