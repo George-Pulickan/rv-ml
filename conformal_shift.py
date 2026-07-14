@@ -32,10 +32,11 @@ looks very real relative to the calibration cloud; weights are clipped
 (--clip-weights) and the effective sample size is reported.
 
 Noise-model normalization (Nicolò confirmed 2026-07 that s' = s/(gamma + v)
-is what he meant), two variants:
+is what he meant), three variants:
 
-    vnorm   s'_c = s_c / (gamma + v_y)
-    v2norm  s'_c = s_c / (gamma + v_y + v_c)     (his two-factor version)
+    vnorm     s'_c = s_c / (gamma + v_y)
+    v2norm    s'_c = s_c / (gamma + v_y + v_c)   (his two-factor version)
+    papernorm s'_c = s_c / (gamma + delta_c + delta_y)   (Overleaf eqs 18-24)
 
 with v_y = RMS predictive std of the trained SVGP residual noise model
 evaluated on (kepler(psi(y)), psi(y), t), in units of the curve's rv_std
@@ -44,6 +45,30 @@ unavailable), and v_c = a per-coordinate model of the surrogate-label error
 E|theta_bar_c - theta*_c| (an RF on the summary features, fit on the synthetic
 tuning set where theta_bar is known).  gamma > 0 is tuned per variant on the
 same tuning set to minimize the mean support-normalized median interval width.
+
+papernorm follows the paper draft's "Profiled uncertainty estimation" section
+literally: delta_c(y) models the re-encoding residual |psi_c(h(psi(y))) -
+psi_c(y)| (the noiseless reconstruction is re-encoded with the observation's
+time grid and measurement sigmas, then passed through psi again — eq 18) and
+delta_y(y) models the mean-absolute reconstruction error mean_t |y_t -
+h(psi(y), t)| in rv_std units (eq 19).  Both are RFs on the 74-dim summary
+features, fit on a supplementary synthetic set (the paper's D_theta / D_y).
+
+Paper-spec additions (Overleaf Theory section):
+  * naive_adj — the naive strategy with the surrogate-gap quantile adjustment
+    q_alpha = q~_alpha + Delta_c (eq 41): the naive calibration scores are
+    inflated by Delta_c = max over the tuning set of |theta_bar_c - theta*_c|
+    (the empirical stand-in for eps*C_noise*C_H*C_Delta; the distribution of
+    the gap is reported so the max/p90/median choice can be revisited).
+  * Assumption 2.1 (bounded noise) filter — synthetic draws whose max_t
+    |y_t - kepler(theta_bar, t)| (rv_std units) exceeds the bound estimated
+    on real TRAIN curves via max_y max_t |y_t - kepler(psi(y), t)| are
+    discarded at generation time (--no-noise-filter to disable); the bound
+    and rejection rate are reported.
+  * Assumption 2.3 constants — kappa(H) (finite-difference Hessian of the L2
+    reconstruction loss, 5-dim decoder parameterization) and ||grad h||
+    (autograd Jacobian spectral norm) are estimated on --n-constants prior
+    draws and reported (eps*C_noise from the real-train bound above).
 
 Usage
 -----
@@ -80,12 +105,14 @@ from conformal import (
 )
 from feature_columns import TARGET_COLUMNS  # noqa: E402
 from train_regression_models import _build  # noqa: E402
+from eval_omega_nn_vs_rf import _summary_row  # noqa: E402
+from preprocess import compute_lsp
 
 ROOT = Path(__file__).resolve().parent
 
 ALPHAS = [0.05, 0.10, 0.15, 0.20, 0.30, 0.40]
-STRATEGIES = ["naive", "surrogate"]
-NORMS = ["raw", "vnorm", "v2norm"]
+STRATEGIES = ["naive", "naive_adj", "surrogate"]
+NORMS = ["raw", "vnorm", "v2norm", "papernorm"]
 
 
 # ---------------------------------------------------------------------------
@@ -229,6 +256,147 @@ class NoiseProxy:
             return max(v_ms / curve["rv_std"], 1e-6)
         except Exception:
             return max(fallback, 1e-6)
+
+
+# ---------------------------------------------------------------------------
+# Paper-spec conditional residuals delta_c / delta_y (Overleaf eqs 18-19),
+# the Assumption 2.1 noise-bound filter, and Assumption 2.3 constants
+# ---------------------------------------------------------------------------
+
+
+def recon_residual_norm(proxy: "NoiseProxy", theta5: np.ndarray, curve: dict) -> np.ndarray:
+    """Masked residual y_t - kepler(theta5, t) in the curve's rv_std units."""
+    rv_ms, _ = proxy._pred_curve_ms(theta5, curve)
+    m = curve["mask"] > 0.5
+    return (curve["rv_obs"][m] * curve["rv_std"] - rv_ms) / curve["rv_std"]
+
+
+def reencode_features(proxy: "NoiseProxy", theta5: np.ndarray, curve: dict) -> tuple[dict, np.ndarray]:
+    """feat_row + LSP of the noiseless reconstruction h(psi(y)) so it can be
+    passed through psi again (eq 18).  The reconstruction keeps the
+    observation's time grid and per-obs measurement sigmas (sigma belongs to
+    the instrument, not the noise realization) and is normalized by its own
+    std, exactly as a fresh observed curve would be."""
+    rv_ms, t_days = proxy._pred_curve_ms(theta5, curve)
+    m = curve["mask"] > 0.5
+    sig_ms = curve["sig"][m] * curve["rv_std"]
+    std = max(float(np.std(rv_ms)), 1e-6)
+    xm = np.stack([
+        curve["t_norm"][m],
+        (rv_ms - np.median(rv_ms)) / std,
+        sig_ms / std,
+        np.ones(int(m.sum()), dtype=np.float32),
+    ])
+    info = {"rv_std_ms": std, "t_span_days": curve["t_span"], "n_obs": int(m.sum())}
+    lsp = compute_lsp(t_days, rv_ms, sig_ms)
+    return _summary_row(xm, info, lsp), np.asarray(lsp, dtype=float)
+
+
+def fit_delta_models(feats: np.ndarray, dk_targets: dict, dy_targets: np.ndarray,
+                     seed: int, n_estimators: int = 200):
+    """RF models of the paper's conditional residuals on the summary features:
+    delta_c(y) ~ E|psi_c(h(psi(y))) - psi_c(y)| per coordinate (eq 18) and
+    delta_y(y) ~ E mean_t|y_t - h(psi(y),t)| (eq 19).  Returns
+    delta(feats) -> ({coord: (n,) array}, (n,) array), all nonnegative."""
+    from sklearn.ensemble import RandomForestRegressor
+
+    models = {}
+    for c in COORDS:
+        m = RandomForestRegressor(n_estimators=n_estimators, random_state=seed, n_jobs=-1)
+        m.fit(feats, dk_targets[c])
+        models[c] = m
+    m_y = RandomForestRegressor(n_estimators=n_estimators, random_state=seed, n_jobs=-1)
+    m_y.fit(feats, dy_targets)
+
+    def delta(f: np.ndarray) -> tuple[dict, np.ndarray]:
+        dk = {c: np.maximum(models[c].predict(f), 0.0) for c in COORDS}
+        return dk, np.maximum(m_y.predict(f), 0.0)
+
+    return delta
+
+
+def noise_bound_from_real(proxy: "NoiseProxy", systems: list, theta_hats: list) -> float:
+    """Assumption 2.1 bound (eps*C_noise estimate): max over real curves of
+    max_t |y_t - kepler(psi(y), t)| in rv_std units.  |y - h(psi(y))| upper-
+    bounds |y - h(theta)| per the paper's Theory section."""
+    return float(max(np.abs(recon_residual_norm(proxy, th, s["curve"])).max()
+                     for s, th in zip(systems, theta_hats)))
+
+
+def make_synthetic_filtered(n: int, seed: int, bound: float | None,
+                            proxy: "NoiseProxy", max_tries: int = 6) -> tuple[list, int]:
+    """make_synthetic + the Assumption 2.1 discard rule: reject draws whose
+    max_t |y_t - kepler(theta_bar, t)| (rv_std units) exceeds the real-data
+    noise bound.  Returns (accepted systems, number generated)."""
+    if bound is None:
+        return make_synthetic(n, seed), n
+    out: list = []
+    n_gen = 0
+    for k in range(max_tries):
+        batch = make_synthetic(n, seed + 131 * k)
+        n_gen += len(batch)
+        for s in batch:
+            stat = float(np.abs(recon_residual_norm(proxy, s["theta5"], s["curve"])).max())
+            if stat <= bound:
+                out.append(s)
+            if len(out) == n:
+                return out, n_gen
+    raise RuntimeError(f"noise-bound filter rejected too much: {len(out)}/{n} "
+                       f"accepted after {n_gen} draws (bound={bound:.3g})")
+
+
+def estimate_constants(proxy: "NoiseProxy", n: int, seed: int) -> dict:
+    """Empirical Assumption 2.3 constants on prior draws, in the 5-dim decoder
+    parameterization: kappa(H) with H the finite-difference Hessian of the L2
+    reconstruction loss at theta_bar, and ||grad h|| the spectral norm of the
+    autograd Jacobian of the masked reconstruction."""
+    systems = make_synthetic(n, seed)
+    kappas, grad_norms = [], []
+    eps = 1e-3
+    for s in systems:
+        curve = s["curve"]
+        th0 = np.asarray(s["theta5"], dtype=np.float64)
+
+        def loss(th: np.ndarray) -> float:
+            r = recon_residual_norm(proxy, th.astype(np.float64), curve)
+            return float(np.mean(r ** 2))
+
+        H = np.zeros((5, 5))
+        f0 = loss(th0)
+        for i in range(5):
+            for j in range(i, 5):
+                ei, ej = np.eye(5)[i] * eps, np.eye(5)[j] * eps
+                if i == j:
+                    H[i, i] = (loss(th0 + ei) - 2 * f0 + loss(th0 - ei)) / eps ** 2
+                else:
+                    H[i, j] = H[j, i] = (
+                        loss(th0 + ei + ej) - loss(th0 + ei - ej)
+                        - loss(th0 - ei + ej) + loss(th0 - ei - ej)
+                    ) / (4 * eps ** 2)
+        sv = np.linalg.svd(H, compute_uv=False)
+        kappas.append(float(sv.max() / max(sv.min(), 1e-12)))
+
+        m = torch.from_numpy(curve["mask"]).unsqueeze(0)
+        t_norm = torch.from_numpy(curve["t_norm"]).unsqueeze(0)
+        rv_obs = torch.from_numpy(curve["rv_obs"]).unsqueeze(0)
+        t_span = torch.tensor([curve["t_span"]], dtype=torch.float32)
+        t_min = torch.tensor([curve["t_min"]], dtype=torch.float32)
+        rv_std = torch.tensor([curve["rv_std"]], dtype=torch.float32)
+
+        def h_fn(th: torch.Tensor) -> torch.Tensor:
+            rv = proxy.decoder(th.unsqueeze(0), t_norm, t_span, t_min, rv_obs, rv_std, m)
+            return (rv * m)[0]
+
+        J = torch.autograd.functional.jacobian(
+            h_fn, torch.as_tensor(th0, dtype=torch.float32))
+        grad_norms.append(float(torch.linalg.matrix_norm(J, ord=2)))
+
+    def _pct(v: list) -> dict:
+        a = np.asarray(v)
+        return {"median": float(np.median(a)), "p90": float(np.percentile(a, 90)),
+                "max": float(a.max())}
+
+    return {"n_draws": n, "kappa_H": _pct(kappas), "grad_h_spectral_norm": _pct(grad_norms)}
 
 
 # ---------------------------------------------------------------------------
@@ -462,13 +630,27 @@ def write_report(report: dict, path: Path) -> None:
              f"clipped to [{report['weights']['clip_lo']:g}, {report['weights']['clip_hi']:g}], "
              f"{report['weights']['frac_clipped']:.1%} clipped",
              "v_c median (cal): " + "  ".join(
-                 f"{c}={report['vk_median']['cal'][c]:.3g}" for c in COORDS),
-             ""]
+                 f"{c}={report['vk_median']['cal'][c]:.3g}" for c in COORDS)]
+    nf = report.get("noise_filter", {})
+    if nf.get("enabled"):
+        lines.append(f"noise filter (Assumption 2.1): bound={nf['bound_rv_std']:.3g} "
+                     f"rv_std units, rejected {nf['rejection_rate']:.1%} of "
+                     f"{nf['n_generated']} draws")
+    if report.get("naive_adjustment"):
+        lines.append("naive_adj Delta_c (max |theta_bar - theta*| on tune): " + "  ".join(
+            f"{c}={report['naive_adjustment'][c]['used_max']:.3g}" for c in COORDS))
+    ac = report.get("assumption_constants")
+    if ac:
+        lines.append(f"Assumption 2.3 constants ({ac['n_draws']} draws): "
+                     f"kappa(H) med={ac['kappa_H']['median']:.3g} "
+                     f"max={ac['kappa_H']['max']:.3g}; ||grad h|| "
+                     f"med={ac['grad_h_spectral_norm']['median']:.3g} "
+                     f"max={ac['grad_h_spectral_norm']['max']:.3g}")
+    lines.append("")
     for strat in STRATEGIES:
         gr = report["gamma_reg"][strat]
-        lines.append(f"##### STRATEGY: {strat} "
-                     f"(gamma_vnorm={gr['vnorm']:.4g}, "
-                     f"gamma_v2norm={gr['v2norm']:.4g}) #####")
+        lines.append(f"##### STRATEGY: {strat} ("
+                     + ", ".join(f"gamma_{k}={gr[k]:.4g}" for k in gr) + ") #####")
         med = report["cal_score_median"][strat]
         lines.append("calibration score median per coord: "
                      + "  ".join(f"{c}={med[c]:.3g}" for c in COORDS))
@@ -525,6 +707,12 @@ def main() -> None:
     ap.add_argument("--sigma-min", type=float, default=0.1)
     ap.add_argument("--sigma-max", type=float, default=100.0)
     ap.add_argument("--n-estimators", type=int, default=200)
+    ap.add_argument("--no-noise-filter", action="store_true",
+                    help="disable the Assumption 2.1 bounded-noise discard rule "
+                         "on synthetic draws")
+    ap.add_argument("--n-constants", type=int, default=25,
+                    help="prior draws for the Assumption 2.3 constants "
+                         "(kappa(H), ||grad h||); 0 skips")
     ap.add_argument("--seed", type=int, default=0)
     args = ap.parse_args()
     args.out_dir.mkdir(parents=True, exist_ok=True)
@@ -538,13 +726,12 @@ def main() -> None:
     df = pd.read_csv(args.csv)
     feature_cols = [c for c in df.columns if c not in TARGET_COLUMNS]
 
+    def _row(fr: dict, lsp: np.ndarray) -> list:
+        return [fr[c] if c in fr else lsp[int(c.rsplit("_", 1)[1]) - 1]
+                for c in feature_cols]
+
     def feat_matrix(systems: list) -> np.ndarray:
-        rows = []
-        for s in systems:
-            fr, lsp = s["feat_row"], s["lsp"]
-            rows.append([fr[c] if c in fr else lsp[int(c.rsplit("_", 1)[1]) - 1]
-                         for c in feature_cols])
-        return np.asarray(rows, dtype=float)
+        return np.asarray([_row(s["feat_row"], s["lsp"]) for s in systems], dtype=float)
 
     rf = _build("separate", args.n_estimators, args.seed, list(TARGET_COLUMNS))
     rf.fit(df[feature_cols].to_numpy(float), df[list(TARGET_COLUMNS)].to_numpy(float))
@@ -553,26 +740,48 @@ def main() -> None:
     grids = histogram_grids(args.grid, args.seed)
     sup = _support(grids)
 
-    print("building systems ...")
-    calib = make_synthetic(args.n_cal, args.seed + 1)
-    tune = make_synthetic(args.n_tune, args.seed + 11)
-    test_syn = make_synthetic(args.n_test, args.seed + 2)
-    wsynth = make_synthetic(args.n_weight_synth, args.seed + 21)
-    test_real = make_real(args.real_split, args.sigma_min, args.sigma_max)
-    real_train = make_real("train", args.sigma_min, args.sigma_max)
-    print(f"n_cal={len(calib)} n_tune={len(tune)} n_test_syn={len(test_syn)} "
-          f"n_test_real={len(test_real)} (weight fit: {len(wsynth)} synth vs "
-          f"{len(real_train)} real-train)")
-
     def hats(systems):
         return list(rf.predict(feat_matrix(systems)))
+
+    # Uncertainty proxy v (from the trained noise model) — built first because
+    # the noise-bound filter and the paper-norm residuals decode through it.
+    proxy = NoiseProxy()
+    print(f"noise proxy source: {proxy.source}")
+
+    print("building real systems ...")
+    test_real = make_real(args.real_split, args.sigma_min, args.sigma_max)
+    real_train = make_real("train", args.sigma_min, args.sigma_max)
+
+    # Assumption 2.1 bound from real TRAIN curves (eps*C_noise estimate).
+    bound = None
+    if not args.no_noise_filter:
+        bound = noise_bound_from_real(proxy, real_train, hats(real_train))
+        print(f"noise bound (max |y - h(psi(y))| on real train, rv_std units): {bound:.3g}")
+
+    print("building synthetic systems ...")
+    n_gen_total = 0
+    calib, g = make_synthetic_filtered(args.n_cal, args.seed + 1, bound, proxy)
+    n_gen_total += g
+    tune, g = make_synthetic_filtered(args.n_tune, args.seed + 11, bound, proxy)
+    n_gen_total += g
+    test_syn, g = make_synthetic_filtered(args.n_test, args.seed + 2, bound, proxy)
+    n_gen_total += g
+    wsynth, g = make_synthetic_filtered(args.n_weight_synth, args.seed + 21, bound, proxy)
+    n_gen_total += g
+    dnorm, g = make_synthetic_filtered(args.n_tune, args.seed + 31, bound, proxy)
+    n_gen_total += g
+    n_kept = len(calib) + len(tune) + len(test_syn) + len(wsynth) + len(dnorm)
+    rejection_rate = 1.0 - n_kept / max(n_gen_total, 1)
+    if bound is not None:
+        print(f"noise filter: kept {n_kept}/{n_gen_total} draws "
+              f"(rejection rate {rejection_rate:.1%})")
+    print(f"n_cal={len(calib)} n_tune={len(tune)} n_test_syn={len(test_syn)} "
+          f"n_test_real={len(test_real)} (weight fit: {len(wsynth)} synth vs "
+          f"{len(real_train)} real-train; delta fit: {len(dnorm)})")
 
     hat = {k: hats(v) for k, v in
            [("cal", calib), ("tune", tune), ("syn", test_syn), ("real", test_real)]}
 
-    # Uncertainty proxy v per system (from the trained noise model).
-    proxy = NoiseProxy()
-    print(f"noise proxy source: {proxy.source}")
     v = {k: np.array([proxy.value(th, s["curve"]) for s, th in zip(sys_, hat[k])])
          for k, sys_ in [("cal", calib), ("tune", tune), ("syn", test_syn),
                          ("real", test_real)]}
@@ -615,28 +824,64 @@ def main() -> None:
     print("v_c median (cal): " + "  ".join(
         f"{c}={float(np.median(vk['cal'][c])):.3g}" for c in COORDS))
 
-    # Calibration scores per strategy and coordinate.
+    # Paper-spec conditional residuals delta_c / delta_y (eqs 18-19), fit on
+    # the supplementary synthetic set dnorm (the paper's D_theta / D_y).
+    print("fitting paper-norm delta models (re-encode + reconstruction residuals) ...")
+    hat_dnorm = hats(dnorm)
+    dy_targets = np.array([
+        float(np.mean(np.abs(recon_residual_norm(proxy, th, s["curve"]))))
+        for s, th in zip(dnorm, hat_dnorm)])
+    reenc = [reencode_features(proxy, th, s["curve"]) for s, th in zip(dnorm, hat_dnorm)]
+    psi_reenc = rf.predict(np.asarray([_row(fr, lsp) for fr, lsp in reenc], dtype=float))
+    dk_targets = {c: np.array([_coord_abs_err(psi_reenc[j], hat_dnorm[j], c)
+                               for j in range(len(dnorm))]) for c in COORDS}
+    delta_fn = fit_delta_models(np.vstack([s["features"] for s in dnorm]),
+                                dk_targets, dy_targets, args.seed, args.n_estimators)
+    delta = {k: delta_fn(np.vstack([s["features"] for s in sys_]))
+             for k, sys_ in [("cal", calib), ("tune", tune), ("syn", test_syn),
+                             ("real", test_real)]}
+    print("delta_c median (cal): " + "  ".join(
+        f"{c}={float(np.median(delta['cal'][0][c])):.3g}" for c in COORDS)
+        + f"  delta_y={float(np.median(delta['cal'][1])):.3g}")
+
+    # Calibration scores per strategy and coordinate.  naive_adj = naive with
+    # the paper's quantile adjustment (eq 41): calibration scores inflated by
+    # the per-coordinate surrogate gap Delta_c = max over the tuning set of
+    # |theta_bar_c - theta*_c| (shifting all calibration scores by Delta_c
+    # shifts every raw quantile by exactly Delta_c).
+    gap = {c: np.array([_coord_abs_err(tune[j]["theta5"], theta_star_tune[j], c)
+                        for j in range(len(tune))]) for c in COORDS}
+    adj = {c: float(gap[c].max()) for c in COORDS}
+    naive_scores = {c: np.array([_coord_abs_err(hat["cal"][j], calib[j]["theta5"], c)
+                                 for j in range(len(calib))]) for c in COORDS}
     cal_scores = {
-        "naive": {c: np.array([_coord_abs_err(hat["cal"][j], calib[j]["theta5"], c)
-                               for j in range(len(calib))]) for c in COORDS},
+        "naive": naive_scores,
+        "naive_adj": {c: naive_scores[c] + adj[c] for c in COORDS},
         "surrogate": {c: np.array([_coord_abs_err(hat["cal"][j], theta_star[j], c)
                                    for j in range(len(calib))]) for c in COORDS},
     }
+    print("naive_adj Delta_c (max gap on tune): " + "  ".join(
+        f"{c}={adj[c]:.3g}" for c in COORDS))
 
-    # Denominator bases per norm variant: vnorm = v_y, v2norm = v_y + v_c.
+    # Denominator bases per norm variant: vnorm = v_y, v2norm = v_y + v_c,
+    # papernorm = delta_c + delta_y (eqs 20/23).
     def base(kind: str, key: str) -> dict:
         if kind == "vnorm":
             return {c: v[key] for c in COORDS}
+        if kind == "papernorm":
+            dk, dy = delta[key]
+            return {c: dk[c] + dy for c in COORDS}
         return {c: v[key] + vk[key][c] for c in COORDS}
 
+    norm_kinds = [k for k in NORMS if k != "raw"]
     results, gamma_reg = {}, {}
     for strat in STRATEGIES:
         cs = cal_scores[strat]
         gamma_reg[strat] = {
             kind: tune_gamma(cs, base(kind, "cal"), hat["tune"], base(kind, "tune"), sup)
-            for kind in ["vnorm", "v2norm"]}
-        print(f"[{strat}] gamma_vnorm={gamma_reg[strat]['vnorm']:.4g} "
-              f"gamma_v2norm={gamma_reg[strat]['v2norm']:.4g}")
+            for kind in norm_kinds}
+        print(f"[{strat}] " + "  ".join(
+            f"gamma_{k}={gamma_reg[strat][k]:.4g}" for k in norm_kinds))
         results[strat] = {}
         for norm in NORMS:
             if norm == "raw":
@@ -659,6 +904,14 @@ def main() -> None:
                 print(f"  [{strat}/{norm}/{dom}] joint@0.90={r['joint_coverage']:.3f} "
                       f"inf={r['frac_infinite']:.2f}")
 
+    constants = None
+    if args.n_constants > 0:
+        print(f"estimating Assumption 2.3 constants on {args.n_constants} prior draws ...")
+        constants = estimate_constants(proxy, args.n_constants, args.seed + 41)
+        print(f"  kappa(H) median={constants['kappa_H']['median']:.3g} "
+              f"max={constants['kappa_H']['max']:.3g}  "
+              f"||grad h|| median={constants['grad_h_spectral_norm']['median']:.3g}")
+
     report = {
         "n_cal": len(calib), "n_tune": len(tune),
         "n_test_syn": len(test_syn), "n_test_real": len(test_real),
@@ -671,6 +924,24 @@ def main() -> None:
                              for s in STRATEGIES},
         "vk_median": {k: {c: float(np.median(vk[k][c])) for c in COORDS}
                       for k in ["cal", "real"]},
+        "delta_median": {
+            "delta_c_cal": {c: float(np.median(delta["cal"][0][c])) for c in COORDS},
+            "delta_y_cal": float(np.median(delta["cal"][1])),
+            "delta_c_real": {c: float(np.median(delta["real"][0][c])) for c in COORDS},
+            "delta_y_real": float(np.median(delta["real"][1])),
+        },
+        "naive_adjustment": {
+            c: {"used_max": adj[c],
+                "median": float(np.median(gap[c])),
+                "p90": float(np.percentile(gap[c], 90))} for c in COORDS},
+        "noise_filter": {
+            "enabled": bound is not None,
+            "bound_rv_std": bound,
+            "n_generated": n_gen_total,
+            "n_kept": n_kept,
+            "rejection_rate": rejection_rate if bound is not None else 0.0,
+        },
+        "assumption_constants": constants,
         "results": results,
     }
     (args.out_dir / "conformal_shift_metrics.json").write_text(
