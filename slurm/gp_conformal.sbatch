@@ -62,6 +62,23 @@ srun python conformal_shift.py --gamma-tune-on real-val \
     --out-dir synthetic_generation/regression/gamma_real_val \
     --fig-dir synthetic_generation/figures/synthetic_regression_10000/gamma_real_val
 
+# ---- 4. Push artifacts to the rhul-results branch --------------------------
+# Commits on the current branch and pushes HEAD to rhul-results, so sequential
+# jobs / reruns fast-forward. Needs push credentials (PAT or SSH key) on the
+# cluster. A failed push never fails the job — artifacts stay on disk.
+# Excluded (large, regenerable): synthetic_lsp_regression_10000.csv (~130 MB).
+git add -f \
+    models/gp_residual_svgp.pt models/gp_residual_metrics.json \
+    figures/gp_residual \
+    synthetic_generation/datasets/synthetic_regression_10000.csv \
+    synthetic_generation/regression \
+    synthetic_generation/figures/synthetic_regression_10000 \
+    slurm/logs || true
+git -c user.name="George" -c user.email="pulickan06@gmail.com" \
+    commit -m "RHUL results: gp_conformal ($(date +%F), job ${SLURM_JOB_ID:-manual})" || true
+git push origin HEAD:refs/heads/rhul-results || \
+    echo "WARNING: push failed — fix credentials, then: git push origin HEAD:refs/heads/rhul-results"
+
 echo "Done."
 echo "  GP metrics:  models/gp_residual_metrics.json"
 echo "  CP report:   synthetic_generation/regression/conformal_shift_report.txt"

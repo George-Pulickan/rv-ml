@@ -81,6 +81,21 @@ srun python regression.py --feature-set 109 --csv "$PHASEFOLD_CSV" --device cpu 
     --out figures/regression_synthetic/e_head_hurdle_balance \
     --checkpoint checkpoints/regression_mlp_109_hurdle_ebalance.pt
 
+# ---- 7. Push artifacts to the rhul-results branch --------------------------
+# Same convention as gp_conformal.sbatch step 4: commit on the current branch,
+# push HEAD to rhul-results (fast-forwards after the gp_conformal push when
+# chained with --dependency). -f covers the gitignored diagnostics/two-step
+# outputs. checkpoints/ stay excluded (large, regenerable). Push failure
+# never fails the job.
+git add -f \
+    "$PHASEFOLD_CSV" \
+    figures/regression_synthetic \
+    slurm/logs || true
+git -c user.name="George" -c user.email="pulickan06@gmail.com" \
+    commit -m "RHUL results: regression_benchmark ($(date +%F), job ${SLURM_JOB_ID:-manual})" || true
+git push origin HEAD:refs/heads/rhul-results || \
+    echo "WARNING: push failed — fix credentials, then: git push origin HEAD:refs/heads/rhul-results"
+
 echo "Done."
 echo "  Gates:      figures/regression_synthetic/benchmark.json"
 echo "  Two-step:   figures/regression_synthetic/two_step_metrics.json"
