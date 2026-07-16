@@ -1,4 +1,4 @@
-"""Unit tests for the zero-inflated e-target counters (--e-balance, --e-head hurdle)."""
+"""Unit tests for the zero-inflated e-target counters (--e-balance, --e-head hurdle/dual)."""
 
 from __future__ import annotations
 
@@ -129,6 +129,52 @@ class TestEHeadTraining(unittest.TestCase):
     def test_hurdle_rejects_unknown_head(self):
         with self.assertRaises(ValueError):
             self._train(e_head="bogus")
+
+    def test_dual_shapes_metrics_and_roundtrip(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            ckpt = Path(tmp) / "dual.pt"
+            bundle = _toy_bundle(n=500)
+            model, preds, metrics = train_model(
+                bundle,
+                feature_set="74",
+                epochs=3,
+                batch_size=64,
+                lr=1e-3,
+                val_frac=0.2,
+                seed=0,
+                device=torch.device("cpu"),
+                patience=10,
+                checkpoint_path=ckpt,
+                e_head="dual",
+            )
+            self.assertEqual(metrics["e_head"], "dual")
+            self.assertEqual(metrics["norm_stats"]["e_head"], "dual")
+            self.assertIn("gate_threshold", metrics["norm_stats"])
+            self.assertEqual(preds["y_pred"].shape[1], 5)
+            self.assertGreater(metrics["n_train_circ"], 0)
+            self.assertGreater(metrics["n_train_ecc"], 0)
+            e_pred = preds["y_pred"][:, 2]
+            self.assertTrue(((e_pred >= 0.0) & (e_pred <= 0.99)).all())
+            clf = metrics["e_zero_classifier"]
+            self.assertEqual(clf["n"], len(preds["y_pred"]))
+            self.assertIn("f1_zero", clf)
+            self.assertIn("e_report", metrics)
+            self.assertIn("e_gt_0", metrics["e_report"])
+
+            y_val, y_pred, loaded = load_checkpoint_and_predict_val(
+                bundle, ckpt, val_frac=0.2, seed=0, device=torch.device("cpu")
+            )
+            np.testing.assert_allclose(y_pred, preds["y_pred"], rtol=1e-5, atol=1e-6)
+            self.assertIn("e_report", loaded)
+            self.assertTrue(hasattr(model, "gate") and hasattr(model, "circ") and hasattr(model, "ecc"))
+
+    def test_gate_balanced_weights_equal_mass(self):
+        from regression import _gate_balanced_weights
+
+        is_pos = np.array([True, True, True, False])
+        has = np.ones(4, dtype=bool)
+        w = _gate_balanced_weights(is_pos, has)
+        self.assertAlmostEqual(float(w[is_pos].sum()), float(w[~is_pos].sum()), places=6)
 
 
 if __name__ == "__main__":
