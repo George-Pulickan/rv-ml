@@ -1,15 +1,4 @@
-"""
-regression.py — MLP on RV features (74 / 35 / 109-D) → Kepler params.
-
-Feature sets: 74 (spectral+summary), 35 (phase-fold), 109 (74+35).
-Targets: log10_P, log10_K, e, cos_omega, sin_omega.
-
-    python regression.py --feature-set 109 --csv .../synthetic_regression_10000_phasefold.csv
-    python regression.py --two-step --stage2-fold predicted --period-source lsp_peak
-    python regression.py --benchmark-gates
-    python regression.py --period-tolerance --feature-set 109 --checkpoint checkpoints/regression_mlp_109.pt
-    python regression.py --e-head-ablate
-"""
+"""MLP: RV features (74 / 35 / 109-D) → Kepler params (theta or h/k)."""
 
 from __future__ import annotations
 
@@ -49,10 +38,16 @@ from feature_columns import (  # noqa: E402
     SPECTRAL_GRID_SIZE,
 )
 from theta_loss import (
+    apply_hk_constraints,
     apply_theta_constraints,
     e_balance_weights,
+    hk_to_theta,
+    regression_hk_loss,
     regression_theta_loss,
+    theta_loss_weights_hk_numpy,
     theta_loss_weights_numpy,
+    theta_to_hk,
+    HK_DIM,
 )
 from time_series_features import phase_fold_features, spectral_features
 
@@ -77,6 +72,107 @@ TARGET_LABELS = {
 
 GATE_A_E_R2 = 0.15
 GATE_A_OMEGA_R2 = 0.10
+
+E_BANDS = (
+    ("e_0.1_0.3", 0.1, 0.3),
+    ("e_0.3_0.5", 0.3, 0.5),
+    ("e_gt_0.5", 0.5, 1.01),
+)
+
+
+def _snr_for_rows(bundle: DatasetBundle, local_idx: np.ndarray | None = None) -> np.ndarray | None:
+    if "median_sigma_ms" not in bundle.df.columns or bundle.y.shape[1] < 2:
+        return None
+    rows = bundle.row_idx if local_idx is None else bundle.row_idx[local_idx]
+    sigma = bundle.df["median_sigma_ms"].to_numpy(dtype=float)[rows]
+    log_k = bundle.y[:, 1] if local_idx is None else bundle.y[local_idx, 1]
+    return (10 ** log_k) / np.clip(sigma, 1e-6, None)
+
+
+def _bundle_with_targets(bundle: DatasetBundle, targets: str) -> DatasetBundle:
+    if targets == "theta":
+        return bundle
+    if targets != "hk":
+        raise ValueError(f"unknown targets {targets!r}")
+    return DatasetBundle(
+        bundle.X,
+        theta_to_hk(bundle.y),
+        row_idx=bundle.row_idx,
+        e=bundle.e,
+        has_t_peri=bundle.has_t_peri,
+        has_ecc=bundle.has_ecc,
+        df=bundle.df,
+    )
+
+
+def _to_theta_space(y: np.ndarray, targets: str) -> np.ndarray:
+    if targets == "theta":
+        return np.asarray(y, dtype=np.float64)
+    return hk_to_theta(apply_hk_constraints(y))
+
+
+def _remap_loss_weights(loss_weights: np.ndarray | None, n_out: int, *, use_hk: bool) -> np.ndarray:
+    """Map CLI 5-D weights onto 4-D h/k when needed."""
+    if loss_weights is None:
+        return np.ones(n_out, dtype=np.float64)
+    w = np.asarray(loss_weights, dtype=np.float64)
+    if len(w) == n_out:
+        return w
+    if use_hk and len(w) == 5:
+        om = 0.5 * (w[3] + w[4])
+        return np.array([w[0], w[1], om, om], dtype=np.float64)
+    raise ValueError(f"loss_weights length {len(w)} != {n_out}")
+
+
+def stratified_omega_report(y_true: np.ndarray, y_pred: np.ndarray, *, snr: np.ndarray | None = None) -> dict:
+    e = np.asarray(y_true[:, 2], dtype=np.float64)
+    out: dict = {"by_e_band": {}}
+    for name, lo, hi in E_BANDS:
+        m = (e >= lo) & (e < hi)
+        n = int(m.sum())
+        if n < 3:
+            out["by_e_band"][name] = {"n": n, "omega_mae_deg": float("nan"), "cos_r2": float("nan"), "sin_r2": float("nan")}
+            continue
+        out["by_e_band"][name] = {
+            "n": n,
+            "omega_mae_deg": _omega_mae_deg(y_true[m], y_pred[m]),
+            "cos_r2": _r2(y_true[m, 3], y_pred[m, 3]),
+            "sin_r2": _r2(y_true[m, 4], y_pred[m, 4]),
+        }
+    if snr is not None:
+        snr = np.asarray(snr, dtype=np.float64)
+        valid = np.isfinite(snr) & (e > 0.1)
+        out["by_snr_tertile"] = {}
+        if int(valid.sum()) >= 9:
+            qs = np.quantile(snr[valid], [1 / 3, 2 / 3])
+            edges = [-np.inf, float(qs[0]), float(qs[1]), np.inf]
+            labels = ("low", "mid", "high")
+            for i, lab in enumerate(labels):
+                m = valid & (snr >= edges[i]) & (snr < edges[i + 1])
+                n = int(m.sum())
+                out["by_snr_tertile"][lab] = {
+                    "n": n,
+                    "omega_mae_deg": _omega_mae_deg(y_true[m], y_pred[m]) if n >= 3 else float("nan"),
+                    "snr_lo": edges[i] if np.isfinite(edges[i]) else None,
+                    "snr_hi": edges[i + 1] if np.isfinite(edges[i + 1]) else None,
+                }
+    return out
+
+
+def _print_stratified_omega(report: dict) -> None:
+    bands = report.get("by_e_band") or {}
+    if bands:
+        print("omega by e-band:")
+        for name, row in bands.items():
+            print(
+                f"  {name:12s}  n={row['n']:4d}  MAE={row['omega_mae_deg']:.1f} deg  "
+                f"cos R2={row['cos_r2']:.3f}  sin R2={row['sin_r2']:.3f}"
+            )
+    snr_rows = report.get("by_snr_tertile") or {}
+    if snr_rows:
+        print("omega by SNR tertile (e>0.1):")
+        for name, row in snr_rows.items():
+            print(f"  {name:12s}  n={row['n']:4d}  MAE={row['omega_mae_deg']:.1f} deg")
 
 
 def _feature_columns(feature_set: str) -> list[str]:
@@ -423,6 +519,16 @@ class RegressionHead(nn.Module):
         return self.net(x)
 
 
+class DualEHead(nn.Module):
+    """Gate + circular (e=0) and eccentric specialists."""
+
+    def __init__(self, gate: RegressionHead, circ: RegressionHead, ecc: RegressionHead):
+        super().__init__()
+        self.gate = gate
+        self.circ = circ
+        self.ecc = ecc
+
+
 def _r2(y_true: np.ndarray, y_pred: np.ndarray) -> float:
     ss_res = float(np.sum((y_true - y_pred) ** 2))
     ss_tot = float(np.sum((y_true - y_true.mean()) ** 2))
@@ -440,9 +546,7 @@ def _omega_mae_deg(y_true: np.ndarray, y_pred: np.ndarray) -> float:
 
 def _physical_mae(y_true: np.ndarray, y_pred: np.ndarray, name: str) -> float | None:
     j = THETA_NAMES.index(name)
-    if name == "log10_P":
-        return float(np.mean(np.abs(10 ** y_pred[:, j] - 10 ** y_true[:, j])))
-    if name == "log10_K":
+    if name in ("log10_P", "log10_K"):
         return float(np.mean(np.abs(10 ** y_pred[:, j] - 10 ** y_true[:, j])))
     if name in ("cos_omega", "sin_omega"):
         return None
@@ -453,6 +557,7 @@ def _subset_masks(bundle: DatasetBundle) -> dict[str, np.ndarray]:
     return {
         "all": np.ones(len(bundle.y), dtype=bool),
         "has_ecc": bundle.has_ecc.astype(bool),
+        "e_gt_0": bundle.has_ecc & (bundle.e > 0.0),
         "e_gt_0.1": bundle.has_ecc & (bundle.e > 0.1),
         "has_t_peri": bundle.has_t_peri.astype(bool),
         "e_gt_0.1_has_t_peri": bundle.has_t_peri.astype(bool) & (bundle.e > 0.1),
@@ -494,8 +599,143 @@ def _subset_metrics(
     return out
 
 
-def predict(
-    model: RegressionHead,
+def _denorm_theta(raw: np.ndarray, y_mean: np.ndarray, y_std: np.ndarray) -> np.ndarray:
+    return raw * y_std + y_mean
+
+
+def _sigmoid_np(z: np.ndarray) -> np.ndarray:
+    z = np.asarray(z, dtype=np.float64)
+    return 1.0 / (1.0 + np.exp(-np.clip(z, -50.0, 50.0)))
+
+
+def _gate_balanced_weights(
+    is_pos: np.ndarray,
+    has_ecc: np.ndarray,
+) -> np.ndarray:
+    """Inverse-frequency weights so e=0 and e>0 contribute equally (mean 1 on has_ecc)."""
+    has_ecc = np.asarray(has_ecc, dtype=bool)
+    is_pos = np.asarray(is_pos, dtype=bool)
+    w = np.zeros(len(is_pos), dtype=np.float64)
+    m = has_ecc
+    if not m.any():
+        return w
+    n_pos = int((is_pos & m).sum())
+    n_zero = int((~is_pos & m).sum())
+    n = int(m.sum())
+    if n_pos == 0 or n_zero == 0:
+        w[m] = 1.0
+        return w
+    w[is_pos & m] = 0.5 * n / n_pos
+    w[~is_pos & m] = 0.5 * n / n_zero
+    return w
+
+
+def _zero_class_metrics(
+    true_zero: np.ndarray,
+    pred_zero: np.ndarray,
+    has_ecc: np.ndarray,
+) -> dict[str, float | int]:
+    """Accuracy / precision / recall / F1 for the e=0 class."""
+    m = np.asarray(has_ecc, dtype=bool)
+    tz = np.asarray(true_zero, dtype=bool)
+    pz = np.asarray(pred_zero, dtype=bool)
+    n = int(m.sum())
+    n_true_zero = int((tz & m).sum())
+    n_pred_zero = int((pz & m).sum())
+    n_hit = int((pz & tz & m).sum())
+    recall = n_hit / n_true_zero if n_true_zero else float("nan")
+    precision = n_hit / n_pred_zero if n_pred_zero else float("nan")
+    if np.isfinite(recall) and np.isfinite(precision) and (recall + precision) > 0:
+        f1 = 2.0 * precision * recall / (precision + recall)
+    else:
+        f1 = float("nan")
+    return {
+        "n": n,
+        "frac_true_zero": float(tz[m].mean()) if n else float("nan"),
+        "acc": float((pz[m] == tz[m]).mean()) if n else float("nan"),
+        "recall_zero": float(recall),
+        "precision_zero": float(precision),
+        "f1_zero": float(f1),
+    }
+
+
+def _e_subset_report(y_true: np.ndarray, y_pred: np.ndarray) -> dict[str, dict]:
+    """e R² / MAE on all / e>0 / e>0.1 (honest continuous-e scores)."""
+    e_t = np.asarray(y_true[:, 2], dtype=np.float64)
+    e_p = np.asarray(y_pred[:, 2], dtype=np.float64)
+
+    def _one(mask: np.ndarray) -> dict[str, float | int]:
+        n = int(mask.sum())
+        if n == 0:
+            return {"n": 0, "r2": float("nan"), "mae": float("nan")}
+        return {
+            "n": n,
+            "r2": float(_r2(e_t[mask], e_p[mask])),
+            "mae": float(np.mean(np.abs(e_p[mask] - e_t[mask]))),
+        }
+
+    return {
+        "all": _one(np.ones(len(e_t), dtype=bool)),
+        "e_gt_0": _one(e_t > 0.0),
+        "e_gt_0.1": _one(e_t > OMEGA_EVAL_E_MIN),
+    }
+
+
+def _select_gate_threshold(
+    logits: np.ndarray,
+    true_zero: np.ndarray,
+    has_ecc: np.ndarray,
+    *,
+    true_e: np.ndarray | None = None,
+    candidates: np.ndarray | None = None,
+    false_circ_penalty: float = 1.5,
+) -> tuple[float, dict]:
+    """Pick P(e>0) threshold: max F1(zero) − penalty for routing e>0.1 as circular."""
+    if candidates is None:
+        candidates = np.linspace(0.15, 0.85, 15)
+    probs = _sigmoid_np(logits)
+    true_e = None if true_e is None else np.asarray(true_e, dtype=np.float64)
+    has_ecc = np.asarray(has_ecc, dtype=bool)
+    best_t = 0.5
+    best_score = -1e9
+    best: dict = {"f1_zero": float("nan"), "score": best_score, "false_circ_e_gt_0.1": float("nan")}
+    for t in candidates:
+        pred_zero = probs < float(t)
+        m = _zero_class_metrics(true_zero, pred_zero, has_ecc)
+        f1 = m["f1_zero"]
+        if not np.isfinite(f1):
+            continue
+        false_circ = 0.0
+        recall_ecc = 1.0
+        if true_e is not None:
+            ecc_m = has_ecc & (true_e > 0.1)
+            if ecc_m.any():
+                false_circ = float(pred_zero[ecc_m].mean())
+                recall_ecc = float((~pred_zero[ecc_m]).mean())
+        score = float(f1) + float(recall_ecc) - false_circ_penalty * float(false_circ)
+        if score > best_score:
+            best_score = score
+            best_t = float(t)
+            best = {
+                **m,
+                "score": float(score),
+                "false_circ_e_gt_0.1": float(false_circ),
+                "recall_ecc_e_gt_0.1": float(recall_ecc),
+            }
+    return best_t, best
+
+
+def _frac_forced_omega0(y_true: np.ndarray, y_pred: np.ndarray, *, e_min: float = 0.1) -> float:
+    """Fraction of true e>e_min rows whose pred is exactly the circ convention (cos=1, sin=0)."""
+    mask = np.asarray(y_true[:, 2], dtype=np.float64) > e_min
+    if not mask.any():
+        return float("nan")
+    forced = (np.abs(y_pred[mask, 3] - 1.0) < 1e-5) & (np.abs(y_pred[mask, 4]) < 1e-5)
+    return float(forced.mean())
+
+
+def predict_dual(
+    model: DualEHead,
     X: np.ndarray,
     norm_stats: dict,
     device: torch.device,
@@ -504,28 +744,497 @@ def predict(
     constrain_e: bool = True,
     constrain_omega: bool = True,
 ) -> np.ndarray:
-    """Apply the trained MLP; optionally denormalize and project to physical ranges."""
+    """Gate-route through circ/ecc specialists; always returns 5-D theta."""
+    x_mean = np.asarray(norm_stats["x_mean"], dtype=np.float64)
+    x_std = np.asarray(norm_stats["x_std"], dtype=np.float64)
+    gate_threshold = float(norm_stats.get("gate_threshold", 0.5))
+    targets = norm_stats.get("targets", "theta")
+    X_n = (X - x_mean) / x_std
+    model.eval()
+    with torch.no_grad():
+        xt = torch.from_numpy(X_n).float().to(device)
+        logits = model.gate(xt).squeeze(-1).cpu().numpy()
+        circ_raw = model.circ(xt).cpu().numpy()
+        ecc_raw = model.ecc(xt).cpu().numpy()
+
+    if denorm_targets:
+        circ_stats = norm_stats["circ"]
+        ecc_stats = norm_stats["ecc"]
+        circ = _denorm_theta(
+            circ_raw,
+            np.asarray(circ_stats["y_mean"], dtype=np.float64),
+            np.asarray(circ_stats["y_std"], dtype=np.float64),
+        )
+        ecc = _denorm_theta(
+            ecc_raw,
+            np.asarray(ecc_stats["y_mean"], dtype=np.float64),
+            np.asarray(ecc_stats["y_std"], dtype=np.float64),
+        )
+    else:
+        circ, ecc = circ_raw.copy(), ecc_raw.copy()
+
+    if targets == "hk":
+        circ[:, 2] = 0.0
+        circ[:, 3] = 0.0
+    else:
+        circ[:, 2] = 0.0
+        circ[:, 3] = 1.0
+        circ[:, 4] = 0.0
+
+    use_ecc = _sigmoid_np(logits) >= gate_threshold
+    pred = np.where(use_ecc[:, None], ecc, circ)
+    if targets == "hk":
+        pred = _to_theta_space(pred, "hk")
+    if constrain_e or constrain_omega:
+        pred = apply_theta_constraints(pred, constrain_e=constrain_e, constrain_omega=constrain_omega)
+    return pred
+
+
+def predict(
+    model: nn.Module,
+    X: np.ndarray,
+    norm_stats: dict,
+    device: torch.device,
+    *,
+    denorm_targets: bool = True,
+    constrain_e: bool = True,
+    constrain_omega: bool = True,
+) -> np.ndarray:
+    """Predict 5-D theta (h/k decoded when targets=hk)."""
+    if isinstance(model, DualEHead) or norm_stats.get("e_head") == "dual":
+        return predict_dual(
+            model,
+            X,
+            norm_stats,
+            device,
+            denorm_targets=denorm_targets,
+            constrain_e=constrain_e,
+            constrain_omega=constrain_omega,
+        )
+
+    targets = norm_stats.get("targets", "theta")
+    n_out = HK_DIM if targets == "hk" else len(THETA_NAMES)
     x_mean = np.asarray(norm_stats["x_mean"], dtype=np.float64)
     x_std = np.asarray(norm_stats["x_std"], dtype=np.float64)
     X_n = (X - x_mean) / x_std
     model.eval()
     with torch.no_grad():
         raw = model(torch.from_numpy(X_n).float().to(device)).cpu().numpy()
-    n_theta = len(THETA_NAMES)
-    pred = raw[:, :n_theta].copy()
+    pred = raw[:, :n_out].copy()
     if denorm_targets and norm_stats.get("y_mean") is not None:
         y_mean = np.asarray(norm_stats["y_mean"], dtype=np.float64)
         y_std = np.asarray(norm_stats["y_std"], dtype=np.float64)
         pred = pred * y_std + y_mean
-        if raw.shape[1] > n_theta:
-            # hurdle e head: column n_theta is the e>0 logit; the combined
-            # prediction only makes sense in physical units, so it is skipped
-            # when denorm_targets=False (raw-output inspection).
-            p_pos = 1.0 / (1.0 + np.exp(-raw[:, n_theta]))
-            pred[:, 2] = np.where(p_pos >= 0.5, pred[:, 2], 0.0)
+        if raw.shape[1] > n_out:
+            p_pos = 1.0 / (1.0 + np.exp(-raw[:, n_out]))
+            if targets == "hk":
+                pred[:, 2:] = np.where(p_pos[:, None] >= 0.5, pred[:, 2:], 0.0)
+            else:
+                pred[:, 2] = np.where(p_pos >= 0.5, pred[:, 2], 0.0)
+    if targets == "hk":
+        pred = _to_theta_space(pred, "hk")
     if constrain_e or constrain_omega:
         pred = apply_theta_constraints(pred, constrain_e=constrain_e, constrain_omega=constrain_omega)
     return pred
+
+
+def _fit_mlp_loop(
+    model: RegressionHead,
+    *,
+    train_ds: TensorDataset,
+    batch_size: int,
+    epochs: int,
+    lr: float,
+    patience: int,
+    device: torch.device,
+    loss_fn,
+    X_val_t: torch.Tensor,
+    y_val_t: torch.Tensor,
+    val_extra: tuple[torch.Tensor, ...] = (),
+    log_prefix: str = "",
+) -> RegressionHead:
+    """AdamW + early stopping on val loss; mutates and returns ``model``."""
+    loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True)
+    optim = torch.optim.AdamW(model.parameters(), lr=lr)
+    best_val = float("inf")
+    best_state: dict | None = None
+    stale = 0
+    for epoch in range(1, epochs + 1):
+        model.train()
+        for batch in loader:
+            batch = tuple(t.to(device) for t in batch)
+            optim.zero_grad()
+            loss_fn(model(batch[0]), *batch[1:]).backward()
+            optim.step()
+
+        model.eval()
+        with torch.no_grad():
+            val_loss = float(loss_fn(model(X_val_t), y_val_t, *val_extra).cpu())
+
+        if val_loss < best_val - 1e-6:
+            best_val = val_loss
+            best_state = {k: v.cpu().clone() for k, v in model.state_dict().items()}
+            stale = 0
+        else:
+            stale += 1
+
+        if epoch % 50 == 0 or epoch == 1:
+            print(f"  {log_prefix}epoch {epoch:4d}  val_loss={val_loss:.5f}")
+
+        if stale >= patience:
+            print(f"  {log_prefix}early stop at epoch {epoch} (patience={patience})")
+            break
+
+    if best_state is not None:
+        model.load_state_dict(best_state)
+    return model
+
+
+def _target_norm_stats(y: np.ndarray, *, target_norm: bool) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Return (y_mean, y_std, y_fit) for a specialist subset."""
+    if target_norm:
+        y_mean = y.mean(axis=0)
+        y_std = y.std(axis=0)
+        y_std = np.where(y_std < 1e-8, 1.0, y_std)
+        return y_mean, y_std, (y - y_mean) / y_std
+    y_mean = np.zeros(y.shape[1], dtype=np.float64)
+    y_std = np.ones(y.shape[1], dtype=np.float64)
+    return y_mean, y_std, y
+
+
+def train_dual_e_models(
+    bundle: DatasetBundle,
+    *,
+    feature_set: str,
+    epochs: int,
+    batch_size: int,
+    lr: float,
+    val_frac: float,
+    seed: int,
+    device: torch.device,
+    patience: int = 30,
+    target_norm: bool = True,
+    loss_weights: np.ndarray | None = None,
+    checkpoint_path: Path | None = None,
+    mask_omega: bool = True,
+    hard_omega_mask: bool = True,
+    circular_omega: bool = True,
+    constrain_e: bool = True,
+    constrain_omega: bool = True,
+    e_balance: bool = False,
+    hurdle_bce_weight: float = 1.0,
+    gate_threshold: float | None = None,
+    targets: str = "theta",
+) -> tuple[DualEHead, dict, dict]:
+    if targets not in ("theta", "hk"):
+        raise ValueError(f"unknown targets {targets!r}")
+    bundle = _bundle_with_targets(bundle, targets)
+    use_hk = targets == "hk"
+    n_out = HK_DIM if use_hk else len(THETA_NAMES)
+
+    X, y = bundle.X, bundle.y
+    train_idx, val_idx = _val_split_indices(len(X), val_frac, seed)
+
+    X_train, y_train = X[train_idx], y[train_idx]
+    X_val, y_val = X[val_idx], y[val_idx]
+    e_train = bundle.e[train_idx]
+    e_val = bundle.e[val_idx]
+    has_ecc_train = bundle.has_ecc[train_idx].astype(bool)
+    has_ecc_val = bundle.has_ecc[val_idx].astype(bool)
+
+    x_mean = X_train.mean(axis=0)
+    x_std = X_train.std(axis=0)
+    x_std = np.where(x_std < 1e-8, 1.0, x_std)
+    X_train_n = (X_train - x_mean) / x_std
+    X_val_n = (X_val - x_mean) / x_std
+
+    loss_weights = _remap_loss_weights(loss_weights, n_out, use_hk=use_hk)
+    dim_w = torch.from_numpy(loss_weights.astype(np.float32)).to(device)
+    in_dim = X.shape[1]
+
+    train_zero = e_train <= 0.0
+    train_pos = e_train > 0.0
+    val_zero = e_val <= 0.0
+    val_pos = e_val > 0.0
+    if not train_zero.any() or not train_pos.any():
+        raise ValueError("dual e-head needs both e=0 and e>0 rows in the train split")
+    if not val_zero.any() or not val_pos.any():
+        raise ValueError("dual e-head needs both e=0 and e>0 rows in the val split")
+
+    print(f"  dual: training e=0 vs e>0 gate (class-balanced, targets={targets})")
+    gate = RegressionHead(in_dim=in_dim, out_dim=1).to(device)
+    gate_y_train = train_pos.astype(np.float32)
+    gate_y_val = val_pos.astype(np.float32)
+    gate_w_train = _gate_balanced_weights(train_pos, has_ecc_train).astype(np.float32)
+    gate_w_val = _gate_balanced_weights(val_pos, has_ecc_val).astype(np.float32)
+    gate_ds = TensorDataset(
+        torch.from_numpy(X_train_n).float(),
+        torch.from_numpy(gate_y_train),
+        torch.from_numpy(gate_w_train),
+    )
+    X_val_t = torch.from_numpy(X_val_n).float().to(device)
+    gate_y_val_t = torch.from_numpy(gate_y_val).to(device)
+    gate_w_val_t = torch.from_numpy(gate_w_val).to(device)
+
+    def _gate_loss(pred: torch.Tensor, target: torch.Tensor, w: torch.Tensor) -> torch.Tensor:
+        return hurdle_bce_weight * (
+            nn.functional.binary_cross_entropy_with_logits(
+                pred.squeeze(-1), target, weight=w, reduction="sum"
+            )
+            / w.sum().clamp(min=1.0)
+        )
+
+    _fit_mlp_loop(
+        gate,
+        train_ds=gate_ds,
+        batch_size=batch_size,
+        epochs=epochs,
+        lr=lr,
+        patience=patience,
+        device=device,
+        loss_fn=_gate_loss,
+        X_val_t=X_val_t,
+        y_val_t=gate_y_val_t,
+        val_extra=(gate_w_val_t,),
+        log_prefix="gate ",
+    )
+
+    with torch.no_grad():
+        gate_logits_val = gate(X_val_t).squeeze(-1).cpu().numpy()
+    if gate_threshold is None:
+        chosen_threshold, thr_info = _select_gate_threshold(
+            gate_logits_val,
+            val_zero,
+            has_ecc_val,
+            true_e=e_val,
+        )
+        print(
+            f"  dual: auto gate_threshold={chosen_threshold:.3f} "
+            f"(score={thr_info.get('score', float('nan')):.3f}, "
+            f"f1_zero={thr_info.get('f1_zero', float('nan')):.3f}, "
+            f"false_circ_e>0.1={thr_info.get('false_circ_e_gt_0.1', float('nan')):.3f})"
+        )
+    else:
+        chosen_threshold = float(gate_threshold)
+        print(f"  dual: using gate_threshold={chosen_threshold:.3f}")
+
+    def _theta_sample_w(y_sub: np.ndarray, has_ecc_sub: np.ndarray, e_sub: np.ndarray) -> np.ndarray:
+        if use_hk:
+            w = theta_loss_weights_hk_numpy(y_sub, has_ecc=has_ecc_sub)
+            if e_balance:
+                w[:, 2] *= e_balance_weights(e_train[has_ecc_train], e_sub)
+                w[:, 3] *= e_balance_weights(e_train[has_ecc_train], e_sub)
+            return w
+        w = theta_loss_weights_numpy(
+            y_sub,
+            has_ecc=has_ecc_sub,
+            mask_omega=mask_omega,
+            hard_omega_mask=hard_omega_mask,
+        )
+        if e_balance:
+            w[:, 2] *= e_balance_weights(e_train[has_ecc_train], y_sub[:, 2])
+        return w
+
+    def _fit_specialist(
+        name: str,
+        train_mask: np.ndarray,
+        val_mask: np.ndarray,
+    ) -> tuple[RegressionHead, dict]:
+        print(f"  dual: training {name} specialist (n_train={int(train_mask.sum())})")
+        y_tr = y_train[train_mask]
+        y_va = y_val[val_mask]
+        y_mean, y_std, y_tr_fit = _target_norm_stats(y_tr, target_norm=target_norm)
+        if target_norm:
+            y_va_fit = (y_va - y_mean) / y_std
+        else:
+            y_va_fit = y_va
+
+        w_tr = _theta_sample_w(y_tr, has_ecc_train[train_mask], e_train[train_mask])
+        w_va = _theta_sample_w(y_va, has_ecc_val[val_mask], e_val[val_mask])
+        y_mean_t = torch.from_numpy(y_mean.astype(np.float32)).to(device)
+        y_std_t = torch.from_numpy(y_std.astype(np.float32)).to(device)
+
+        ds = TensorDataset(
+            torch.from_numpy(X_train_n[train_mask]).float(),
+            torch.from_numpy(y_tr_fit.astype(np.float32)),
+            torch.from_numpy(w_tr.astype(np.float32)),
+        )
+        Xv = torch.from_numpy(X_val_n[val_mask]).float().to(device)
+        yv = torch.from_numpy(y_va_fit.astype(np.float32)).to(device)
+        wv = torch.from_numpy(w_va.astype(np.float32)).to(device)
+
+        def _reg_loss(pred: torch.Tensor, target: torch.Tensor, w: torch.Tensor) -> torch.Tensor:
+            if use_hk:
+                return regression_hk_loss(pred[:, :n_out], target, w, dim_w)
+            return regression_theta_loss(
+                pred[:, :n_out],
+                target,
+                w,
+                dim_w,
+                y_mean=y_mean_t,
+                y_std=y_std_t,
+                circular_omega=circular_omega,
+            )
+
+        head = RegressionHead(in_dim=in_dim, out_dim=n_out).to(device)
+        _fit_mlp_loop(
+            head,
+            train_ds=ds,
+            batch_size=batch_size,
+            epochs=epochs,
+            lr=lr,
+            patience=patience,
+            device=device,
+            loss_fn=_reg_loss,
+            X_val_t=Xv,
+            y_val_t=yv,
+            val_extra=(wv,),
+            log_prefix=f"{name} ",
+        )
+        stats = {"y_mean": y_mean.tolist(), "y_std": y_std.tolist()}
+        return head, stats
+
+    circ, circ_stats = _fit_specialist("circ", train_zero, val_zero)
+    ecc, ecc_stats = _fit_specialist("ecc", train_pos, val_pos)
+
+    model = DualEHead(gate, circ, ecc).to(device)
+    norm_stats = {
+        "x_mean": x_mean.tolist(),
+        "x_std": x_std.tolist(),
+        "target_norm": target_norm,
+        "feature_set": feature_set,
+        "in_dim": in_dim,
+        "out_dim": n_out,
+        "e_head": "dual",
+        "targets": targets,
+        "gate_threshold": float(chosen_threshold),
+        "circ": circ_stats,
+        "ecc": ecc_stats,
+        "y_mean": ecc_stats["y_mean"],
+        "y_std": ecc_stats["y_std"],
+    }
+
+    val_pred = predict(
+        model,
+        X_val,
+        norm_stats,
+        device,
+        constrain_e=constrain_e,
+        constrain_omega=constrain_omega,
+    )
+    y_val_theta = hk_to_theta(y_val) if use_hk else y_val
+    val_bundle = DatasetBundle(
+        X_val,
+        y_val_theta,
+        row_idx=bundle.row_idx[val_idx],
+        e=e_val,
+        has_t_peri=bundle.has_t_peri[val_idx],
+        has_ecc=has_ecc_val,
+        df=bundle.df,
+    )
+
+    with torch.no_grad():
+        logits = model.gate(X_val_t).squeeze(-1).cpu().numpy()
+    true_zero = e_val <= 0.0
+    pred_zero = _sigmoid_np(logits) < chosen_threshold
+    clf = _zero_class_metrics(true_zero, pred_zero, has_ecc_val)
+    e_report = _e_subset_report(y_val_theta, val_pred)
+    forced_omega0 = _frac_forced_omega0(y_val_theta, val_pred)
+    correct_route = (pred_zero == true_zero) & has_ecc_val
+    if correct_route.any():
+        e_r2_correct = float(_r2(y_val_theta[correct_route, 2], val_pred[correct_route, 2]))
+    else:
+        e_r2_correct = float("nan")
+    e_report["correct_route"] = {
+        "n": int(correct_route.sum()),
+        "r2": e_r2_correct,
+        "mae": (
+            float(np.mean(np.abs(val_pred[correct_route, 2] - y_val_theta[correct_route, 2])))
+            if correct_route.any()
+            else float("nan")
+        ),
+    }
+    e_report["frac_forced_omega0_e_gt_0.1"] = forced_omega0
+    strat = stratified_omega_report(y_val_theta, val_pred, snr=_snr_for_rows(val_bundle))
+
+    print(
+        f"  dual gate: acc={clf['acc']:.3f}  recall_zero={clf['recall_zero']:.3f}  "
+        f"precision_zero={clf['precision_zero']:.3f}  f1_zero={clf['f1_zero']:.3f}"
+    )
+    print(
+        f"  dual e: R2_all={e_report['all']['r2']:.3f}  "
+        f"R2_e>0={e_report['e_gt_0']['r2']:.3f}  "
+        f"R2_e>0.1={e_report['e_gt_0.1']['r2']:.3f}  "
+        f"R2_correct_route={e_r2_correct:.3f}  "
+        f"forced_omega0_on_e>0.1={forced_omega0:.3f}"
+    )
+
+    metrics: dict = {
+        "feature_set": feature_set,
+        "targets": targets,
+        "n_train": int(len(train_idx)),
+        "n_val": int(len(val_idx)),
+        "n_train_circ": int(train_zero.sum()),
+        "n_train_ecc": int(train_pos.sum()),
+        "val_mse": float(np.mean((val_pred - y_val_theta) ** 2)),
+        "per_target": _per_target_metrics(y_val_theta, val_pred),
+        "subsets": _subset_metrics(val_bundle, y_val_theta, val_pred),
+        "e_report": e_report,
+        "stratified_omega": strat,
+        "norm_stats": norm_stats,
+        "loss_weights": loss_weights.tolist(),
+        "mask_omega": mask_omega,
+        "hard_omega_mask": hard_omega_mask,
+        "circular_omega": circular_omega and not use_hk,
+        "target_norm": target_norm,
+        "e_head": "dual",
+        "e_balance": bool(e_balance),
+        "hurdle_bce_weight": float(hurdle_bce_weight),
+        "gate_threshold": float(chosen_threshold),
+        "e_zero_classifier": clf,
+    }
+
+    if checkpoint_path is not None:
+        checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
+        torch.save(
+            {
+                "model_kind": "dual",
+                "model": model.state_dict(),
+                "norm_stats": norm_stats,
+            },
+            checkpoint_path,
+        )
+        print(f"saved checkpoint -> {checkpoint_path}")
+
+    preds = {
+        "y_true": y_val_theta,
+        "y_pred": val_pred,
+        "val_idx": val_idx,
+        "train_idx": train_idx,
+        "X_val": X_val,
+        "val_row_idx": bundle.row_idx[val_idx],
+    }
+    return model, preds, metrics
+
+
+
+def build_model_from_checkpoint(ckpt: dict, device: torch.device) -> tuple[nn.Module, dict]:
+    """Rebuild a single or dual e-head model from a checkpoint dict."""
+    norm_stats = ckpt["norm_stats"]
+    in_dim = int(norm_stats["in_dim"])
+    out_dim = int(norm_stats.get("out_dim", len(THETA_NAMES)))
+    if ckpt.get("model_kind") == "dual" or norm_stats.get("e_head") == "dual":
+        model = DualEHead(
+            RegressionHead(in_dim=in_dim, out_dim=1),
+            RegressionHead(in_dim=in_dim, out_dim=out_dim),
+            RegressionHead(in_dim=in_dim, out_dim=out_dim),
+        ).to(device)
+        model.load_state_dict(ckpt["model"])
+    else:
+        model = RegressionHead(in_dim=in_dim, out_dim=out_dim).to(device)
+        model.load_state_dict(ckpt["model"])
+    model.eval()
+    return model, norm_stats
 
 
 def train_model(
@@ -550,15 +1259,45 @@ def train_model(
     e_head: str = "direct",
     e_balance: bool = False,
     hurdle_bce_weight: float = 1.0,
-) -> tuple[RegressionHead, dict, dict]:
+    gate_threshold: float | None = None,
+    targets: str = "theta",
+) -> tuple[nn.Module, dict, dict]:
     """Train the MLP and return model, predictions, and metrics."""
+    if targets not in ("theta", "hk"):
+        raise ValueError(f"unknown targets {targets!r}")
+    if e_head not in ("direct", "hurdle", "dual"):
+        raise ValueError(f"unknown e_head {e_head!r}; choose 'direct', 'hurdle', or 'dual'")
+    if e_head == "dual":
+        return train_dual_e_models(
+            bundle,
+            feature_set=feature_set,
+            epochs=epochs,
+            batch_size=batch_size,
+            lr=lr,
+            val_frac=val_frac,
+            seed=seed,
+            device=device,
+            patience=patience,
+            target_norm=target_norm,
+            loss_weights=loss_weights,
+            checkpoint_path=checkpoint_path,
+            mask_omega=mask_omega,
+            hard_omega_mask=hard_omega_mask,
+            circular_omega=circular_omega,
+            constrain_e=constrain_e,
+            constrain_omega=constrain_omega,
+            e_balance=e_balance,
+            hurdle_bce_weight=hurdle_bce_weight,
+            gate_threshold=gate_threshold,
+            targets=targets,
+        )
+
+    use_hk = targets == "hk"
+    bundle = _bundle_with_targets(bundle, targets)
+    n_out = HK_DIM if use_hk else len(THETA_NAMES)
+
     X, y = bundle.X, bundle.y
-    rng = np.random.default_rng(seed)
-    n = len(X)
-    idx = rng.permutation(n)
-    n_val = max(1, int(round(n * val_frac)))
-    val_idx = idx[:n_val]
-    train_idx = idx[n_val:]
+    train_idx, val_idx = _val_split_indices(len(X), val_frac, seed)
 
     X_train, y_train = X[train_idx], y[train_idx]
     X_val, y_val = X[val_idx], y[val_idx]
@@ -582,37 +1321,53 @@ def train_model(
     X_train_n = (X_train - x_mean) / x_std
     X_val_n = (X_val - x_mean) / x_std
 
-    if loss_weights is None:
-        loss_weights = np.ones(y.shape[1], dtype=np.float64)
+    loss_weights = _remap_loss_weights(loss_weights, n_out, use_hk=use_hk)
     dim_w = torch.from_numpy(loss_weights.astype(np.float32)).to(device)
 
-    train_sample_w = theta_loss_weights_numpy(
-        y_train,
-        has_ecc=bundle.has_ecc[train_idx],
-        mask_omega=mask_omega,
-        hard_omega_mask=hard_omega_mask,
-    )
-    val_sample_w = theta_loss_weights_numpy(
-        y_val,
-        has_ecc=bundle.has_ecc[val_idx],
-        mask_omega=mask_omega,
-        hard_omega_mask=hard_omega_mask,
-    )
-
-    if e_head not in ("direct", "hurdle"):
-        raise ValueError(f"unknown e_head {e_head!r}; choose 'direct' or 'hurdle'")
     has_ecc_train = bundle.has_ecc[train_idx].astype(bool)
     has_ecc_val = bundle.has_ecc[val_idx].astype(bool)
-    if e_balance:
-        e_fit = y_train[has_ecc_train, 2]
-        train_sample_w[:, 2] *= e_balance_weights(e_fit, y_train[:, 2])
-        val_sample_w[:, 2] *= e_balance_weights(e_fit, y_val[:, 2])
-    if e_head == "hurdle":
-        # zero rows train the e>0 classifier only, not the e regression
-        train_sample_w[:, 2] *= (y_train[:, 2] > 0).astype(np.float64)
-        val_sample_w[:, 2] *= (y_val[:, 2] > 0).astype(np.float64)
-    train_aux = np.stack([y_train[:, 2] > 0, has_ecc_train], axis=1).astype(np.float32)
-    val_aux = np.stack([y_val[:, 2] > 0, has_ecc_val], axis=1).astype(np.float32)
+    e_train = bundle.e[train_idx]
+    e_val = bundle.e[val_idx]
+
+    if use_hk:
+        train_sample_w = theta_loss_weights_hk_numpy(y_train, has_ecc=has_ecc_train)
+        val_sample_w = theta_loss_weights_hk_numpy(y_val, has_ecc=has_ecc_val)
+        if e_balance:
+            train_sample_w[:, 2] *= e_balance_weights(e_train[has_ecc_train], e_train)
+            train_sample_w[:, 3] *= e_balance_weights(e_train[has_ecc_train], e_train)
+            val_sample_w[:, 2] *= e_balance_weights(e_train[has_ecc_train], e_val)
+            val_sample_w[:, 3] *= e_balance_weights(e_train[has_ecc_train], e_val)
+        if e_head == "hurdle":
+            pos = (e_train > 0).astype(np.float64)
+            train_sample_w[:, 2] *= pos
+            train_sample_w[:, 3] *= pos
+            pos_v = (e_val > 0).astype(np.float64)
+            val_sample_w[:, 2] *= pos_v
+            val_sample_w[:, 3] *= pos_v
+        train_aux = np.stack([e_train > 0, has_ecc_train], axis=1).astype(np.float32)
+        val_aux = np.stack([e_val > 0, has_ecc_val], axis=1).astype(np.float32)
+    else:
+        train_sample_w = theta_loss_weights_numpy(
+            y_train,
+            has_ecc=has_ecc_train,
+            mask_omega=mask_omega,
+            hard_omega_mask=hard_omega_mask,
+        )
+        val_sample_w = theta_loss_weights_numpy(
+            y_val,
+            has_ecc=has_ecc_val,
+            mask_omega=mask_omega,
+            hard_omega_mask=hard_omega_mask,
+        )
+        if e_balance:
+            e_fit = y_train[has_ecc_train, 2]
+            train_sample_w[:, 2] *= e_balance_weights(e_fit, y_train[:, 2])
+            val_sample_w[:, 2] *= e_balance_weights(e_fit, y_val[:, 2])
+        if e_head == "hurdle":
+            train_sample_w[:, 2] *= (y_train[:, 2] > 0).astype(np.float64)
+            val_sample_w[:, 2] *= (y_val[:, 2] > 0).astype(np.float64)
+        train_aux = np.stack([y_train[:, 2] > 0, has_ecc_train], axis=1).astype(np.float32)
+        val_aux = np.stack([y_val[:, 2] > 0, has_ecc_val], axis=1).astype(np.float32)
 
     y_mean_t = torch.from_numpy(y_mean.astype(np.float32)).to(device)
     y_std_t = torch.from_numpy(y_std.astype(np.float32)).to(device)
@@ -625,25 +1380,27 @@ def train_model(
     )
     loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True)
 
-    n_theta = len(THETA_NAMES)
-    out_dim = n_theta + 1 if e_head == "hurdle" else n_theta
+    out_dim = n_out + 1 if e_head == "hurdle" else n_out
     in_dim = X.shape[1]
     model = RegressionHead(in_dim=in_dim, out_dim=out_dim).to(device)
     optim = torch.optim.AdamW(model.parameters(), lr=lr)
 
     def _loss(pred: torch.Tensor, target: torch.Tensor, w: torch.Tensor, aux: torch.Tensor) -> torch.Tensor:
-        loss = regression_theta_loss(
-            pred[:, :n_theta],
-            target,
-            w,
-            dim_w,
-            y_mean=y_mean_t,
-            y_std=y_std_t,
-            circular_omega=circular_omega,
-        )
+        if use_hk:
+            loss = regression_hk_loss(pred[:, :n_out], target, w, dim_w)
+        else:
+            loss = regression_theta_loss(
+                pred[:, :n_out],
+                target,
+                w,
+                dim_w,
+                y_mean=y_mean_t,
+                y_std=y_std_t,
+                circular_omega=circular_omega,
+            )
         if e_head == "hurdle":
             bce = nn.functional.binary_cross_entropy_with_logits(
-                pred[:, n_theta], aux[:, 0], weight=aux[:, 1], reduction="sum"
+                pred[:, n_out], aux[:, 0], weight=aux[:, 1], reduction="sum"
             ) / aux[:, 1].sum().clamp(min=1.0)
             loss = loss + hurdle_bce_weight * bce
         return loss
@@ -698,6 +1455,7 @@ def train_model(
         "in_dim": in_dim,
         "out_dim": out_dim,
         "e_head": e_head,
+        "targets": targets,
     }
 
     val_pred = predict(
@@ -708,51 +1466,49 @@ def train_model(
         constrain_e=constrain_e,
         constrain_omega=constrain_omega,
     )
+    y_val_theta = hk_to_theta(y_val) if use_hk else y_val
 
     val_bundle = DatasetBundle(
         X_val,
-        y_val,
+        y_val_theta,
         row_idx=bundle.row_idx[val_idx],
         e=bundle.e[val_idx],
         has_t_peri=bundle.has_t_peri[val_idx],
         has_ecc=bundle.has_ecc[val_idx],
         df=bundle.df,
     )
+    strat = stratified_omega_report(y_val_theta, val_pred, snr=_snr_for_rows(val_bundle))
 
     metrics: dict = {
         "feature_set": feature_set,
+        "targets": targets,
         "n_train": int(len(train_idx)),
         "n_val": int(len(val_idx)),
-        "val_mse": float(np.mean((val_pred - y_val) ** 2)),
-        "per_target": _per_target_metrics(y_val, val_pred),
-        "subsets": _subset_metrics(val_bundle, y_val, val_pred),
+        "val_mse": float(np.mean((val_pred - y_val_theta) ** 2)),
+        "per_target": _per_target_metrics(y_val_theta, val_pred),
+        "subsets": _subset_metrics(val_bundle, y_val_theta, val_pred),
+        "e_report": _e_subset_report(y_val_theta, val_pred),
+        "stratified_omega": strat,
         "norm_stats": norm_stats,
         "loss_weights": loss_weights.tolist(),
         "mask_omega": mask_omega,
         "hard_omega_mask": hard_omega_mask,
-        "circular_omega": circular_omega,
+        "circular_omega": circular_omega and not use_hk,
         "target_norm": target_norm,
         "e_head": e_head,
         "e_balance": bool(e_balance),
     }
 
+    true_zero = e_val <= 0.0
     if e_head == "hurdle":
         metrics["hurdle_bce_weight"] = float(hurdle_bce_weight)
         with torch.no_grad():
-            logits = model(X_val_t)[:, n_theta].cpu().numpy()
+            logits = model(X_val_t)[:, n_out].cpu().numpy()
         pred_zero = logits < 0.0
-        true_zero = y_val[:, 2] <= 0.0
-        m = has_ecc_val
-        n_pred_zero = int((pred_zero & m).sum())
-        n_true_zero = int((true_zero & m).sum())
-        n_hit = int((pred_zero & true_zero & m).sum())
-        metrics["e_zero_classifier"] = {
-            "n": int(m.sum()),
-            "frac_true_zero": float(true_zero[m].mean()) if m.any() else float("nan"),
-            "acc": float((pred_zero[m] == true_zero[m]).mean()) if m.any() else float("nan"),
-            "recall_zero": n_hit / n_true_zero if n_true_zero else float("nan"),
-            "precision_zero": n_hit / n_pred_zero if n_pred_zero else float("nan"),
-        }
+        metrics["e_zero_classifier"] = _zero_class_metrics(true_zero, pred_zero, has_ecc_val)
+    else:
+        pred_zero = val_pred[:, 2] <= 1e-3
+        metrics["e_zero_classifier"] = _zero_class_metrics(true_zero, pred_zero, has_ecc_val)
 
     if checkpoint_path is not None:
         checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
@@ -760,7 +1516,7 @@ def train_model(
         print(f"saved checkpoint -> {checkpoint_path}")
 
     preds = {
-        "y_true": y_val,
+        "y_true": y_val_theta,
         "y_pred": val_pred,
         "val_idx": val_idx,
         "train_idx": train_idx,
@@ -848,6 +1604,7 @@ def plot_single_target(
     out_path: Path,
     *,
     title: str | None = None,
+    metrics: dict | None = None,
 ) -> None:
     """True-vs-pred scatter; omega plots use e > 0.1 only."""
     yt, yp, r2, n = _omega_panel_arrays(y_true, y_pred, target)
@@ -872,6 +1629,12 @@ def plot_single_target(
                 f"{TARGET_LABELS[target]}  ($e>{OMEGA_EVAL_E_MIN:g}$, n={n})  "
                 f"$R^2$={r2:.3f}  MSE={mse:.4f}"
             )
+        elif target == "e" and metrics and "e_report" in metrics:
+            er = metrics["e_report"]
+            title = (
+                f"{TARGET_LABELS[target]}  $R^2$={r2:.3f}  "
+                f"(e>0: {er['e_gt_0']['r2']:.3f}, n={er['e_gt_0']['n']})"
+            )
         else:
             title = f"{TARGET_LABELS[target]}  $R^2$={r2:.3f}  MSE={mse:.4f}"
     ax.set_title(title)
@@ -887,6 +1650,7 @@ def plot_pred_vs_true(y_true: np.ndarray, y_pred: np.ndarray, out_path: Path, me
     out_path.parent.mkdir(parents=True, exist_ok=True)
     fig, axes = plt.subplots(1, 5, figsize=(16, 3.2))
     omega_sub = metrics.get("subsets", {}).get("e_gt_0.1", {}).get("per_target", {})
+    e_report = metrics.get("e_report") or _e_subset_report(y_true, y_pred)
 
     for j, (ax, name) in enumerate(zip(axes, THETA_NAMES)):
         yt, yp, r2_panel, n_panel = _omega_panel_arrays(y_true, y_pred, name)
@@ -899,6 +1663,10 @@ def plot_pred_vs_true(y_true: np.ndarray, y_pred: np.ndarray, out_path: Path, me
         if name in ("cos_omega", "sin_omega"):
             r2 = omega_sub.get(name, {}).get("r2", r2_panel)
             ax.set_title(f"{TARGET_LABELS[name]} ($e>{OMEGA_EVAL_E_MIN:g}$)\n$R^2$={r2:.3f}  n={n_panel}")
+        elif name == "e":
+            r2 = metrics["per_target"][name]["r2"]
+            r2_pos = e_report["e_gt_0"]["r2"]
+            ax.set_title(f"{TARGET_LABELS[name]}\n$R^2$={r2:.3f} (e>0: {r2_pos:.3f})")
         else:
             r2 = metrics["per_target"][name]["r2"]
             ax.set_title(f"{TARGET_LABELS[name]}\n$R^2$={r2:.3f}")
@@ -919,6 +1687,7 @@ def plot_all_targets_individual(
     out_dir: Path,
     *,
     prefix: str = "pred_vs_true",
+    metrics: dict | None = None,
 ) -> None:
     """One scatter per target (omega restricted to e > 0.1)."""
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -928,6 +1697,7 @@ def plot_all_targets_individual(
             y_pred,
             name,
             out_dir / f"{prefix}_{name}.png",
+            metrics=metrics,
         )
 
 
@@ -1057,6 +1827,28 @@ def _print_omega_headline(metrics: dict) -> None:
     sin_r2 = pt.get("sin_omega", {}).get("r2", float("nan"))
     mae_deg = pt.get("omega_angular", {}).get("mae_deg", float("nan"))
     print(f"omega headline (e>0.1, n={n}): angular MAE={mae_deg:.1f} deg  cos R2={cos_r2:.3f}  sin R2={sin_r2:.3f}")
+
+
+def _print_e_headline(metrics: dict) -> None:
+    er = metrics.get("e_report")
+    clf = metrics.get("e_zero_classifier")
+    if er:
+        print(
+            f"e headline: R2_all={er['all']['r2']:.3f}  "
+            f"R2_e>0={er['e_gt_0']['r2']:.3f} (n={er['e_gt_0']['n']})  "
+            f"R2_e>0.1={er['e_gt_0.1']['r2']:.3f}  "
+            f"MAE_e>0={er['e_gt_0']['mae']:.4f}"
+        )
+        if "correct_route" in er:
+            cr = er["correct_route"]
+            print(f"  e R2 correct_route={cr['r2']:.3f} (n={cr['n']})")
+    if clf:
+        print(
+            f"e=0 gate: acc={clf.get('acc', float('nan')):.3f}  "
+            f"recall={clf.get('recall_zero', float('nan')):.3f}  "
+            f"precision={clf.get('precision_zero', float('nan')):.3f}  "
+            f"f1={clf.get('f1_zero', float('nan')):.3f}"
+        )
 
 
 def eval_two_step(
@@ -1591,12 +2383,7 @@ def load_checkpoint_and_predict_val(
 ) -> tuple[np.ndarray, np.ndarray, dict]:
     """Load a saved checkpoint and predict on the validation split."""
     ckpt = torch.load(checkpoint_path, map_location=device, weights_only=False)
-    norm_stats = ckpt["norm_stats"]
-    in_dim = int(norm_stats["in_dim"])
-    out_dim = int(norm_stats.get("out_dim", len(THETA_NAMES)))
-    model = RegressionHead(in_dim=in_dim, out_dim=out_dim).to(device)
-    model.load_state_dict(ckpt["model"])
-    model.eval()
+    model, norm_stats = build_model_from_checkpoint(ckpt, device)
 
     train_idx, val_idx = _val_split_indices(len(bundle.X), val_frac, seed)
     X_val, y_val = bundle.X[val_idx], bundle.y[val_idx]
@@ -1609,23 +2396,39 @@ def load_checkpoint_and_predict_val(
         constrain_omega=constrain_omega,
     )
 
+    val_bundle = DatasetBundle(
+        X_val,
+        y_val,
+        row_idx=bundle.row_idx[val_idx],
+        e=bundle.e[val_idx],
+        has_t_peri=bundle.has_t_peri[val_idx],
+        has_ecc=bundle.has_ecc[val_idx],
+        df=bundle.df,
+    )
     metrics = {
         "val_mse": float(np.mean((y_pred - y_val) ** 2)),
         "per_target": _per_target_metrics(y_val, y_pred),
-        "subsets": _subset_metrics(
-            DatasetBundle(
-                X_val,
-                y_val,
-                row_idx=bundle.row_idx[val_idx],
-                e=bundle.e[val_idx],
-                has_t_peri=bundle.has_t_peri[val_idx],
-                has_ecc=bundle.has_ecc[val_idx],
-                df=bundle.df,
-            ),
-            y_val,
-            y_pred,
-        ),
+        "subsets": _subset_metrics(val_bundle, y_val, y_pred),
+        "e_report": _e_subset_report(y_val, y_pred),
+        "stratified_omega": stratified_omega_report(y_val, y_pred, snr=_snr_for_rows(val_bundle)),
+        "e_head": norm_stats.get("e_head", "direct"),
+        "gate_threshold": norm_stats.get("gate_threshold"),
+        "targets": norm_stats.get("targets", "theta"),
     }
+    true_zero = y_val[:, 2] <= 0.0
+    has_ecc_val = bundle.has_ecc[val_idx].astype(bool)
+    if isinstance(model, DualEHead):
+        x_mean = np.asarray(norm_stats["x_mean"], dtype=np.float64)
+        x_std = np.asarray(norm_stats["x_std"], dtype=np.float64)
+        thr = float(norm_stats.get("gate_threshold", 0.5))
+        with torch.no_grad():
+            xt = torch.from_numpy(((X_val - x_mean) / x_std).astype(np.float32)).to(device)
+            logits = model.gate(xt).squeeze(-1).cpu().numpy()
+        pred_zero = _sigmoid_np(logits) < thr
+        metrics["e_zero_classifier"] = _zero_class_metrics(true_zero, pred_zero, has_ecc_val)
+    else:
+        pred_zero = y_pred[:, 2] <= 1e-3
+        metrics["e_zero_classifier"] = _zero_class_metrics(true_zero, pred_zero, has_ecc_val)
     return y_val, y_pred, metrics
 
 
@@ -1645,8 +2448,8 @@ def _write_benchmark(benchmark: dict, path: Path) -> None:
 
 def _parse_loss_weights(s: str) -> np.ndarray:
     parts = [float(x.strip()) for x in s.split(",")]
-    if len(parts) != 5:
-        raise ValueError("--loss-weights must have 5 comma-separated values")
+    if len(parts) not in (4, 5):
+        raise ValueError("--loss-weights must have 4 (hk) or 5 (theta) comma-separated values")
     return np.asarray(parts, dtype=np.float64)
 
 
@@ -1660,6 +2463,8 @@ def _theta_train_kwargs(args: argparse.Namespace) -> dict:
         "e_head": args.e_head,
         "e_balance": args.e_balance,
         "hurdle_bce_weight": args.hurdle_bce_weight,
+        "gate_threshold": args.gate_threshold,
+        "targets": args.targets,
     }
 
 
@@ -1694,12 +2499,7 @@ def run_period_tolerance(
 
     bundle = load_from_csv(csv_path, args.feature_set, max_rows=getattr(args, "max_rows", None))
     ckpt = torch.load(args.checkpoint, map_location=device, weights_only=False)
-    norm_stats = ckpt["norm_stats"]
-    in_dim = int(norm_stats.get("in_dim", bundle.X.shape[1]))
-    out_dim = int(norm_stats.get("out_dim", len(THETA_NAMES)))
-    model = RegressionHead(in_dim=in_dim, out_dim=out_dim).to(device)
-    model.load_state_dict(ckpt["model"])
-    model.eval()
+    model, norm_stats = build_model_from_checkpoint(ckpt, device)
 
     _, val_idx = _val_split_indices(len(bundle.X), args.val_frac, args.seed)
     y_true = bundle.y[val_idx]
@@ -1765,7 +2565,7 @@ def run_period_tolerance(
 
 
 def run_e_head_ablate(args: argparse.Namespace, device: torch.device) -> dict:
-    """Compare direct / e-balance / hurdle / both on 109-D."""
+    """Train direct / balance / hurdle / dual on 109-D; promote best by e>0 R2 + F1."""
     csv_path = args.csv if args.csv != DEFAULT_CSV else PHASEFOLD_CSV
     if not csv_path.exists():
         raise FileNotFoundError(f"e-head ablate requires {csv_path}")
@@ -1775,6 +2575,8 @@ def run_e_head_ablate(args: argparse.Namespace, device: torch.device) -> dict:
         ("e_balance", {"e_head": "direct", "e_balance": True}),
         ("hurdle", {"e_head": "hurdle", "e_balance": False}),
         ("hurdle_e_balance", {"e_head": "hurdle", "e_balance": True}),
+        ("dual", {"e_head": "dual", "e_balance": False}),
+        ("dual_e_balance", {"e_head": "dual", "e_balance": True}),
     ]
     base_train = {
         k: v
@@ -1783,6 +2585,8 @@ def run_e_head_ablate(args: argparse.Namespace, device: torch.device) -> dict:
     }
     bundle = load_from_csv(csv_path, "109", max_rows=getattr(args, "max_rows", None))
     results: dict[str, dict] = {}
+    preds_by_name: dict[str, dict] = {}
+    metrics_by_name: dict[str, dict] = {}
     out_root = args.out / "e_head_ablate"
     out_root.mkdir(parents=True, exist_ok=True)
 
@@ -1808,44 +2612,119 @@ def run_e_head_ablate(args: argparse.Namespace, device: torch.device) -> dict:
             checkpoint_path=ckpt,
             **train_kw,
         )
+        er = metrics["e_report"]
+        clf = metrics.get("e_zero_classifier") or {}
+        forced = _frac_forced_omega0(preds["y_true"], preds["y_pred"])
+        er["frac_forced_omega0_e_gt_0.1"] = forced
+        metrics["frac_forced_omega0_e_gt_0.1"] = forced
         slim = {
             "per_target": metrics["per_target"],
             "subsets": metrics.get("subsets", {}),
+            "e_report": er,
             "e_zero_classifier": metrics.get("e_zero_classifier"),
+            "gate_threshold": metrics.get("gate_threshold"),
             "val_mse": metrics.get("val_mse"),
+            "frac_forced_omega0_e_gt_0.1": forced,
+            "stratified_omega": metrics.get("stratified_omega"),
+            "targets": metrics.get("targets", getattr(args, "targets", "theta")),
         }
         results[name] = slim
+        preds_by_name[name] = preds
+        metrics_by_name[name] = metrics
         _write_benchmark(slim, out_dir / "metrics.json")
         plot_pred_vs_true(preds["y_true"], preds["y_pred"], out_dir / "pred_vs_true.png", metrics)
         print(
             f"  e R2={metrics['per_target']['e']['r2']:.3f}  "
-            f"log10_P R2={metrics['per_target']['log10_P']['r2']:.3f}  "
+            f"e>0 R2={er['e_gt_0']['r2']:.3f}  "
+            f"f1_zero={clf.get('f1_zero', float('nan')):.3f}  "
+            f"forced_omega0={forced:.3f}  "
+            f"P R2={metrics['per_target']['log10_P']['r2']:.3f}  "
             f"omega MAE={_omega_mae_e_gt(metrics):.1f}"
         )
 
+    def _ablate_score(name: str) -> float:
+        er = results[name].get("e_report") or {}
+        clf = results[name].get("e_zero_classifier") or {}
+        e_pos = er.get("e_gt_0", {}).get("r2", float("nan"))
+        f1 = clf.get("f1_zero", float("nan"))
+        forced = results[name].get("frac_forced_omega0_e_gt_0.1", float("nan"))
+        e_pos = 0.0 if not np.isfinite(e_pos) else float(e_pos)
+        f1 = 0.0 if not np.isfinite(f1) else float(f1)
+        forced = 0.0 if not np.isfinite(forced) else float(forced)
+        return e_pos + f1 - 1.5 * forced
+
+    best_name = max(results, key=_ablate_score)
+    best_preds = preds_by_name[best_name]
+    best_metrics = metrics_by_name[best_name]
+
+    main_out = args.out
+    main_out.mkdir(parents=True, exist_ok=True)
+    plot_pred_vs_true(
+        best_preds["y_true"], best_preds["y_pred"], main_out / "pred_vs_true.png", best_metrics
+    )
+    plot_all_targets_individual(
+        best_preds["y_true"], best_preds["y_pred"], main_out, metrics=best_metrics
+    )
+    plot_omega_diagnostics(best_preds["y_true"], best_preds["y_pred"], main_out)
+    try:
+        from regression_diagnostics import plot_omega_vs_e, plot_parameter_pair_grid
+
+        pair_out = main_out / "diagnostics"
+        plot_omega_vs_e(best_preds["y_true"], best_preds["y_pred"], pair_out)
+        plot_parameter_pair_grid(best_preds["y_true"], best_preds["y_pred"], pair_out)
+    except Exception as exc:  # noqa: BLE001
+        print(f"  warn: diagnostics plots skipped ({exc})")
+
+    best_ckpt_src = Path("checkpoints") / f"regression_mlp_109_{best_name}.pt"
+    best_ckpt_dst = Path("checkpoints") / "regression_mlp_109_best_e.pt"
+    if best_ckpt_src.exists():
+        import shutil
+
+        shutil.copy2(best_ckpt_src, best_ckpt_dst)
+
     summary = {
         "csv": str(csv_path),
+        "targets": getattr(args, "targets", "theta"),
+        "best_variant": best_name,
+        "best_score": _ablate_score(best_name),
         "variants": {
             name: {
                 "e_r2": results[name]["per_target"]["e"]["r2"],
+                "e_gt_0_r2": (results[name].get("e_report") or {}).get("e_gt_0", {}).get("r2"),
+                "e_gt_0_mae": (results[name].get("e_report") or {}).get("e_gt_0", {}).get("mae"),
+                "f1_zero": (results[name].get("e_zero_classifier") or {}).get("f1_zero"),
+                "recall_zero": (results[name].get("e_zero_classifier") or {}).get("recall_zero"),
+                "frac_forced_omega0_e_gt_0.1": results[name].get("frac_forced_omega0_e_gt_0.1"),
                 "log10_P_r2": results[name]["per_target"]["log10_P"]["r2"],
                 "log10_K_r2": results[name]["per_target"]["log10_K"]["r2"],
                 "omega_mae_e_gt_0.1": _omega_mae_e_gt(results[name]),
+                "score": _ablate_score(name),
                 "e_zero_classifier": results[name].get("e_zero_classifier"),
+                "stratified_omega": results[name].get("stratified_omega"),
             }
             for name in results
         },
-        "note": "pick the e setting that helps without hurting P/K/omega",
+        "best_stratified_omega": results[best_name].get("stratified_omega"),
+        "note": "winner = argmax(e>0 R2 + zero F1 - 1.5*forced_omega0); main figures overwritten with winner",
     }
+    _write_benchmark(best_metrics, main_out / "metrics.json")
     _write_benchmark(summary, out_root / "comparison.json")
     print("=" * 60)
     print("e-head ablation summary")
     for name, row in summary["variants"].items():
+        mark = " <-- best" if name == best_name else ""
+        f1v = row["f1_zero"]
+        f1s = f"{float(f1v):.3f}" if f1v is not None and np.isfinite(f1v) else "nan"
+        epos = row["e_gt_0_r2"]
+        eposs = f"{float(epos):.3f}" if epos is not None and np.isfinite(epos) else "nan"
         print(
-            f"  {name:20s}  e R2={row['e_r2']:.3f}  "
-            f"P R2={row['log10_P_r2']:.3f}  K R2={row['log10_K_r2']:.3f}  "
-            f"omega MAE={row['omega_mae_e_gt_0.1']:.1f}"
+            f"  {name:20s}  e R2={row['e_r2']:.3f}  e>0 R2={eposs}  "
+            f"f1_zero={f1s}  "
+            f"P R2={row['log10_P_r2']:.3f}  score={row['score']:.3f}{mark}"
         )
+    print(f"promoted {best_name} -> {main_out / 'pred_vs_true.png'} and {best_ckpt_dst}")
+    print(f"winner stratified omega ({best_name}):")
+    _print_stratified_omega(results[best_name].get("stratified_omega") or {})
     return summary
 
 
@@ -1885,9 +2764,19 @@ def parse_args() -> argparse.Namespace:
     )
     p.add_argument(
         "--e-head",
-        choices=("direct", "hurdle"),
+        choices=("direct", "hurdle", "dual"),
         default="direct",
-        help="hurdle: classify e>0 (6th output) and regress e on e>0 rows only",
+        help=(
+            "direct: single MLP; "
+            "hurdle: shared MLP + e>0 classifier; "
+            "dual: separate MLPs for e=0 and e≠0 plus a gate"
+        ),
+    )
+    p.add_argument(
+        "--targets",
+        choices=("theta", "hk"),
+        default="theta",
+        help="theta: e,cosω,sinω (default); hk: k=e cosω, h=e sinω then decode",
     )
     p.add_argument(
         "--e-balance",
@@ -1898,7 +2787,16 @@ def parse_args() -> argparse.Namespace:
         "--hurdle-bce-weight",
         type=float,
         default=1.0,
-        help="weight of the e>0 classifier BCE term (only with --e-head hurdle)",
+        help="weight of the e>0 classifier BCE term (hurdle / dual gate)",
+    )
+    p.add_argument(
+        "--gate-threshold",
+        type=float,
+        default=None,
+        help=(
+            "P(e>0) decision threshold for --e-head dual "
+            "(default: auto-select on val to max zero-class F1)"
+        ),
     )
     p.add_argument("--no-constrain-e", action="store_true", help="do not clip e to [0, 0.99] at predict")
     p.add_argument("--no-constrain-omega", action="store_true", help="do not L2-normalize cos/sin omega at predict")
@@ -2031,7 +2929,7 @@ def main() -> None:
         )
         args.out.mkdir(parents=True, exist_ok=True)
         plot_pred_vs_true(y_true, y_pred, args.out / "pred_vs_true.png", metrics)
-        plot_all_targets_individual(y_true, y_pred, args.out)
+        plot_all_targets_individual(y_true, y_pred, args.out, metrics=metrics)
         e_mask = y_true[:, 2] > OMEGA_EVAL_E_MIN
         if e_mask.any():
             plot_e_scatter(
@@ -2051,7 +2949,13 @@ def main() -> None:
             if name in ("cos_omega", "sin_omega"):
                 continue
             print(f"  {name:12s}  R2={metrics['per_target'][name]['r2']:.3f}")
+        _print_e_headline(metrics)
         _print_omega_headline(metrics)
+        strat = metrics.get("stratified_omega")
+        if strat is None:
+            strat = stratified_omega_report(y_true, y_pred, snr=_snr_for_rows(bundle))
+            metrics["stratified_omega"] = strat
+        _print_stratified_omega(strat)
         omega_sub = metrics.get("subsets", {}).get("e_gt_0.1", {}).get("per_target", {})
         baseline = {
             "e_min": OMEGA_EVAL_E_MIN,
@@ -2060,6 +2964,7 @@ def main() -> None:
             "cos_omega_r2": omega_sub.get("cos_omega", {}).get("r2"),
             "sin_omega_r2": omega_sub.get("sin_omega", {}).get("r2"),
             "omega_mae_deg": omega_sub.get("omega_angular", {}).get("mae_deg"),
+            "stratified_omega": strat,
             "full_sample": {
                 "cos_omega_r2": metrics["per_target"]["cos_omega"]["r2"],
                 "sin_omega_r2": metrics["per_target"]["sin_omega"]["r2"],
@@ -2121,7 +3026,7 @@ def main() -> None:
 
     args.out.mkdir(parents=True, exist_ok=True)
     plot_pred_vs_true(preds["y_true"], preds["y_pred"], args.out / "pred_vs_true.png", metrics)
-    plot_all_targets_individual(preds["y_true"], preds["y_pred"], args.out)
+    plot_all_targets_individual(preds["y_true"], preds["y_pred"], args.out, metrics=metrics)
     plot_e_scatter(preds["y_true"], preds["y_pred"], args.out / "combined_scatter_e.png", f"e ({args.feature_set}-D)")
     e_mask = preds["y_true"][:, 2] > 0.1
     if e_mask.any():
@@ -2152,8 +3057,6 @@ def main() -> None:
         print(f"real transfer: excluded {n_excluded} rows (missing phase-fold / non-finite)")
 
     if len(y_real) == 0:
-        # Real systems have no catalog t_peri, so phase-fold features are NaN
-        # and every row is dropped for feature sets 35 / 109.
         print("real transfer: no real systems with finite features; skipping transfer eval")
         metrics["real_transfer"] = {
             "n_real": 0,
@@ -2201,7 +3104,10 @@ def main() -> None:
     for name in THETA_NAMES:
         t = metrics["per_target"][name]
         print(f"  {name:12s}  R2={t['r2']:.3f}  MSE={t['mse']:.5f}")
+    _print_e_headline(metrics)
     _print_omega_headline(metrics)
+    if metrics.get("stratified_omega"):
+        _print_stratified_omega(metrics["stratified_omega"])
     if "per_target" in metrics["real_transfer"]:
         rt = metrics["real_transfer"]["per_target"][args.combined_target]
         print(f"real transfer ({args.combined_target}): R2={rt['r2']:.3f}  MSE={rt['mse']:.5f}")
