@@ -1,10 +1,4 @@
-"""
-Shared per-target loss weights and circular omega loss for Kepler regression.
-
-Masking policy (matches models.encoder.encoder_loss when hard=True):
-  - dims 2-4 zeroed when has_ecc is False
-  - cos/sin omega zeroed when e <= OMEGA_EPS (hard) or down-weighted (soft sigmoid)
-"""
+"""Shared Kepler regression losses: theta (e, cos ω, sin ω) and h/k (k=e cos ω, h=e sin ω)."""
 
 from __future__ import annotations
 
@@ -18,6 +12,9 @@ THETA_DIM = 5
 OMEGA_COS_IDX = 3
 OMEGA_SIN_IDX = 4
 
+HK_NAMES = ["log10_P", "log10_K", "k", "h"]
+HK_DIM = len(HK_NAMES)
+
 
 def omega_gate_weights(
     e_phys: np.ndarray | torch.Tensor,
@@ -25,7 +22,6 @@ def omega_gate_weights(
     gate_center: float = OMEGA_EPS,
     gate_width: float = OMEGA_GATE_WIDTH,
 ) -> np.ndarray | torch.Tensor:
-    """Sigmoid gate in [0, 1]: ~0 for e < gate_center, ~1 for e > gate_center + 0.1."""
     if isinstance(e_phys, torch.Tensor):
         return torch.sigmoid((e_phys.clamp(0.0, 1.0) - gate_center) * gate_width)
     e = np.clip(np.asarray(e_phys, dtype=np.float64), 0.0, 1.0)
@@ -39,7 +35,6 @@ def _omega_sample_weights_from_e(
     gate_center: float = OMEGA_EPS,
     gate_width: float = OMEGA_GATE_WIDTH,
 ) -> np.ndarray | torch.Tensor:
-    """Per-sample weight in [0, 1] for omega loss dims."""
     if hard:
         if isinstance(e_phys, torch.Tensor):
             return (e_phys > gate_center).float()
@@ -56,11 +51,7 @@ def theta_loss_weights_numpy(
     gate_center: float = OMEGA_EPS,
     gate_width: float = OMEGA_GATE_WIDTH,
 ) -> np.ndarray:
-    """
-    Per-sample loss weights, shape (n, 5).
-
-    y_phys columns: log10_P, log10_K, e, cos_omega, sin_omega (physical units).
-    """
+    """Per-sample weights (n, 5). Zero e/ω when has_ecc is False; mask ω at low e."""
     n = len(y_phys)
     w = np.ones((n, THETA_DIM), dtype=np.float64)
     if has_ecc is not None:
@@ -84,7 +75,6 @@ def theta_loss_weights_torch(
     gate_center: float = OMEGA_EPS,
     gate_width: float = OMEGA_GATE_WIDTH,
 ) -> torch.Tensor:
-    """Per-sample loss weights, shape (B, 5), for normalized theta targets."""
     w = torch.ones_like(theta_target)
     if has_ecc is not None:
         ecc_known = has_ecc.float().unsqueeze(1)
@@ -107,16 +97,7 @@ def e_balance_weights(
     n_bins: int = 20,
     max_ratio: float = 10.0,
 ) -> np.ndarray:
-    """
-    Inverse-frequency loss weights for the zero-inflated e target.
-
-    e == 0 (the prior's point mass) is its own category; e > 0 is binned into
-    n_bins equal bins over (0, 1]. Per-sample weight is 1/freq(category) on
-    e_train, capped at max_ratio x the most-populated category's weight so
-    sparse high-e bins can't dominate, then normalized to mean 1 over e_train.
-    Returns weights for e_query (default: e_train); categories unseen in
-    e_train get the cap.
-    """
+    """Inverse-frequency weights for zero-inflated e (mean 1 on train)."""
     e_train = np.asarray(e_train, dtype=np.float64)
     if len(e_train) == 0:
         raise ValueError("e_train is empty")
@@ -137,7 +118,6 @@ def e_balance_weights(
 
 
 def normalize_omega_tensor(cos_sin: torch.Tensor) -> torch.Tensor:
-    """L2-normalize (cos, sin) pairs along last dim. Input shape (..., 2)."""
     norm = torch.linalg.norm(cos_sin, dim=-1, keepdim=True).clamp(min=1e-8)
     return cos_sin / norm
 
@@ -147,7 +127,6 @@ def denorm_omega_components(
     y_mean: torch.Tensor,
     y_std: torch.Tensor,
 ) -> torch.Tensor:
-    """Return physical (cos, sin) shape (B, 2) from normalized 5-vector."""
     cos_n = theta_norm[:, OMEGA_COS_IDX] * y_std[OMEGA_COS_IDX] + y_mean[OMEGA_COS_IDX]
     sin_n = theta_norm[:, OMEGA_SIN_IDX] * y_std[OMEGA_SIN_IDX] + y_mean[OMEGA_SIN_IDX]
     return torch.stack([cos_n, sin_n], dim=1)
@@ -161,12 +140,7 @@ def circular_omega_loss(
     y_std: torch.Tensor,
     sample_weight: torch.Tensor,
 ) -> torch.Tensor:
-    """
-    Mean circular loss 1 - cos(delta_omega) on unit-normalized (cos, sin) pairs.
-
-    sample_weight: (B, 5) per-sample weights; uses mean of the omega dims.
-    Returns scalar loss (0 if no omega-weighted samples).
-    """
+    """1 - cos(Δω) on unit (cos, sin); sample_weight is (B, 5)."""
     pred_om = normalize_omega_tensor(denorm_omega_components(pred_norm, y_mean, y_std))
     true_om = normalize_omega_tensor(denorm_omega_components(target_norm, y_mean, y_std))
     cos_delta = (pred_om * true_om).sum(dim=1).clamp(-1.0, 1.0)
@@ -186,14 +160,7 @@ def regression_theta_loss(
     y_std: torch.Tensor,
     circular_omega: bool = True,
 ) -> torch.Tensor:
-    """
-    Combined training loss: MSE on log10_P, log10_K, e; circular or MSE on omega.
-
-    sample_weight: (B, 5) per-sample weights only — dim_weight (5,) is applied
-    here, exactly once. In the circular path each dim's term is a sample-weighted
-    mean, so dim weights must scale the combination of terms (scaling the sample
-    weights would cancel in the normalization).
-    """
+    """MSE on P/K/e; circular or MSE on ω. sample_weight (B,5), dim_weight (5,)."""
     sq = (pred_norm - target_norm) ** 2
 
     if circular_omega:
@@ -219,15 +186,70 @@ def regression_theta_loss(
     return (sq * w).sum() / denom
 
 
-def apply_theta_constraints(y_pred: np.ndarray, *, constrain_e: bool = True, constrain_omega: bool = True) -> np.ndarray:
-    """Project predictions to physical ranges: e clipped to [0, 0.99], (cos,sin) on unit circle."""
+def apply_theta_constraints(
+    y_pred: np.ndarray, *, constrain_e: bool = True, constrain_omega: bool = True
+) -> np.ndarray:
     out = np.asarray(y_pred, dtype=np.float64).copy()
     if constrain_e:
         out[:, 2] = np.clip(out[:, 2], 0.0, 0.99)
     if constrain_omega:
         cos_w, sin_w = out[:, 3], out[:, 4]
-        norm = np.sqrt(cos_w ** 2 + sin_w ** 2)
+        norm = np.sqrt(cos_w**2 + sin_w**2)
         norm = np.where(norm < 1e-8, 1.0, norm)
         out[:, 3] = cos_w / norm
         out[:, 4] = sin_w / norm
     return out
+
+
+def theta_to_hk(y_theta: np.ndarray) -> np.ndarray:
+    y = np.asarray(y_theta, dtype=np.float64)
+    e, c, s = y[:, 2], y[:, 3], y[:, 4]
+    return np.column_stack([y[:, 0], y[:, 1], e * c, e * s])
+
+
+def hk_to_theta(y_hk: np.ndarray) -> np.ndarray:
+    y = np.asarray(y_hk, dtype=np.float64)
+    k, h = y[:, 2], y[:, 3]
+    e = np.sqrt(k * k + h * h)
+    cos_w = np.ones_like(e)
+    sin_w = np.zeros_like(e)
+    mask = e > 1e-8
+    cos_w[mask] = k[mask] / e[mask]
+    sin_w[mask] = h[mask] / e[mask]
+    return np.column_stack([y[:, 0], y[:, 1], e, cos_w, sin_w])
+
+
+def apply_hk_constraints(y_hk: np.ndarray, *, e_max: float = 0.99) -> np.ndarray:
+    out = np.asarray(y_hk, dtype=np.float64).copy()
+    e = np.sqrt(out[:, 2] ** 2 + out[:, 3] ** 2)
+    scale = np.ones_like(e)
+    over = e > e_max
+    scale[over] = e_max / e[over]
+    out[:, 2] *= scale
+    out[:, 3] *= scale
+    return out
+
+
+def theta_loss_weights_hk_numpy(
+    y_hk: np.ndarray,
+    *,
+    has_ecc: np.ndarray | None = None,
+) -> np.ndarray:
+    n = len(y_hk)
+    w = np.ones((n, HK_DIM), dtype=np.float64)
+    if has_ecc is not None:
+        known = np.asarray(has_ecc, dtype=bool)
+        w[~known, 2:4] = 0.0
+    return w
+
+
+def regression_hk_loss(
+    pred_norm: torch.Tensor,
+    target_norm: torch.Tensor,
+    sample_weight: torch.Tensor,
+    dim_weight: torch.Tensor,
+) -> torch.Tensor:
+    sq = (pred_norm - target_norm) ** 2
+    w = sample_weight * dim_weight.unsqueeze(0)
+    denom = w.sum().clamp(min=1e-8)
+    return (sq * w).sum() / denom
