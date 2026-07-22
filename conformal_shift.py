@@ -90,6 +90,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import sys
 import time
 from pathlib import Path
 
@@ -123,6 +124,30 @@ from eval_omega_nn_vs_rf import _summary_row  # noqa: E402
 from preprocess import compute_lsp
 
 ROOT = Path(__file__).resolve().parent
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+
+def _load_mlp_psi(checkpoint: Path, device: torch.device):
+    """Load regression.py MLP (or DualEHead) checkpoint as psi: X -> theta5."""
+    from regression import build_model_from_checkpoint, predict
+
+    ckpt = torch.load(checkpoint, map_location=device, weights_only=False)
+    model, norm_stats = build_model_from_checkpoint(ckpt, device)
+    in_dim = int(norm_stats.get("in_dim", len(norm_stats["x_mean"])))
+
+    def psi_predict(X: np.ndarray) -> np.ndarray:
+        X = np.asarray(X, dtype=np.float64)
+        if X.ndim != 2:
+            raise ValueError(f"expected 2-D feature matrix, got shape {X.shape}")
+        if X.shape[1] != in_dim:
+            raise ValueError(
+                f"MLP expects {in_dim} features, got {X.shape[1]}; "
+                f"pass a matching --csv (e.g. synthetic_regression_10000.csv for 74-D)"
+            )
+        return predict(model, X, norm_stats, device)
+
+    return psi_predict, norm_stats
 
 ALPHAS = [0.05, 0.10, 0.15, 0.20, 0.30, 0.40]
 STRATEGIES = ["naive", "naive_adj", "surrogate"]
@@ -756,6 +781,18 @@ def main() -> None:
     ap.add_argument("--sigma-min", type=float, default=0.1)
     ap.add_argument("--sigma-max", type=float, default=100.0)
     ap.add_argument("--n-estimators", type=int, default=200)
+    ap.add_argument(
+        "--psi",
+        choices=("rf", "mlp"),
+        default="rf",
+        help="point predictor: RandomForest (default) or regression.py MLP checkpoint",
+    )
+    ap.add_argument(
+        "--checkpoint",
+        type=Path,
+        default=ROOT / "checkpoints" / "regression_mlp_74.pt",
+        help="MLP checkpoint when --psi mlp (must match --csv feature dim)",
+    )
     ap.add_argument("--psi-labels", choices=("bar", "star"), default="bar",
                     help="train psi on data-generating theta_bar (default) or on "
                          "GD surrogate labels theta* of the CSV rows (ablation)")
@@ -776,9 +813,11 @@ def main() -> None:
                     help="prior draws for the Assumption 2.3 constants "
                          "(kappa(H), ||grad h||); 0 skips")
     ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--device", default="cpu")
     args = ap.parse_args()
     args.out_dir.mkdir(parents=True, exist_ok=True)
     args.fig_dir.mkdir(parents=True, exist_ok=True)
+    device = torch.device(args.device)
 
     t_start = time.perf_counter()
 
@@ -801,28 +840,47 @@ def main() -> None:
     proxy = NoiseProxy()
     print(f"noise proxy source: {proxy.source}")
 
-    if args.psi_labels == "star":
-        cache = args.csv.with_suffix(f".theta_star_gd{args.gd_steps}.npz")
-        X_rows = df[feature_cols].to_numpy(float)
-        y_rows = psi_star_labels(len(df), args.csv_seed, proxy.decoder,
-                                 args.gd_steps, args.gd_lr, cache,
-                                 limit=args.psi_star_rows)
-        X_rows = X_rows[: len(y_rows)]
+    if args.psi == "mlp":
+        if not args.checkpoint.exists():
+            raise FileNotFoundError(f"MLP checkpoint not found: {args.checkpoint}")
+        psi_predict, mlp_stats = _load_mlp_psi(args.checkpoint, device)
+        in_dim = int(mlp_stats["in_dim"])
+        if len(feature_cols) != in_dim:
+            raise ValueError(
+                f"MLP in_dim={in_dim} but --csv has {len(feature_cols)} feature "
+                f"columns; pass a matching CSV (e.g. synthetic_regression_10000.csv "
+                f"for the 74-D checkpoint)"
+            )
+        print(
+            f"loaded MLP psi from {args.checkpoint} "
+            f"(feature_set={mlp_stats.get('feature_set')}, "
+            f"in_dim={in_dim}, e_head={mlp_stats.get('e_head')})"
+        )
     else:
-        X_rows = df[feature_cols].to_numpy(float)
-        y_rows = df[list(TARGET_COLUMNS)].to_numpy(float)
+        if args.psi_labels == "star":
+            cache = args.csv.with_suffix(f".theta_star_gd{args.gd_steps}.npz")
+            X_rows = df[feature_cols].to_numpy(float)
+            y_rows = psi_star_labels(len(df), args.csv_seed, proxy.decoder,
+                                     args.gd_steps, args.gd_lr, cache,
+                                     limit=args.psi_star_rows)
+            X_rows = X_rows[: len(y_rows)]
+        else:
+            X_rows = df[feature_cols].to_numpy(float)
+            y_rows = df[list(TARGET_COLUMNS)].to_numpy(float)
 
-    rf = _build("separate", args.n_estimators, args.seed, list(TARGET_COLUMNS))
-    rf.fit(X_rows, y_rows)
-    print(f"trained RF psi on {len(y_rows)} synthetic rows, {len(feature_cols)} "
-          f"features (labels: {args.psi_labels})")
+        rf = _build("separate", args.n_estimators, args.seed, list(TARGET_COLUMNS))
+        rf.fit(X_rows, y_rows)
+        print(f"trained RF psi on {len(y_rows)} synthetic rows, {len(feature_cols)} "
+              f"features (labels: {args.psi_labels})")
+
+        def psi_predict(X: np.ndarray) -> np.ndarray:
+            return np.asarray(rf.predict(X), dtype=np.float64)
 
     grids = histogram_grids(args.grid, args.seed)
     sup = _support(grids)
 
     def hats(systems):
-        return list(rf.predict(feat_matrix(systems)))
-
+        return list(psi_predict(feat_matrix(systems)))
     print("building real systems ...")
     test_real = make_real(args.real_split, args.sigma_min, args.sigma_max)
     real_train = make_real("train", args.sigma_min, args.sigma_max)
@@ -923,7 +981,7 @@ def main() -> None:
         dy = np.array([float(np.mean(np.abs(recon_residual_norm(proxy, th, s["curve"]))))
                        for s, th in zip(systems, hats_)])
         reenc = [reencode_features(proxy, th, s["curve"]) for s, th in zip(systems, hats_)]
-        psi_re = rf.predict(np.asarray([_row(fr, lsp) for fr, lsp in reenc], dtype=float))
+        psi_re = psi_predict(np.asarray([_row(fr, lsp) for fr, lsp in reenc], dtype=float))
         dk = {c: np.array([_coord_abs_err(psi_re[j], hats_[j], c)
                            for j in range(len(systems))]) for c in COORDS}
         return dk, dy
@@ -1009,6 +1067,9 @@ def main() -> None:
         "n_test_syn": len(test_syn), "n_test_real": len(test_real),
         "alphas": ALPHAS, "coords": COORDS,
         "proxy_source": proxy.source,
+        "psi": args.psi,
+        "checkpoint": str(args.checkpoint) if args.psi == "mlp" else None,
+        "csv": str(args.csv),
         "psi_labels": args.psi_labels,
         "gamma_tune_on": args.gamma_tune_on,
         "gamma_reg": gamma_reg,
@@ -1038,6 +1099,18 @@ def main() -> None:
         "assumption_constants": constants,
         "results": results,
     }
+    # Unweighted Bonferroni quantiles for paper figures (raw scores).
+    q_export: dict = {}
+    ones = np.ones(len(calib))
+    for strat in STRATEGIES:
+        q_export[strat] = {}
+        for a in ALPHAS:
+            level = 1.0 - a / D
+            q_export[strat][f"{a:.2f}"] = {
+                c: float(weighted_quantile(cal_scores[strat][c], ones, 1.0, level))
+                for c in COORDS
+            }
+    report["quantiles_unweighted"] = q_export
     (args.out_dir / "conformal_shift_metrics.json").write_text(
         json.dumps(report, indent=2))
     write_report(report, args.out_dir / "conformal_shift_report.txt")
