@@ -21,7 +21,6 @@ from __future__ import annotations
 import argparse
 import json
 import math
-import shutil
 import sys
 from pathlib import Path
 
@@ -63,7 +62,6 @@ DEFAULT_CSV = ROOT / "synthetic_generation" / "datasets" / "synthetic_regression
 DEFAULT_Q = ROOT / "figures" / "paper" / "mlp_cp_quantiles.json"
 DEFAULT_METRICS = ROOT / "synthetic_generation" / "regression" / "mlp_psi" / "conformal_shift_metrics.json"
 OUT_DIR = ROOT / "figures" / "paper"
-EXISTING_FIG2 = ROOT / "figures" / "regression_synthetic" / "pred_vs_true.png"
 
 
 def _theta5_to_params(th: np.ndarray) -> dict[str, float]:
@@ -317,8 +315,15 @@ def figure1(
 
 
 def figure2(checkpoint: Path, csv_path: Path, out_path: Path, device: torch.device) -> None:
-    """Refresh MLP pred-vs-true on the synthetic CSV val split."""
-    from regression import DatasetBundle, build_model_from_checkpoint
+    """Refresh MLP pred-vs-true: P/K/e panels only (74-D has no periapsis epoch)."""
+    from regression import (
+        TARGET_LABELS,
+        DatasetBundle,
+        build_model_from_checkpoint,
+        _scatter_limits,
+    )
+
+    paper_targets = ("log10_P", "log10_K", "e")
 
     ckpt = torch.load(checkpoint, map_location=device, weights_only=False)
     model, norm_stats = build_model_from_checkpoint(ckpt, device)
@@ -346,10 +351,41 @@ def figure2(checkpoint: Path, csv_path: Path, out_path: Path, device: torch.devi
         "subsets": _subset_metrics(val_bundle, y_true, y_pred),
         "e_report": _e_subset_report(y_true, y_pred),
     }
-    plot_pred_vs_true(y_true, y_pred, out_path, metrics)
-    if not EXISTING_FIG2.exists():
-        EXISTING_FIG2.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(out_path, EXISTING_FIG2)
+    e_report = metrics["e_report"]
+
+    # Option A: omit cos/sin ω panels — 74-D features lack periapsis-epoch
+    # information, so ω is nearly unidentifiable (negative R²).
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    fig, axes = plt.subplots(1, 3, figsize=(10.5, 3.4))
+    name_to_j = {"log10_P": 0, "log10_K": 1, "e": 2}
+    for ax, name in zip(axes, paper_targets):
+        j = name_to_j[name]
+        yt, yp = y_true[:, j], y_pred[:, j]
+        ax.scatter(yt, yp, s=8, alpha=0.45, edgecolors="none")
+        lo, hi = _scatter_limits(yt, yp)
+        ax.plot([lo, hi], [lo, hi], "k--", lw=0.8, alpha=0.6)
+        ax.set_xlim(lo, hi)
+        ax.set_ylim(lo, hi)
+        ax.set_aspect("equal", adjustable="box")
+        if name == "e":
+            r2 = metrics["per_target"][name]["r2"]
+            r2_pos = e_report["e_gt_0"]["r2"]
+            ax.set_title(f"{TARGET_LABELS[name]}\n$R^2$={r2:.3f} (e>0: {r2_pos:.3f})")
+        else:
+            r2 = metrics["per_target"][name]["r2"]
+            ax.set_title(f"{TARGET_LABELS[name]}\n$R^2$={r2:.3f}")
+        ax.set_xlabel("true")
+        ax.set_ylabel("pred")
+        ax.grid(alpha=0.25)
+    fig.suptitle(
+        r"pred vs true (74-D MLP val; $\omega$ omitted — needs periapsis epoch)"
+    )
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=130, bbox_inches="tight")
+    plt.close(fig)
+    print(f"Figure 2 (P/K/e) -> {out_path}")
+    # Keep a full 5-panel diagnostic copy for internal use.
+    plot_pred_vs_true(y_true, y_pred, out_path.with_name("rv_pred_vs_true_full5.png"), metrics)
 
 
 def earth_likeness(row: pd.Series) -> float:
@@ -394,10 +430,11 @@ def earthlike_table(
         lab = lab[lab[c].notna()]
     lab = lab[lab["pl_rvamp"] > 0]
     lab["earth_score"] = lab.apply(earth_likeness, axis=1)
-    lab = lab.sort_values("earth_score").head(top_k * 5)  # oversample then match curves
+    lab = lab.sort_values("earth_score")
 
     systems_by_host: dict[str, dict] = {}
-    for split in ("train", "val", "test"):
+    # Restrict to held-out hosts (val/test) so the table is not train-set leakage.
+    for split in ("val", "test"):
         ds = RVDataset(split, normalize=False, single_planet=True)
         for i in range(len(ds)):
             x, lsp, theta, info = ds.get_numpy(i)
@@ -443,6 +480,7 @@ def earthlike_table(
             "K_pred_ms": float(10 ** pred[1]),
             "e_pred": float(pred[2]),
             "omega_pred_rad": float(_theta_to_omega(pred)),
+            # Global (split-CP) half-widths — identical across rows by construction.
             "halfwidth_log10_P_a01": float(q01["log10_P"]),
             "halfwidth_log10_K_a01": float(q01["log10_K"]),
             "halfwidth_e_a01": float(q01["e"]),
@@ -452,7 +490,7 @@ def earthlike_table(
             break
 
     if not rows:
-        raise RuntimeError("no Earth-like systems matched the RV corpus")
+        raise RuntimeError("no Earth-like systems matched the RV corpus (val/test)")
 
     df = pd.DataFrame(rows)
     out_csv.parent.mkdir(parents=True, exist_ok=True)
@@ -460,68 +498,97 @@ def earthlike_table(
 
     # Compact LaTeX snippet
     lines = [
-        r"\begin{tabular}{lrrrrrr}",
+        r"\begin{tabular}{llrrrrrr}",
         r"\hline",
-        r"Host & $P_{\mathrm{tab}}$ & $P_{\mathrm{pred}}$ "
+        r"Host & split & $P_{\mathrm{tab}}$ & $P_{\mathrm{pred}}$ "
         r"& $K_{\mathrm{tab}}$ & $K_{\mathrm{pred}}$ "
         r"& $e_{\mathrm{tab}}$ & $e_{\mathrm{pred}}$ \\",
         r"\hline",
     ]
     for r in rows:
         lines.append(
-            f"{r['host']} & {r['P_tab_d']:.2f} & {r['P_pred_d']:.2f} "
+            f"{r['host']} & {r['split']} & {r['P_tab_d']:.2f} & {r['P_pred_d']:.2f} "
             f"& {r['K_tab_ms']:.2f} & {r['K_pred_ms']:.2f} "
             f"& {r['e_tab']:.2f} & {r['e_pred']:.2f} \\\\"
         )
     lines += [
         r"\hline",
-        r"\multicolumn{7}{l}{\footnotesize Conformal half-widths at $\alpha{=}0.1$ (surrogate/raw): "
+        r"\multicolumn{8}{l}{\footnotesize Global conformal half-widths at $\alpha{=}0.1$ "
+        r"(surrogate/raw; identical for all rows): "
         f"$\\log_{{10}}P\\pm{q01['log10_P']:.3g}$, "
         f"$\\log_{{10}}K\\pm{q01['log10_K']:.3g}$, "
         f"$e\\pm{q01['e']:.3g}$, "
-        f"$\\omega\\pm{q01['omega']:.3g}$ rad."
-        r"} \\",
+        f"$\\omega\\pm{q01['omega']:.3g}$ rad. "
+        r"Held-out (val/test) hosts only.} \\",
         r"\end{tabular}",
     ]
     out_tex.write_text("\n".join(lines) + "\n")
     print(f"Earth-like table -> {out_csv} , {out_tex}")
 
 
-def write_overleaf(out_path: Path, q_blob: dict) -> None:
+def write_overleaf(out_path: Path, q_blob: dict, coverage: dict | None = None) -> None:
     q01 = q_blob["quantiles"]["0.10"]
     q04 = q_blob["quantiles"]["0.40"]
-    text = r"""\subsection{Exoplanet Radial-Velocity Experiment}
-\label{sec:exoplanet}
+    cov = coverage or {}
+    joint = cov.get("joint_coverage")
+    widths = cov.get("per_coord_median_width", {})
+    joint_txt = f"{joint:.2f}" if joint is not None else "TBD"
+    wP = widths.get("log10_P")
+    wK = widths.get("log10_K")
+    we = widths.get("e")
+    wO = widths.get("omega")
+    width_txt = (
+        f"$\\log_{{10}}P$ median width ${wP:.2f}$, "
+        f"$\\log_{{10}}K$ ${wK:.2f}$, $e$ ${we:.2f}$, $\\omega$ ${wO:.2f}$~rad"
+        if all(v is not None for v in (wP, wK, we, wO))
+        else "see conformal\\_shift\\_metrics.json"
+    )
+    text = rf"""\subsection{{Exoplanet Radial-Velocity Experiment}}
+\label{{sec:exoplanet}}
 
 We apply the same simulation-based conformal pipeline to single-planet Radial Velocity (RV) time series from the NASA Exoplanet Archive.
 The latent parameters are
 \[
-\theta = (\log_{10} P,\; \log_{10} K,\; e,\; \cos\omega,\; \sin\omega),
+\theta = (\log_{{10}} P,\; \log_{{10}} K,\; e,\; \cos\omega,\; \sin\omega),
 \]
 where $P$ is the orbital period, $K$ the RV semi-amplitude, $e$ the eccentricity, and $\omega$ the argument of periastron.
-The noiseless forward map $h(\theta)$ is the Keplerian RV model evaluated on the observation times; synthetic curves are generated by sampling $\theta$ from empirical priors fitted on tabulated real systems, resampling observation cadences, and adding residual noise.
+The noiseless forward map $h(\theta)$ is the Keplerian RV model evaluated on the observation times; synthetic curves are generated by sampling $\theta$ from empirical priors fitted on tabulated real systems, resampling observation cadences, and adding residual noise from a trained sparse variational GP.
 
-\paragraph{Point predictor.}
-The regressor $\psi$ is a multilayer perceptron trained on synthetic curves with a 74-dimensional summary+LSP feature vector (dual eccentricity head).
-On a held-out synthetic validation split it recovers $(\log_{10} P, \log_{10} K, e, \omega)$ with the pred-vs-true behaviour shown in Figure~\ref{fig:rv-pred}.
+\paragraph{{Point predictor.}}
+The regressor $\psi$ is a multilayer perceptron trained on synthetic curves with a 74-dimensional summary+LSP feature vector and a dual eccentricity head (separate circular / eccentric pathways gated by an $e>0$ classifier).
+On a held-out synthetic validation split it recovers $(\log_{{10}} P, \log_{{10}} K, e)$ as shown in Figure~\ref{{fig:rv-pred}}.
+The 74-D feature set does not encode periapsis epoch, so $\omega$ is weakly identifiable from these features alone; we therefore omit $\omega$ from the published pred-vs-true panel and treat $\omega$ conformal intervals as largely uninformative (near full-circle half-widths).
+A stable alternative targetisation uses Laplace coordinates $(k,h)=(e\cos\omega, e\sin\omega)$ (already available as \texttt{{--targets hk}} in our codebase); recovering $e=z_2/\cos\omega$ from $(\omega, e\cos\omega)$ is singular at $\omega=\pm\pi/2$ and is not recommended.
 
-\paragraph{Uncertainty.}
-Prediction regions are obtained from the simulation-based conformal procedure of this paper (split conformal calibrated on synthetic curves, evaluated under synthetic$\to$real covariate shift), with conformity scores defined on the physical coordinates $(\log_{10} P, \log_{10} K, e, \omega)$ and Bonferroni aggregation across coordinates.
-We report results for the surrogate-label score with the MLP as $\psi$; calibrated half-widths at $\alpha{=}0.1$ and $\alpha{=}0.4$ are used for the Earth-like summary table and the phase-folded region overlays, respectively.
+\paragraph{{Uncertainty.}}
+Prediction regions come from the simulation-based conformal procedure of this paper (split conformal calibrated on synthetic curves, evaluated under synthetic$\to$real covariate shift), with conformity scores on the physical coordinates $(\log_{{10}} P, \log_{{10}} K, e, \omega)$ and Bonferroni aggregation.
+We use the MLP as $\psi$ with the surrogate-label score.
+On the real test split (likelihood-ratio reweighted), joint coverage at $1-\alpha=0.90$ is approximately {joint_txt}, with {width_txt} (median support-capped widths).
+These regions are intentionally conservative under covariate shift with a moderately accurate $\psi$; $\alpha{{=}}0.1$ half-widths are reported in the Earth-like summary table and $\alpha{{=}}0.4$ regions are used for the light phase-folded overlays.
 
-\paragraph{Figures.}
-Figure~\ref{fig:rv-heldout} shows a held-out real RV series phase-folded at the tabulated period, with (i) observations, (ii) $h(\theta_{\mathrm{tab}})$, (iii) $h(\psi(y))$, (iv) light traces for $\theta\sim\mathrm{Unif}(\Gamma_{0.4})$, and (v) noisy simulator draws at $\psi(y)$.
-Figure~\ref{fig:rv-pred} shows synthetic validation pred-vs-true scatters for all five targets.
+\paragraph{{Figures.}}
+Figure~\ref{{fig:rv-heldout}} shows a held-out real RV series phase-folded at the tabulated period, with (i) observations, (ii) $h(\theta_{{\mathrm{{tab}}}})$, (iii) $h(\psi(y))$, (iv) light traces for $\theta\sim\mathrm{{Unif}}(\Gamma_{{0.4}})$, and (v) noisy simulator draws at $\psi(y)$.
+Figure~\ref{{fig:rv-pred}} shows synthetic validation pred-vs-true scatters for $\log_{{10}} P$, $\log_{{10}} K$, and $e$.
 
-% Insert figures after export:
-% \begin{figure}...\includegraphics{rv_heldout_phasefold}...\label{fig:rv-heldout}\end{figure}
-% \begin{figure}...\includegraphics{rv_pred_vs_true}...\label{fig:rv-pred}\end{figure}
+\begin{{figure}}[t]
+\centering
+\includegraphics[width=\linewidth]{{rv_heldout_phasefold.png}}
+\caption{{Held-out real RV (HD~139357) phase-folded at the tabulated period. Overlays: observations; noiseless Keplerian from tabulated and predicted parameters; $\sim$20 light traces from the $\alpha{{=}}0.4$ conformal region; noisy simulator draws at $\psi(y)$.}}
+\label{{fig:rv-heldout}}
+\end{{figure}}
+
+\begin{{figure}}[t]
+\centering
+\includegraphics[width=\linewidth]{{rv_pred_vs_true.png}}
+\caption{{Synthetic validation pred-vs-true for the 74-D MLP ($P$, $K$, $e$). Argument of periastron is omitted because the 74-D features lack periapsis-epoch information.}}
+\label{{fig:rv-pred}}
+\end{{figure}}
 """
-    # Keep quantiles as a comment for the authors.
     note = (
         f"% MLP+CP quantiles (surrogate/raw, n_cal={q_blob.get('n_cal')}):\n"
         f"% alpha=0.10 -> {q01}\n"
         f"% alpha=0.40 -> {q04}\n"
+        f"% coverage block: {cov}\n"
     )
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(note + text)
@@ -560,7 +627,15 @@ def main() -> None:
     earthlike_table(psi_predict, feature_cols, q01,
                     OUT_DIR / "earthlike_top10.csv",
                     OUT_DIR / "earthlike_top10.tex")
-    write_overleaf(ROOT / "docs" / "overleaf_exoplanet_experiments.tex", q_blob)
+    coverage = None
+    metrics_path = args.metrics
+    if metrics_path.exists():
+        m = json.loads(metrics_path.read_text())
+        try:
+            coverage = m["results"]["surrogate"]["raw"]["real_weighted"]["0.10"]
+        except KeyError:
+            coverage = None
+    write_overleaf(ROOT / "docs" / "overleaf_exoplanet_experiments.tex", q_blob, coverage)
 
 
 if __name__ == "__main__":
