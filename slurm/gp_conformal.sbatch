@@ -56,11 +56,17 @@ test -f models/gp_residual_svgp.pt || { echo "retrain did not produce models/gp_
 srun python synthetic_generation/generate_synthetic_regression_csv.py
 srun python synthetic_generation/generate_lsp_regression_csv.py
 
-# ---- 3. Full-scale conformal shift run (both gamma tuning sets) -----------
+# ---- 3. Full-scale conformal shift run (both gamma tuning sets + psi* ablation)
 srun python conformal_shift.py
 srun python conformal_shift.py --gamma-tune-on real-val \
     --out-dir synthetic_generation/regression/gamma_real_val \
     --fig-dir synthetic_generation/figures/synthetic_regression_10000/gamma_real_val
+# psi trained on GD surrogate labels theta* instead of theta_bar (Nicolò's
+# ablation, 2026-07-14; the theta* replay+GD for 10k rows is cached to an .npz
+# next to the CSV, so reruns are cheap)
+srun python conformal_shift.py --psi-labels star --gamma-tune-on real-val \
+    --out-dir synthetic_generation/regression/psi_star \
+    --fig-dir synthetic_generation/figures/synthetic_regression_10000/psi_star
 
 # ---- 4. Push artifacts to the rhul-results branch --------------------------
 # Commits on the current branch and pushes HEAD to rhul-results, so sequential

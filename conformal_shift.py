@@ -48,13 +48,13 @@ minimize the mean support-normalized median interval width, on the synthetic
 tuning set by default or on the real val split with --gamma-tune-on real-val
 (the paper's D_val; label-free, since only widths are measured).
 
-papernorm follows the paper draft's "Profiled uncertainty estimation" section
-literally: delta_c(y) models the re-encoding residual |psi_c(h(psi(y))) -
-psi_c(y)| (the noiseless reconstruction is re-encoded with the observation's
-time grid and measurement sigmas, then passed through psi again — eq 18) and
-delta_y(y) models the mean-absolute reconstruction error mean_t |y_t -
-h(psi(y), t)| in rv_std units (eq 19).  Both are RFs on the 74-dim summary
-features, fit on a supplementary synthetic set (the paper's D_theta / D_y).
+papernorm follows the paper draft's "Profiled uncertainty estimation" section:
+delta_c(y) is the re-encoding residual |psi_c(h(psi(y))) - psi_c(y)| (the
+noiseless reconstruction is re-encoded with the observation's time grid and
+measurement sigmas, then passed through psi again — eq 18) and delta_y(y) is
+the mean-absolute reconstruction error mean_t |y_t - h(psi(y), t)| in rv_std
+units (eq 19).  Since h and psi are deterministic both are computed pointwise
+per curve — no separate model is trained (Nicolò 2026-07-14).
 
 Paper-spec additions (Overleaf Theory section):
   * naive_adj — the naive strategy with the surrogate-gap quantile adjustment
@@ -71,6 +71,13 @@ Paper-spec additions (Overleaf Theory section):
     reconstruction loss, 5-dim decoder parameterization) and ||grad h||
     (autograd Jacobian spectral norm) are estimated on --n-constants prior
     draws and reported (eps*C_noise from the real-train bound above).
+  * --psi-labels star — ablation (Nicolò 2026-07-14): train psi on the GD
+    surrogate labels theta* of the training CSV rows (replayed and fit with
+    the same L1 gradient descent, init at theta_bar; cached to an .npz next
+    to the CSV) instead of the data-generating theta_bar.
+  * figures/filter_param_histograms.png — per-coordinate histograms of real
+    tabulated parameters vs accepted vs filter-rejected synthetic draws (for
+    the paper's figure-caption discussion of the Assumption 2.1 truncation).
 
 Usage
 -----
@@ -99,11 +106,16 @@ from conformal import (
     D,
     SG,
     Scorer,
+    _curve_from_x,
     _theta_to_omega,
     _true_coord,
     histogram_grids,
     make_real,
     make_synthetic,
+)
+from generate_synthetic_regression_csv import (  # noqa: E402
+    corpus_orbital_params,
+    replay_synthetic_sample,
 )
 from feature_columns import TARGET_COLUMNS  # noqa: E402
 from train_regression_models import _build  # noqa: E402
@@ -294,27 +306,57 @@ def reencode_features(proxy: "NoiseProxy", theta5: np.ndarray, curve: dict) -> t
     return _summary_row(xm, info, lsp), np.asarray(lsp, dtype=float)
 
 
-def fit_delta_models(feats: np.ndarray, dk_targets: dict, dy_targets: np.ndarray,
-                     seed: int, n_estimators: int = 200):
-    """RF models of the paper's conditional residuals on the summary features:
-    delta_c(y) ~ E|psi_c(h(psi(y))) - psi_c(y)| per coordinate (eq 18) and
-    delta_y(y) ~ E mean_t|y_t - h(psi(y),t)| (eq 19).  Returns
-    delta(feats) -> ({coord: (n,) array}, (n,) array), all nonnegative."""
-    from sklearn.ensemble import RandomForestRegressor
+def psi_star_labels(n_rows: int, csv_seed: int, decoder, gd_steps: int, gd_lr: float,
+                    cache_path: Path, limit: int = 0) -> np.ndarray:
+    """GD surrogate labels theta* for the training CSV rows (--psi-labels star):
+    replay each row's curve, run the same L1 gradient descent initialized at
+    the data-generating theta_bar.  Cached to an .npz keyed by (seed, n, steps).
+    limit > 0 caps the rows (smoke only — shrinks psi's training set)."""
+    n_use = min(n_rows, limit) if limit > 0 else n_rows
+    if cache_path.exists():
+        z = np.load(cache_path)
+        if (int(z["seed"]) == csv_seed and int(z["n_rows"]) == n_use
+                and int(z["gd_steps"]) == gd_steps):
+            print(f"psi* labels: loaded cache {cache_path}")
+            return z["theta_star"]
+    print(f"psi* labels: replaying {n_use} CSV rows + GD ({gd_steps} steps) ...")
+    params = corpus_orbital_params(csv_seed, n_rows)
+    systems = []
+    for i in range(n_use):
+        x, _, theta, info = replay_synthetic_sample(i, csv_seed, n_rows, f_multi=0.0,
+                                                    params=params)
+        systems.append({"curve": _curve_from_x(x, info),
+                        "theta5": np.asarray(theta, dtype=float)})
+    stars = np.stack(surrogate_fit_gd(decoder, [s["theta5"] for s in systems],
+                                      systems, gd_steps, gd_lr))
+    np.savez(cache_path, theta_star=stars, seed=csv_seed, n_rows=n_use,
+             gd_steps=gd_steps)
+    print(f"psi* labels: cached -> {cache_path}")
+    return stars
 
-    models = {}
-    for c in COORDS:
-        m = RandomForestRegressor(n_estimators=n_estimators, random_state=seed, n_jobs=-1)
-        m.fit(feats, dk_targets[c])
-        models[c] = m
-    m_y = RandomForestRegressor(n_estimators=n_estimators, random_state=seed, n_jobs=-1)
-    m_y.fit(feats, dy_targets)
 
-    def delta(f: np.ndarray) -> tuple[dict, np.ndarray]:
-        dk = {c: np.maximum(models[c].predict(f), 0.0) for c in COORDS}
-        return dk, np.maximum(m_y.predict(f), 0.0)
-
-    return delta
+def plot_filter_histograms(real_thetas: list, accepted: list, rejected: list,
+                           fig_dir: Path) -> None:
+    """Per-coordinate histograms: real tabulated vs accepted vs filter-rejected
+    synthetic parameters (the Assumption 2.1 truncation figure)."""
+    fig, axs = plt.subplots(1, D, figsize=(4.2 * D, 3.6))
+    groups = [("real tabulated", real_thetas, "k"),
+              ("synthetic accepted", accepted, "tab:blue"),
+              ("synthetic rejected", rejected, "tab:red")]
+    for ax, c in zip(axs, COORDS):
+        for label, thetas, color in groups:
+            if not len(thetas):
+                continue
+            vals = [_true_coord(t, c) for t in thetas]
+            ax.hist(vals, bins=25, density=True, histtype="step", lw=1.6,
+                    color=color, label=f"{label} (n={len(thetas)})")
+        ax.set_title(c)
+        ax.grid(alpha=0.2)
+    axs[0].legend(fontsize=7)
+    fig.suptitle("Assumption 2.1 noise filter: parameter distributions", fontsize=12)
+    fig.tight_layout(rect=(0, 0, 1, 0.92))
+    fig.savefig(fig_dir / "filter_param_histograms.png", dpi=180)
+    plt.close(fig)
 
 
 def noise_bound_from_real(proxy: "NoiseProxy", systems: list, theta_hats: list) -> float:
@@ -326,13 +368,16 @@ def noise_bound_from_real(proxy: "NoiseProxy", systems: list, theta_hats: list) 
 
 
 def make_synthetic_filtered(n: int, seed: int, bound: float | None,
-                            proxy: "NoiseProxy", max_tries: int = 6) -> tuple[list, int]:
+                            proxy: "NoiseProxy",
+                            max_tries: int = 6) -> tuple[list, int, list]:
     """make_synthetic + the Assumption 2.1 discard rule: reject draws whose
     max_t |y_t - kepler(theta_bar, t)| (rv_std units) exceeds the real-data
-    noise bound.  Returns (accepted systems, number generated)."""
+    noise bound.  Returns (accepted systems, number generated, rejected theta5s
+    — for the truncation histogram figure)."""
     if bound is None:
-        return make_synthetic(n, seed), n
+        return make_synthetic(n, seed), n, []
     out: list = []
+    rejected: list = []
     n_gen = 0
     for k in range(max_tries):
         batch = make_synthetic(n, seed + 131 * k)
@@ -341,8 +386,10 @@ def make_synthetic_filtered(n: int, seed: int, bound: float | None,
             stat = float(np.abs(recon_residual_norm(proxy, s["theta5"], s["curve"])).max())
             if stat <= bound:
                 out.append(s)
+            else:
+                rejected.append(s["theta5"])
             if len(out) == n:
-                return out, n_gen
+                return out, n_gen, rejected
     raise RuntimeError(f"noise-bound filter rejected too much: {len(out)}/{n} "
                        f"accepted after {n_gen} draws (bound={bound:.3g})")
 
@@ -709,6 +756,13 @@ def main() -> None:
     ap.add_argument("--sigma-min", type=float, default=0.1)
     ap.add_argument("--sigma-max", type=float, default=100.0)
     ap.add_argument("--n-estimators", type=int, default=200)
+    ap.add_argument("--psi-labels", choices=("bar", "star"), default="bar",
+                    help="train psi on data-generating theta_bar (default) or on "
+                         "GD surrogate labels theta* of the CSV rows (ablation)")
+    ap.add_argument("--psi-star-rows", type=int, default=0,
+                    help="cap CSV rows for --psi-labels star (smoke only; 0 = all)")
+    ap.add_argument("--csv-seed", type=int, default=123,
+                    help="RNG seed the training CSV was generated with (for replay)")
     ap.add_argument("--gamma-tune-on", choices=("synthetic", "real-val"),
                     default="synthetic",
                     help="set used to tune gamma per norm variant: the synthetic "
@@ -741,20 +795,33 @@ def main() -> None:
     def feat_matrix(systems: list) -> np.ndarray:
         return np.asarray([_row(s["feat_row"], s["lsp"]) for s in systems], dtype=float)
 
+    # Uncertainty proxy v (from the trained noise model) — built first because
+    # the noise-bound filter, the paper-norm residuals, and the psi* labels
+    # decode through it.
+    proxy = NoiseProxy()
+    print(f"noise proxy source: {proxy.source}")
+
+    if args.psi_labels == "star":
+        cache = args.csv.with_suffix(f".theta_star_gd{args.gd_steps}.npz")
+        X_rows = df[feature_cols].to_numpy(float)
+        y_rows = psi_star_labels(len(df), args.csv_seed, proxy.decoder,
+                                 args.gd_steps, args.gd_lr, cache,
+                                 limit=args.psi_star_rows)
+        X_rows = X_rows[: len(y_rows)]
+    else:
+        X_rows = df[feature_cols].to_numpy(float)
+        y_rows = df[list(TARGET_COLUMNS)].to_numpy(float)
+
     rf = _build("separate", args.n_estimators, args.seed, list(TARGET_COLUMNS))
-    rf.fit(df[feature_cols].to_numpy(float), df[list(TARGET_COLUMNS)].to_numpy(float))
-    print(f"trained RF psi on {len(df)} synthetic rows, {len(feature_cols)} features")
+    rf.fit(X_rows, y_rows)
+    print(f"trained RF psi on {len(y_rows)} synthetic rows, {len(feature_cols)} "
+          f"features (labels: {args.psi_labels})")
 
     grids = histogram_grids(args.grid, args.seed)
     sup = _support(grids)
 
     def hats(systems):
         return list(rf.predict(feat_matrix(systems)))
-
-    # Uncertainty proxy v (from the trained noise model) — built first because
-    # the noise-bound filter and the paper-norm residuals decode through it.
-    proxy = NoiseProxy()
-    print(f"noise proxy source: {proxy.source}")
 
     print("building real systems ...")
     test_real = make_real(args.real_split, args.sigma_min, args.sigma_max)
@@ -768,24 +835,31 @@ def main() -> None:
 
     print("building synthetic systems ...")
     n_gen_total = 0
-    calib, g = make_synthetic_filtered(args.n_cal, args.seed + 1, bound, proxy)
+    rejected_thetas: list = []
+    calib, g, rj = make_synthetic_filtered(args.n_cal, args.seed + 1, bound, proxy)
     n_gen_total += g
-    tune, g = make_synthetic_filtered(args.n_tune, args.seed + 11, bound, proxy)
+    rejected_thetas += rj
+    tune, g, rj = make_synthetic_filtered(args.n_tune, args.seed + 11, bound, proxy)
     n_gen_total += g
-    test_syn, g = make_synthetic_filtered(args.n_test, args.seed + 2, bound, proxy)
+    rejected_thetas += rj
+    test_syn, g, rj = make_synthetic_filtered(args.n_test, args.seed + 2, bound, proxy)
     n_gen_total += g
-    wsynth, g = make_synthetic_filtered(args.n_weight_synth, args.seed + 21, bound, proxy)
+    rejected_thetas += rj
+    wsynth, g, rj = make_synthetic_filtered(args.n_weight_synth, args.seed + 21, bound, proxy)
     n_gen_total += g
-    dnorm, g = make_synthetic_filtered(args.n_tune, args.seed + 31, bound, proxy)
-    n_gen_total += g
-    n_kept = len(calib) + len(tune) + len(test_syn) + len(wsynth) + len(dnorm)
+    rejected_thetas += rj
+    n_kept = len(calib) + len(tune) + len(test_syn) + len(wsynth)
     rejection_rate = 1.0 - n_kept / max(n_gen_total, 1)
     if bound is not None:
         print(f"noise filter: kept {n_kept}/{n_gen_total} draws "
               f"(rejection rate {rejection_rate:.1%})")
+        plot_filter_histograms(
+            [s["theta5"] for s in real_train] + [s["theta5"] for s in test_real],
+            [s["theta5"] for s in calib] + [s["theta5"] for s in test_syn],
+            rejected_thetas, args.fig_dir)
     print(f"n_cal={len(calib)} n_tune={len(tune)} n_test_syn={len(test_syn)} "
           f"n_test_real={len(test_real)} (weight fit: {len(wsynth)} synth vs "
-          f"{len(real_train)} real-train; delta fit: {len(dnorm)})")
+          f"{len(real_train)} real-train)")
 
     # gamma tuning set: synthetic tune (default) or the real val split (the
     # paper's D_val — legal because tune_gamma only measures interval widths,
@@ -840,20 +914,21 @@ def main() -> None:
     print("v_c median (cal): " + "  ".join(
         f"{c}={float(np.median(vk['cal'][c])):.3g}" for c in COORDS))
 
-    # Paper-spec conditional residuals delta_c / delta_y (eqs 18-19), fit on
-    # the supplementary synthetic set dnorm (the paper's D_theta / D_y).
-    print("fitting paper-norm delta models (re-encode + reconstruction residuals) ...")
-    hat_dnorm = hats(dnorm)
-    dy_targets = np.array([
-        float(np.mean(np.abs(recon_residual_norm(proxy, th, s["curve"]))))
-        for s, th in zip(dnorm, hat_dnorm)])
-    reenc = [reencode_features(proxy, th, s["curve"]) for s, th in zip(dnorm, hat_dnorm)]
-    psi_reenc = rf.predict(np.asarray([_row(fr, lsp) for fr, lsp in reenc], dtype=float))
-    dk_targets = {c: np.array([_coord_abs_err(psi_reenc[j], hat_dnorm[j], c)
-                               for j in range(len(dnorm))]) for c in COORDS}
-    delta_fn = fit_delta_models(np.vstack([s["features"] for s in dnorm]),
-                                dk_targets, dy_targets, args.seed, args.n_estimators)
-    delta = {k: delta_fn(np.vstack([s["features"] for s in sys_])) for k, sys_ in keyed_sets}
+    # Paper-spec conditional residuals delta_c / delta_y (eqs 18-19), computed
+    # pointwise per curve — h and psi are deterministic, so the conditional
+    # expectations are trivial and no model is trained (Nicolò 2026-07-14).
+    print("computing paper-norm deltas (re-encode + reconstruction residuals) ...")
+
+    def paper_deltas(systems: list, hats_: list) -> tuple[dict, np.ndarray]:
+        dy = np.array([float(np.mean(np.abs(recon_residual_norm(proxy, th, s["curve"]))))
+                       for s, th in zip(systems, hats_)])
+        reenc = [reencode_features(proxy, th, s["curve"]) for s, th in zip(systems, hats_)]
+        psi_re = rf.predict(np.asarray([_row(fr, lsp) for fr, lsp in reenc], dtype=float))
+        dk = {c: np.array([_coord_abs_err(psi_re[j], hats_[j], c)
+                           for j in range(len(systems))]) for c in COORDS}
+        return dk, dy
+
+    delta = {k: paper_deltas(sys_, hat[k]) for k, sys_ in keyed_sets}
     if args.gamma_tune_on != "real-val":
         for d in (hat, v, vk, delta):
             d["gtune"] = d["tune"]
@@ -934,6 +1009,7 @@ def main() -> None:
         "n_test_syn": len(test_syn), "n_test_real": len(test_real),
         "alphas": ALPHAS, "coords": COORDS,
         "proxy_source": proxy.source,
+        "psi_labels": args.psi_labels,
         "gamma_tune_on": args.gamma_tune_on,
         "gamma_reg": gamma_reg,
         "weights": {"ess": ess, "frac_clipped": frac_clipped,
