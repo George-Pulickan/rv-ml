@@ -19,6 +19,7 @@ from scripts.bayesian_interval_comparison import (  # noqa: E402
     _symmetric_sigma,
     _wrap_to_pi,
     build_comparison,
+    caveat_notes,
     summarize,
 )
 
@@ -130,6 +131,33 @@ class TestComparison(unittest.TestCase):
         summary = summarize(comp)
         self.assertEqual(len(summary), len(PARAM_SPECS))
         self.assertTrue(((summary["cp_covers_tab_frac"] >= 0) & (summary["cp_covers_tab_frac"] <= 1)).all())
+
+    def test_signed_error_sign(self):
+        # pred > tab in log space -> positive pred_minus_tab_cmp for P.
+        cp = pd.DataFrame([_cp_row(P_pred_d=200.0, P_tab_d=100.0)])
+        comp = build_comparison(cp, self.labels, sigma_scale=1.0)
+        p = comp[comp["param"] == "P"].iloc[0]
+        self.assertAlmostEqual(p["pred_minus_tab_cmp"], math.log10(2.0), places=9)
+
+    def test_diagnostic_columns_present(self):
+        summary = summarize(build_comparison(self.cp, self.labels, sigma_scale=1.0))
+        for col in ("cp_halfwidth_cv", "median_pred_minus_tab", "frac_pred_over_tab"):
+            self.assertIn(col, summary.columns)
+
+    def test_caveat_flags_constant_width(self):
+        # Two systems with identical CP widths -> CV 0 -> "marginal" flag fires.
+        cp = pd.DataFrame([_cp_row(host="A", pl_name="A b"), _cp_row(host="B", pl_name="B b")])
+        labels = pd.DataFrame([_labels_row(pl_name="A b", hostname="A"),
+                               _labels_row(pl_name="B b", hostname="B")])
+        notes = caveat_notes(summarize(build_comparison(cp, labels, sigma_scale=1.0)))
+        self.assertTrue(any("~constant across systems" in n for n in notes))
+
+    def test_caveat_flags_one_sided_bias(self):
+        # Every host over-predicts e -> one-sided bias flag fires.
+        rows = [_cp_row(host=f"H{i}", pl_name=f"H{i} b", e_pred=0.5, e_tab=0.1) for i in range(5)]
+        labs = [_labels_row(pl_name=f"H{i} b", hostname=f"H{i}") for i in range(5)]
+        notes = caveat_notes(summarize(build_comparison(pd.DataFrame(rows), pd.DataFrame(labs), sigma_scale=1.0)))
+        self.assertTrue(any("over-predicts e" in n for n in notes))
 
 
 if __name__ == "__main__":

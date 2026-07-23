@@ -136,18 +136,20 @@ def _compare_one(spec: ParamSpec, row: pd.Series, sigma_scale: float) -> dict:
         # x -> log10(x); dlog10(x) ~= dx / (x ln10).
         pred_c, tab_c = math.log10(pred), math.log10(tab)
         cat_sigma_cmp = cat_sigma_phys / (abs(tab) * LN10) if tab != 0 else float("nan")
-        residual = tab_c - pred_c
+        signed_err = pred_c - tab_c
     elif spec.space == "linear":
         pred_c, tab_c = pred, tab
         cat_sigma_cmp = cat_sigma_phys
-        residual = tab_c - pred_c
+        signed_err = pred_c - tab_c
     elif spec.space == "angle":
         pred_c, tab_c = pred, tab
         cat_sigma_cmp = math.radians(cat_sigma_phys)
-        residual = _wrap_to_pi(tab_c - pred_c)
+        signed_err = _wrap_to_pi(pred_c - tab_c)
     else:  # pragma: no cover - guarded by PARAM_SPECS
         raise ValueError(f"unknown space {spec.space!r}")
 
+    # |pred - tab| in the comparison space; used for both coverage checks.
+    abs_err = abs(signed_err)
     bayes_hw_cmp = sigma_scale * cat_sigma_cmp
     width_ratio = cp_hw / bayes_hw_cmp if bayes_hw_cmp not in (0.0,) and np.isfinite(bayes_hw_cmp) else float("nan")
 
@@ -164,9 +166,12 @@ def _compare_one(spec: ParamSpec, row: pd.Series, sigma_scale: float) -> dict:
         "cp_halfwidth_cmp": cp_hw,
         "bayes_halfwidth_cmp": bayes_hw_cmp,
         "width_ratio_cp_over_bayes": width_ratio,
+        # signed point-prediction error (pred - tab) in the comparison space: a
+        # persistent same-sign column across systems flags a systematic bias.
+        "pred_minus_tab_cmp": signed_err,
         # coverage-style sanity checks (not a formal coverage guarantee):
-        "cp_covers_tab": bool(abs(residual) <= cp_hw) if np.isfinite(cp_hw) else False,
-        "bayes_covers_pred": bool(abs(residual) <= bayes_hw_cmp) if np.isfinite(bayes_hw_cmp) else False,
+        "cp_covers_tab": bool(abs_err <= cp_hw) if np.isfinite(cp_hw) else False,
+        "bayes_covers_pred": bool(abs_err <= bayes_hw_cmp) if np.isfinite(bayes_hw_cmp) else False,
         "omega_near_vacuous": bool(spec.space == "angle" and cp_hw >= math.pi),
     }
 
@@ -201,22 +206,69 @@ def build_comparison(cp_df: pd.DataFrame, labels: pd.DataFrame, sigma_scale: flo
 
 
 def summarize(comp: pd.DataFrame) -> pd.DataFrame:
-    """Per-parameter medians and coverage fractions across systems."""
+    """Per-parameter medians, coverage fractions, and interpretability diagnostics.
+
+    Two diagnostics guard against over-reading the width ratio:
+      * cp_halfwidth_cv — coefficient of variation (std/|mean|) of the CP
+        half-width across systems. Near 0 means the "per-system" interval is
+        effectively a single marginal width, i.e. not adapting to the system;
+        the width ratio is then dominated by that fixed (near-vacuous) width.
+      * median_pred_minus_tab / frac_pred_over_tab — is the point predictor
+        systematically biased? A frac near 0 or 1 (all one sign) means the
+        interval comparison is sitting on top of a biased centre, which is why
+        the tight catalog interval rarely covers our prediction.
+    """
     rows = []
     for name in [s.name for s in PARAM_SPECS]:
         sub = comp[comp["param"] == name]
         finite = sub[np.isfinite(sub["width_ratio_cp_over_bayes"])]
+        cp_hw = sub["cp_halfwidth_cmp"].to_numpy(dtype=float)
+        cp_hw_mean = float(np.nanmean(cp_hw))
+        bias = sub["pred_minus_tab_cmp"].to_numpy(dtype=float)
+        bias = bias[np.isfinite(bias)]
         rows.append({
             "param": name,
             "n": int(len(sub)),
             "n_with_catalog_sigma": int(len(finite)),
-            "median_cp_halfwidth": float(np.nanmedian(sub["cp_halfwidth_cmp"])),
+            "median_cp_halfwidth": float(np.nanmedian(cp_hw)),
             "median_bayes_halfwidth": float(np.nanmedian(sub["bayes_halfwidth_cmp"])),
             "median_width_ratio": float(np.nanmedian(finite["width_ratio_cp_over_bayes"])) if len(finite) else float("nan"),
+            # adaptivity: ~0 CV => the per-system width is effectively constant
+            "cp_halfwidth_cv": float(np.nanstd(cp_hw) / abs(cp_hw_mean)) if cp_hw_mean else float("nan"),
+            # point-prediction bias in the comparison space
+            "median_pred_minus_tab": float(np.median(bias)) if len(bias) else float("nan"),
+            "frac_pred_over_tab": float(np.mean(bias > 0)) if len(bias) else float("nan"),
             "cp_covers_tab_frac": float(sub["cp_covers_tab"].mean()),
             "bayes_covers_pred_frac": float(sub["bayes_covers_pred"].mean()),
         })
     return pd.DataFrame(rows)
+
+
+def caveat_notes(summary: pd.DataFrame, *, cv_flat: float = 0.1) -> list[str]:
+    """Plain-language flags so the width ratio isn't over-read.
+
+    Fires when a parameter's CP width is effectively constant across systems
+    (`cp_halfwidth_cv < cv_flat`) or when the point predictor is one-sided
+    (all-over or all-under the catalog value).
+    """
+    notes = []
+    flat = [r["param"] for _, r in summary.iterrows()
+            if np.isfinite(r["cp_halfwidth_cv"]) and r["cp_halfwidth_cv"] < cv_flat]
+    if flat:
+        notes.append(
+            f"[diag] CP half-width ~constant across systems for {', '.join(flat)} "
+            f"(CV < {cv_flat:g}): the 'per-system' interval is effectively marginal, "
+            f"so the width ratio reflects a fixed (near-vacuous) width, not per-system UQ."
+        )
+    biased = [(r["param"], r["frac_pred_over_tab"]) for _, r in summary.iterrows()
+              if np.isfinite(r["frac_pred_over_tab"]) and (r["frac_pred_over_tab"] >= 0.9 or r["frac_pred_over_tab"] <= 0.1)]
+    for param, frac in biased:
+        direction = "over" if frac >= 0.9 else "under"
+        notes.append(
+            f"[diag] point predictor systematically {direction}-predicts {param} "
+            f"({frac:.0%} of hosts on one side): the catalog interval rarely covers a biased centre."
+        )
+    return notes
 
 
 def write_latex(summary: pd.DataFrame, out_path: Path, sigma_scale: float) -> None:
@@ -311,9 +363,11 @@ def main() -> None:
     write_latex(summary, tex_path, args.sigma_scale)
     plot_comparison(comp, png_path, args.sigma_scale)
 
-    pd.set_option("display.width", 120)
+    pd.set_option("display.width", 160)
     print(f"[bayes] {len(cp_df)} systems x {len(PARAM_SPECS)} params -> {len(comp)} comparisons")
     print(summary.to_string(index=False))
+    for note in caveat_notes(summary):
+        print(note)
     print(f"[done] {comp_path}")
     print(f"[done] {tex_path}")
     print(f"[done] {png_path}")
