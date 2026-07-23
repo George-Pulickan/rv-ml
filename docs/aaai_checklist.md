@@ -1,7 +1,6 @@
 # AAAI 2027 checklist (exoplanet section)
 
 ## Artifacts to paste into Overleaf
-- Text: `docs/overleaf_exoplanet_experiments.tex`
 - Fig 1: `figures/paper/rv_heldout_phasefold.png` (Γ traces: P frozen at fold period)
 - Fig 2: `figures/paper/rv_pred_vs_true.png` (P/K/e only; ω omitted by design)
 - Table: `figures/paper/earthlike_top10.tex` (val/test hosts; **per-system papernorm** α=0.1 half-widths)
