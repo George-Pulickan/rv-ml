@@ -88,6 +88,7 @@ indirectly through a CSV-generation script.
 |---|---|
 | `conformal.py` | Unsupervised conformal prediction: turns the Step-5 regressor's point predictions into prediction sets via the reconstruction-residual score `‖Kepler(θ)−y‖` (no ground-truth θ). Runs coverage (E1) + monotonicity (E2). Score variants: profiled over nuisance coords (`--profile {none,K,Keomega}`, default K) and σ-normalized χ² (`--chi2`, opt-in) |
 | `conformal_shift.py` | Split-CP calibrated on fake data, tested on real (Nicolò's 2026-07 spec): naive score `\|ψ(y)−θ̄\|` (ground-truth θ̄) vs surrogate score (θ* = argmin of the L1 reconstruction error by gradient descent, init at θ̄/tabulated), likelihood-ratio reweighting `p_real/p_fake` via a real-vs-fake discriminator (Tibshirani et al. 2019 weighted quantile), and the normalized scores `s/(γ+v_y)` and two-factor `s_c/(γ+v_y+v_c)` (v_c = surrogate-label-error model) with tuned γ. ψ trains on the 512-bin raw-LSP dataset by default (feature columns follow `--csv`) |
+| `scripts/bayesian_interval_comparison.py` | **CP vs Bayesian** (Nicolò's Task 4): joins the CP α=0.1 half-widths (`figures/paper/earthlike_top10.csv`) against the catalog "Bayesian" intervals — tabulated NASA Archive `*err1/err2` (`data/labels.csv`) — for held-out hosts. Emits a tidy CSV, an Overleaf `.tex` summary, and a CP-vs-Bayes half-width scatter. Comparison conventions (P/K in log10 dex; catalog σ→interval via `--sigma-scale`, default 1.6449 = 90%; near-vacuous ω flagged) are isolated at the top of the file. |
 
 **Diagnostics & misc**
 | File | Purpose |
@@ -258,3 +259,37 @@ planet table.
 ## Overleaf draft
 
 A work-in-progress draft about the methodology and related work is here: https://www.overleaf.com/8188483955gysdcwmjrwhq#ac30a1
+
+## Next steps (AAAI submission)
+
+Nicolò (2026-07-23) asked George to coordinate and split the remaining paper work across
+George / Shuaib / Daksh. The three workstreams, with current repo status:
+
+1. **Plots + table — essentially done.** `scripts/paper_rv_figures.py` (PR #7) regenerates
+   Fig 1 (phase-fold), Fig 2 (P/K/e pred-vs-true), and the `earthlike_top10` table with
+   per-system papernorm CP half-widths. *Remaining:* make sure Overleaf pulls the latest PNGs,
+   not the old 5-panel ω plot.
+2. **Method write-up in Overleaf — not started (lives in Overleaf, not the repo).** ψ = 74-D MLP;
+   UQ = weighted split-conformal under covariate shift. Cite Tibshirani et al. 2019. This is the
+   un-started workstream.
+3. **Bayesian-interval comparison — scaffolded** in `scripts/bayesian_interval_comparison.py`
+   (PR #8): CP α=0.1 half-widths vs tabulated catalog 1σ for held-out hosts. Live result — CP
+   intervals are honest but ~550× / 16× / 6.5× / 3× the tabulated Bayes interval for P / K / e / ω.
+   *For Nicolò to confirm:* P/K compared in log10 dex; catalog σ→interval scale (`--sigma-scale`,
+   default 90%); near-vacuous ω handling.
+
+**Still pending (heavy compute — RHUL cluster, not local):**
+- Full-scale SVGP retrain + `conformal_shift.py` (`slurm/gp_conformal.sbatch`) — the committed
+  checkpoint/CSVs predate the LS-γ + σ-conditioning + train-only-H changes.
+- Full-scale profiled-CP run (`--profile Keomega`, n=400) + a stronger point predictor to tighten sets.
+- Full-scale encoder training (`slurm/train_encoder.sbatch`, GPU) evaluated with `injection_recovery.py`.
+
+**Honest limitation to state in the paper:** ω is not recovered without a periapsis epoch
+(intervals near-vacuous, ~171°); the epoch-free phase-fold experiment did **not** restore it
+(e R²≈0.08 epoch-free vs ≈0.50 with oracle t_peri).
+
+**Pre-submit hygiene:** anonymize author names / repo URLs for review; confirm AAAI style + page
+limit; add a reproducibility supplement (seed, checkpoint path, CSV, and the CP-run CLI).
+
+> **Merge order:** PR #7 before PR #8 — the comparison script's default input
+> (`earthlike_top10.csv`) lands with #7.
