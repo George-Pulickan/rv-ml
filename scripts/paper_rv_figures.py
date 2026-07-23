@@ -81,8 +81,17 @@ def _set_omega(th: np.ndarray, omega: float) -> np.ndarray:
     return out
 
 
-def _match_system_widths(theta_hat: np.ndarray, widths_blob: dict | None) -> dict[str, float] | None:
-    """Find papernorm half-widths for a psi(y) closest to theta_hat."""
+def _match_system_widths(
+    theta_hat: np.ndarray,
+    widths_blob: dict | None,
+    fallback: dict | None = None,
+    alpha: str = "0.40",
+) -> dict[str, float] | None:
+    """Papernorm half-widths for the system whose psi(y) is closest to theta_hat.
+
+    Non-finite per-system entries (re-encode failures) fall back per-coordinate
+    to ``fallback`` (global raw quantiles) when provided.
+    """
     if not widths_blob or not widths_blob.get("systems"):
         return None
     th = np.asarray(theta_hat, dtype=float)
@@ -93,25 +102,13 @@ def _match_system_widths(theta_hat: np.ndarray, widths_blob: dict | None) -> dic
             best_d, best = d, row
     if best is None or best_d > 1.0:  # loose match guard
         return None
-    return {c: float(best["halfwidths"]["0.40"][c]) for c in ("log10_P", "log10_K", "e", "omega")}
-
-
-def _match_system_widths_alpha(
-    theta_hat: np.ndarray,
-    widths_blob: dict | None,
-    alpha: str = "0.10",
-) -> dict[str, float] | None:
-    if not widths_blob or not widths_blob.get("systems"):
-        return None
-    th = np.asarray(theta_hat, dtype=float)
-    best, best_d = None, np.inf
-    for row in widths_blob["systems"]:
-        d = float(np.linalg.norm(np.asarray(row["theta5"], dtype=float) - th))
-        if d < best_d:
-            best_d, best = d, row
-    if best is None or best_d > 1.0:
-        return None
-    return {c: float(best["halfwidths"][alpha][c]) for c in ("log10_P", "log10_K", "e", "omega")}
+    out = {}
+    for c in ("log10_P", "log10_K", "e", "omega"):
+        v = float(best["halfwidths"][alpha][c])
+        if not math.isfinite(v) and fallback is not None:
+            v = float(fallback[c])
+        out[c] = v
+    return out
 
 
 def _sample_region(center5: np.ndarray, q: dict[str, float], n: int, rng: np.random.Generator) -> list[np.ndarray]:
@@ -275,7 +272,7 @@ def figure1(
     th_psi = psi_predict(X)[0]
 
     # Prefer per-system papernorm widths when available (tighter for well-measured hosts).
-    q_region = _match_system_widths(th_psi, widths_blob) or q04
+    q_region = _match_system_widths(th_psi, widths_blob, fallback=q04, alpha="0.40") or q04
     # Cap omega half-width at π so Γ traces stay visually interpretable.
     q_region = dict(q_region)
     q_region["omega"] = float(min(q_region["omega"], math.pi))
@@ -512,7 +509,10 @@ def earthlike_table(
         X = _feat_row_for_system(s, feature_cols)[None, :]
         pred = psi_predict(X)[0]
         tab = s["theta5"]
-        hw = _match_system_widths_alpha(pred, widths_blob, "0.10") or q01
+        hw = _match_system_widths(pred, widths_blob, fallback=q01, alpha="0.10")
+        source = "papernorm_per_system" if hw is not None else "global_raw"
+        if hw is None:
+            hw = q01
         rows.append({
             "host": host,
             "pl_name": lab_row.get("pl_name", ""),
@@ -530,7 +530,7 @@ def earthlike_table(
             "halfwidth_log10_K_a01": float(hw["log10_K"]),
             "halfwidth_e_a01": float(hw["e"]),
             "halfwidth_omega_a01": float(hw["omega"]),
-            "widths_source": "papernorm_per_system" if hw is not q01 else "global_raw",
+            "widths_source": source,
         })
         if len(rows) >= top_k:
             break
@@ -542,7 +542,7 @@ def earthlike_table(
     out_csv.parent.mkdir(parents=True, exist_ok=True)
     df.to_csv(out_csv, index=False)
 
-    # Compact LaTeX snippet
+    # Compact LaTeX snippet: pred +- alpha=0.1 half-width (P/K widths are in dex).
     lines = [
         r"\begin{tabular}{llrrrrrr}",
         r"\hline",
@@ -553,14 +553,17 @@ def earthlike_table(
     ]
     for r in rows:
         lines.append(
-            f"{r['host']} & {r['split']} & {r['P_tab_d']:.2f} & {r['P_pred_d']:.2f} "
-            f"& {r['K_tab_ms']:.2f} & {r['K_pred_ms']:.2f} "
-            f"& {r['e_tab']:.2f} & {r['e_pred']:.2f} \\\\"
+            f"{r['host']} & {r['split']} "
+            f"& {r['P_tab_d']:.2f} & {r['P_pred_d']:.2f} $\\pm$ {r['halfwidth_log10_P_a01']:.2f} dex "
+            f"& {r['K_tab_ms']:.2f} & {r['K_pred_ms']:.2f} $\\pm$ {r['halfwidth_log10_K_a01']:.2f} dex "
+            f"& {r['e_tab']:.2f} & {r['e_pred']:.2f} $\\pm$ {r['halfwidth_e_a01']:.2f} \\\\"
         )
+    omega_hw = float(np.median([r["halfwidth_omega_a01"] for r in rows]))
     lines += [
         r"\hline",
-        r"\multicolumn{8}{l}{\footnotesize Half-widths at $\alpha{=}0.1$ are per-system "
-        r"papernorm (fallback: global surrogate/raw). "
+        r"\multicolumn{8}{l}{\footnotesize $\pm$ are per-system papernorm half-widths of the "
+        r"$\alpha{=}0.1$ conformal region ($P$, $K$ in $\log_{10}$ dex). "
+        f"$\\omega$ half-width $\\approx{omega_hw:.2f}$~rad (near-vacuous, omitted). "
         r"Held-out (val/test) hosts only.} \\",
         r"\end{tabular}",
     ]
