@@ -73,14 +73,29 @@ def replay_synthetic_sample(
     return generate_one(p, sample_rng, f_multi=f_multi)
 
 
-def generate_rows(n_samples: int, seed: int, f_multi: float, *, with_phasefold: bool) -> list[dict[str, float]]:
+def generate_rows(
+    n_samples: int,
+    seed: int,
+    f_multi: float,
+    *,
+    with_phasefold: bool,
+    epoch_free: bool = False,
+    fold_period: str = "oracle",
+) -> list[dict[str, float]]:
     """
     Generate regression rows from the synthetic RV generator.
 
     Target columns come from the dominant-planet theta returned by
     synthetic_dataset.generate_one. Input columns are the spectral encoding and
     summary features derived from the generated observation tensor.
+
+    When ``with_phasefold``:
+      - ``fold_period='oracle'`` folds at the true dominant period
+      - ``fold_period='lsp'`` folds at the LSP peak period (matches deployment)
+      - ``epoch_free=True`` anchors the fold at the phase of max RV (no t_peri)
     """
+    if fold_period not in ("oracle", "lsp"):
+        raise ValueError("fold_period must be 'oracle' or 'lsp'")
     params = corpus_orbital_params(seed, n_samples)
     rows: list[dict[str, float]] = []
 
@@ -120,15 +135,31 @@ def generate_rows(n_samples: int, seed: int, f_multi: float, *, with_phasefold: 
         }
         row.update({name: float(value) for name, value in zip(SPECTRAL_COLUMNS, spectral)})
         if with_phasefold:
-            phase = phase_fold_features(
-                t_days,
-                rv_ms,
-                float(info["P"]),
-                n_bins=PHASE_FOLD_N_BINS,
-                t_peri=float(info["t_peri"]),
-            )
+            if fold_period == "lsp":
+                P_fold = float(row["lsp_peak_period_d"])
+            else:
+                P_fold = float(info["P"])
+            if epoch_free:
+                phase = phase_fold_features(
+                    t_days,
+                    rv_ms,
+                    P_fold,
+                    n_bins=PHASE_FOLD_N_BINS,
+                    epoch_free=True,
+                )
+                # Omega remains identifiable from waveform asymmetry under the
+                # max-RV anchor; mark has_t_peri=1 so Gate-C / omega metrics run.
+                row["has_t_peri"] = 1.0
+            else:
+                phase = phase_fold_features(
+                    t_days,
+                    rv_ms,
+                    P_fold,
+                    n_bins=PHASE_FOLD_N_BINS,
+                    t_peri=float(info["t_peri"]),
+                )
+                row["has_t_peri"] = 1.0
             row.update({name: float(value) for name, value in zip(PHASE_FOLD_COLUMNS, phase)})
-            row["has_t_peri"] = 1.0
         rows.append(row)
 
         if (i + 1) % 1000 == 0:
@@ -152,6 +183,17 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="append 35 phase-fold features and has_t_peri column",
     )
+    p.add_argument(
+        "--epoch-free",
+        action="store_true",
+        help="with --with-phasefold: fold origin = phase of max RV (no catalog t_peri)",
+    )
+    p.add_argument(
+        "--fold-period",
+        choices=("oracle", "lsp"),
+        default="oracle",
+        help="with --with-phasefold: fold at true P or LSP peak P",
+    )
     return p.parse_args()
 
 
@@ -159,9 +201,18 @@ def main() -> None:
     args = parse_args()
     if args.n_samples <= 0:
         raise ValueError("--n-samples must be positive")
+    if args.epoch_free and not args.with_phasefold:
+        raise ValueError("--epoch-free requires --with-phasefold")
 
     args.out.parent.mkdir(parents=True, exist_ok=True)
-    rows = generate_rows(args.n_samples, args.seed, args.f_multi, with_phasefold=args.with_phasefold)
+    rows = generate_rows(
+        args.n_samples,
+        args.seed,
+        args.f_multi,
+        with_phasefold=args.with_phasefold,
+        epoch_free=args.epoch_free,
+        fold_period=args.fold_period,
+    )
     columns = CSV_COLUMNS_PHASEFOLD if args.with_phasefold else CSV_COLUMNS
     df = pd.DataFrame(rows, columns=columns)
     df.to_csv(args.out, index=False)

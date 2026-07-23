@@ -90,6 +90,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import sys
 import time
 from pathlib import Path
 
@@ -123,6 +124,30 @@ from eval_omega_nn_vs_rf import _summary_row  # noqa: E402
 from preprocess import compute_lsp
 
 ROOT = Path(__file__).resolve().parent
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+
+def _load_mlp_psi(checkpoint: Path, device: torch.device):
+    """Load regression.py MLP (or DualEHead) checkpoint as psi: X -> theta5."""
+    from regression import build_model_from_checkpoint, predict
+
+    ckpt = torch.load(checkpoint, map_location=device, weights_only=False)
+    model, norm_stats = build_model_from_checkpoint(ckpt, device)
+    in_dim = int(norm_stats.get("in_dim", len(norm_stats["x_mean"])))
+
+    def psi_predict(X: np.ndarray) -> np.ndarray:
+        X = np.asarray(X, dtype=np.float64)
+        if X.ndim != 2:
+            raise ValueError(f"expected 2-D feature matrix, got shape {X.shape}")
+        if X.shape[1] != in_dim:
+            raise ValueError(
+                f"MLP expects {in_dim} features, got {X.shape[1]}; "
+                f"pass a matching --csv (e.g. synthetic_regression_10000.csv for 74-D)"
+            )
+        return predict(model, X, norm_stats, device)
+
+    return psi_predict, norm_stats
 
 ALPHAS = [0.05, 0.10, 0.15, 0.20, 0.30, 0.40]
 STRATEGIES = ["naive", "naive_adj", "surrogate"]
@@ -536,6 +561,60 @@ def _interval_width(coord: str, center: float, half: float, sup: dict) -> float:
     return float(max(0.0, min(center + half, hi) - max(center - half, lo)))
 
 
+def export_per_system_widths(
+    cal_scores: dict,
+    systems: list,
+    theta_hats: list,
+    den_cal: dict,
+    den_sys: dict,
+    gamma: float,
+    delta_c: dict,
+    delta_y: np.ndarray,
+    *,
+    alphas: tuple[float, ...] = (0.10, 0.40),
+    w_cal: np.ndarray | None = None,
+) -> dict:
+    """Per-system papernorm half-widths for paper figures / Earth-like table.
+
+    half_i,c = q_c(s'/den_cal) * den_sys_i,c  with Bonferroni level 1 - alpha/D.
+    """
+    n_cal = len(next(iter(cal_scores.values())))
+    w_cal = np.ones(n_cal) if w_cal is None else w_cal
+    ones_test = 1.0
+    q_norm: dict[str, dict[str, float]] = {}
+    for a in alphas:
+        level = 1.0 - a / D
+        q_norm[f"{a:.2f}"] = {
+            c: float(weighted_quantile(cal_scores[c] / den_cal[c], w_cal, ones_test, level))
+            for c in COORDS
+        }
+    rows = []
+    for i, (s, th) in enumerate(zip(systems, theta_hats)):
+        entry: dict = {
+            "theta5": [float(x) for x in np.asarray(th, dtype=float).tolist()],
+            "theta5_true": [float(x) for x in np.asarray(s["theta5"], dtype=float).tolist()],
+            "delta_y": float(delta_y[i]),
+            "delta_c": {c: float(delta_c[c][i]) for c in COORDS},
+            "den": {c: float(den_sys[c][i]) for c in COORDS},
+            "halfwidths": {},
+        }
+        for a in alphas:
+            key = f"{a:.2f}"
+            entry["halfwidths"][key] = {
+                c: float(q_norm[key][c] * den_sys[c][i]) for c in COORDS
+            }
+        rows.append(entry)
+    return {
+        "strategy": "surrogate",
+        "norm": "papernorm",
+        "gamma": float(gamma),
+        "alphas": [f"{a:.2f}" for a in alphas],
+        "q_normalized": q_norm,
+        "n_systems": len(rows),
+        "systems": rows,
+    }
+
+
 def evaluate(cal_scores: dict, systems: list, theta_hats: list, sup: dict,
              den_cal: dict | None = None, den_sys: dict | None = None,
              w_cal: np.ndarray | None = None, w_test: np.ndarray | None = None) -> dict:
@@ -756,6 +835,18 @@ def main() -> None:
     ap.add_argument("--sigma-min", type=float, default=0.1)
     ap.add_argument("--sigma-max", type=float, default=100.0)
     ap.add_argument("--n-estimators", type=int, default=200)
+    ap.add_argument(
+        "--psi",
+        choices=("rf", "mlp"),
+        default="rf",
+        help="point predictor: RandomForest (default) or regression.py MLP checkpoint",
+    )
+    ap.add_argument(
+        "--checkpoint",
+        type=Path,
+        default=ROOT / "checkpoints" / "regression_mlp_74.pt",
+        help="MLP checkpoint when --psi mlp (must match --csv feature dim)",
+    )
     ap.add_argument("--psi-labels", choices=("bar", "star"), default="bar",
                     help="train psi on data-generating theta_bar (default) or on "
                          "GD surrogate labels theta* of the CSV rows (ablation)")
@@ -776,9 +867,11 @@ def main() -> None:
                     help="prior draws for the Assumption 2.3 constants "
                          "(kappa(H), ||grad h||); 0 skips")
     ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--device", default="cpu")
     args = ap.parse_args()
     args.out_dir.mkdir(parents=True, exist_ok=True)
     args.fig_dir.mkdir(parents=True, exist_ok=True)
+    device = torch.device(args.device)
 
     t_start = time.perf_counter()
 
@@ -801,28 +894,47 @@ def main() -> None:
     proxy = NoiseProxy()
     print(f"noise proxy source: {proxy.source}")
 
-    if args.psi_labels == "star":
-        cache = args.csv.with_suffix(f".theta_star_gd{args.gd_steps}.npz")
-        X_rows = df[feature_cols].to_numpy(float)
-        y_rows = psi_star_labels(len(df), args.csv_seed, proxy.decoder,
-                                 args.gd_steps, args.gd_lr, cache,
-                                 limit=args.psi_star_rows)
-        X_rows = X_rows[: len(y_rows)]
+    if args.psi == "mlp":
+        if not args.checkpoint.exists():
+            raise FileNotFoundError(f"MLP checkpoint not found: {args.checkpoint}")
+        psi_predict, mlp_stats = _load_mlp_psi(args.checkpoint, device)
+        in_dim = int(mlp_stats["in_dim"])
+        if len(feature_cols) != in_dim:
+            raise ValueError(
+                f"MLP in_dim={in_dim} but --csv has {len(feature_cols)} feature "
+                f"columns; pass a matching CSV (e.g. synthetic_regression_10000.csv "
+                f"for the 74-D checkpoint)"
+            )
+        print(
+            f"loaded MLP psi from {args.checkpoint} "
+            f"(feature_set={mlp_stats.get('feature_set')}, "
+            f"in_dim={in_dim}, e_head={mlp_stats.get('e_head')})"
+        )
     else:
-        X_rows = df[feature_cols].to_numpy(float)
-        y_rows = df[list(TARGET_COLUMNS)].to_numpy(float)
+        if args.psi_labels == "star":
+            cache = args.csv.with_suffix(f".theta_star_gd{args.gd_steps}.npz")
+            X_rows = df[feature_cols].to_numpy(float)
+            y_rows = psi_star_labels(len(df), args.csv_seed, proxy.decoder,
+                                     args.gd_steps, args.gd_lr, cache,
+                                     limit=args.psi_star_rows)
+            X_rows = X_rows[: len(y_rows)]
+        else:
+            X_rows = df[feature_cols].to_numpy(float)
+            y_rows = df[list(TARGET_COLUMNS)].to_numpy(float)
 
-    rf = _build("separate", args.n_estimators, args.seed, list(TARGET_COLUMNS))
-    rf.fit(X_rows, y_rows)
-    print(f"trained RF psi on {len(y_rows)} synthetic rows, {len(feature_cols)} "
-          f"features (labels: {args.psi_labels})")
+        rf = _build("separate", args.n_estimators, args.seed, list(TARGET_COLUMNS))
+        rf.fit(X_rows, y_rows)
+        print(f"trained RF psi on {len(y_rows)} synthetic rows, {len(feature_cols)} "
+              f"features (labels: {args.psi_labels})")
+
+        def psi_predict(X: np.ndarray) -> np.ndarray:
+            return np.asarray(rf.predict(X), dtype=np.float64)
 
     grids = histogram_grids(args.grid, args.seed)
     sup = _support(grids)
 
     def hats(systems):
-        return list(rf.predict(feat_matrix(systems)))
-
+        return list(psi_predict(feat_matrix(systems)))
     print("building real systems ...")
     test_real = make_real(args.real_split, args.sigma_min, args.sigma_max)
     real_train = make_real("train", args.sigma_min, args.sigma_max)
@@ -923,7 +1035,7 @@ def main() -> None:
         dy = np.array([float(np.mean(np.abs(recon_residual_norm(proxy, th, s["curve"]))))
                        for s, th in zip(systems, hats_)])
         reenc = [reencode_features(proxy, th, s["curve"]) for s, th in zip(systems, hats_)]
-        psi_re = rf.predict(np.asarray([_row(fr, lsp) for fr, lsp in reenc], dtype=float))
+        psi_re = psi_predict(np.asarray([_row(fr, lsp) for fr, lsp in reenc], dtype=float))
         dk = {c: np.array([_coord_abs_err(psi_re[j], hats_[j], c)
                            for j in range(len(systems))]) for c in COORDS}
         return dk, dy
@@ -1009,6 +1121,9 @@ def main() -> None:
         "n_test_syn": len(test_syn), "n_test_real": len(test_real),
         "alphas": ALPHAS, "coords": COORDS,
         "proxy_source": proxy.source,
+        "psi": args.psi,
+        "checkpoint": str(args.checkpoint) if args.psi == "mlp" else None,
+        "csv": str(args.csv),
         "psi_labels": args.psi_labels,
         "gamma_tune_on": args.gamma_tune_on,
         "gamma_reg": gamma_reg,
@@ -1038,6 +1153,56 @@ def main() -> None:
         "assumption_constants": constants,
         "results": results,
     }
+    # Unweighted Bonferroni quantiles for paper figures (raw scores).
+    q_export: dict = {}
+    ones = np.ones(len(calib))
+    for strat in STRATEGIES:
+        q_export[strat] = {}
+        for a in ALPHAS:
+            level = 1.0 - a / D
+            q_export[strat][f"{a:.2f}"] = {
+                c: float(weighted_quantile(cal_scores[strat][c], ones, 1.0, level))
+                for c in COORDS
+            }
+    report["quantiles_unweighted"] = q_export
+
+    # Per-system papernorm half-widths on real test (for Earth-like table / Fig 1).
+    try:
+        g_paper = float(gamma_reg["surrogate"]["papernorm"])
+        dk_cal, dy_cal = delta["cal"]
+        dk_real, dy_real = delta["real"]
+        den_cal_paper = {c: g_paper + dk_cal[c] + dy_cal for c in COORDS}
+        den_real_paper = {c: g_paper + dk_real[c] + dy_real for c in COORDS}
+        paper_widths = export_per_system_widths(
+            cal_scores["surrogate"],
+            test_real,
+            hat["real"],
+            den_cal_paper,
+            den_real_paper,
+            g_paper,
+            dk_real,
+            dy_real,
+            w_cal=w_cal,
+        )
+        report["paper_widths_real_papernorm"] = {
+            "gamma": paper_widths["gamma"],
+            "q_normalized": paper_widths["q_normalized"],
+            "n_systems": paper_widths["n_systems"],
+            "median_halfwidth_0.10": {
+                c: float(np.nanmedian([row["halfwidths"]["0.10"][c] for row in paper_widths["systems"]]))
+                for c in COORDS
+            },
+            "median_halfwidth_0.40": {
+                c: float(np.nanmedian([row["halfwidths"]["0.40"][c] for row in paper_widths["systems"]]))
+                for c in COORDS
+            },
+        }
+        widths_path = args.out_dir / "per_system_widths_papernorm.json"
+        widths_path.write_text(json.dumps(paper_widths, indent=2))
+        print(f"wrote per-system papernorm widths -> {widths_path}")
+    except Exception as exc:  # noqa: BLE001 — paper export must not fail the CP run
+        print(f"WARNING: per-system width export failed: {exc}")
+
     (args.out_dir / "conformal_shift_metrics.json").write_text(
         json.dumps(report, indent=2))
     write_report(report, args.out_dir / "conformal_shift_report.txt")

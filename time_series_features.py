@@ -102,6 +102,48 @@ def phase_fold_feature_names(n_bins: int = 32) -> list[str]:
     return [*phase_fold_bin_names(n_bins), *PHASE_SCALAR_NAMES]
 
 
+def phase_fold_anchor_from_curve(
+    t,
+    y,
+    P_days: float,
+    *,
+    n_bins: int = 32,
+) -> float:
+    """Epoch-free fold anchor: phase origin at the max of a provisional fold.
+
+    Provisional fold uses ``t.min()`` as origin; the phase of the maximum
+    bin-mean RV becomes the new zero. Identical convention on synthetic and
+    real curves, so omega remains identifiable from waveform asymmetry.
+    """
+    if n_bins <= 0:
+        raise ValueError("n_bins must be positive")
+    if P_days <= 0 or not np.isfinite(P_days):
+        raise ValueError("P_days must be positive and finite")
+    t = np.asarray(t, dtype=float).reshape(-1)
+    y = np.asarray(y, dtype=float).reshape(-1)
+    if len(t) != len(y) or len(t) < 2:
+        raise ValueError("need at least two (t, y) observations")
+    if not (np.isfinite(t).all() and np.isfinite(y).all()):
+        raise ValueError("t and y must be finite")
+
+    t0 = float(np.min(t))
+    phase = ((t - t0) / float(P_days)) % 1.0
+    edges = np.linspace(0.0, 1.0, n_bins + 1)
+    bin_means = np.full(n_bins, np.nan, dtype=np.float64)
+    for j in range(n_bins):
+        if j < n_bins - 1:
+            mask = (phase >= edges[j]) & (phase < edges[j + 1])
+        else:
+            mask = (phase >= edges[j]) & (phase <= edges[j + 1])
+        if mask.any():
+            bin_means[j] = float(np.mean(y[mask]))
+    if not np.isfinite(bin_means).any():
+        return t0
+    j_max = int(np.nanargmax(bin_means))
+    phase_max = 0.5 * (edges[j_max] + edges[j_max + 1])
+    return t0 + phase_max * float(P_days)
+
+
 def phase_fold_features(
     t,
     y,
@@ -109,20 +151,21 @@ def phase_fold_features(
     *,
     n_bins: int = 32,
     t_peri: float | None = None,
+    epoch_free: bool = False,
 ) -> np.ndarray:
     """Encode an RV curve in orbital phase for eccentricity / omega shape analysis.
 
-    Phase is ``((t - t_peri) / P) mod 1``. ``t_peri`` is required because omega is
-    the orientation of the folded asymmetry; an arbitrary phase origin makes
-    omega labels meaningless even when eccentricity-sensitive scalars remain.
+    Phase is ``((t - t_peri) / P) mod 1``. By default ``t_peri`` is required
+    (catalog periapsis). With ``epoch_free=True``, the fold origin is the
+    phase of maximum RV on a provisional fold (see
+    ``phase_fold_anchor_from_curve``), so real curves without catalog
+    ``t_peri`` can be featurized under the same convention as synthetics.
 
     Returns ``n_bins`` mean-RV bins plus three shape scalars (35 features when
     ``n_bins=32``): peak-to-peak, skewness, and first-half minus second-half mean.
     """
     if n_bins <= 0:
         raise ValueError("n_bins must be positive")
-    if t_peri is None or not np.isfinite(t_peri):
-        raise ValueError("t_peri is required for phase-fold features")
     if P_days <= 0 or not np.isfinite(P_days):
         raise ValueError("P_days must be positive and finite")
 
@@ -132,6 +175,11 @@ def phase_fold_features(
         raise ValueError("need at least two (t, y) observations")
     if not (np.isfinite(t).all() and np.isfinite(y).all()):
         raise ValueError("t and y must be finite")
+
+    if epoch_free:
+        t_peri = phase_fold_anchor_from_curve(t, y, P_days, n_bins=n_bins)
+    elif t_peri is None or not np.isfinite(t_peri):
+        raise ValueError("t_peri is required for phase-fold features (or pass epoch_free=True)")
 
     phase = ((t - float(t_peri)) / float(P_days)) % 1.0
     edges = np.linspace(0.0, 1.0, n_bins + 1)
