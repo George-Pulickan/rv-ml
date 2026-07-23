@@ -561,6 +561,60 @@ def _interval_width(coord: str, center: float, half: float, sup: dict) -> float:
     return float(max(0.0, min(center + half, hi) - max(center - half, lo)))
 
 
+def export_per_system_widths(
+    cal_scores: dict,
+    systems: list,
+    theta_hats: list,
+    den_cal: dict,
+    den_sys: dict,
+    gamma: float,
+    delta_c: dict,
+    delta_y: np.ndarray,
+    *,
+    alphas: tuple[float, ...] = (0.10, 0.40),
+    w_cal: np.ndarray | None = None,
+) -> dict:
+    """Per-system papernorm half-widths for paper figures / Earth-like table.
+
+    half_i,c = q_c(s'/den_cal) * den_sys_i,c  with Bonferroni level 1 - alpha/D.
+    """
+    n_cal = len(next(iter(cal_scores.values())))
+    w_cal = np.ones(n_cal) if w_cal is None else w_cal
+    ones_test = 1.0
+    q_norm: dict[str, dict[str, float]] = {}
+    for a in alphas:
+        level = 1.0 - a / D
+        q_norm[f"{a:.2f}"] = {
+            c: float(weighted_quantile(cal_scores[c] / den_cal[c], w_cal, ones_test, level))
+            for c in COORDS
+        }
+    rows = []
+    for i, (s, th) in enumerate(zip(systems, theta_hats)):
+        entry: dict = {
+            "theta5": [float(x) for x in np.asarray(th, dtype=float).tolist()],
+            "theta5_true": [float(x) for x in np.asarray(s["theta5"], dtype=float).tolist()],
+            "delta_y": float(delta_y[i]),
+            "delta_c": {c: float(delta_c[c][i]) for c in COORDS},
+            "den": {c: float(den_sys[c][i]) for c in COORDS},
+            "halfwidths": {},
+        }
+        for a in alphas:
+            key = f"{a:.2f}"
+            entry["halfwidths"][key] = {
+                c: float(q_norm[key][c] * den_sys[c][i]) for c in COORDS
+            }
+        rows.append(entry)
+    return {
+        "strategy": "surrogate",
+        "norm": "papernorm",
+        "gamma": float(gamma),
+        "alphas": [f"{a:.2f}" for a in alphas],
+        "q_normalized": q_norm,
+        "n_systems": len(rows),
+        "systems": rows,
+    }
+
+
 def evaluate(cal_scores: dict, systems: list, theta_hats: list, sup: dict,
              den_cal: dict | None = None, den_sys: dict | None = None,
              w_cal: np.ndarray | None = None, w_test: np.ndarray | None = None) -> dict:
@@ -1111,6 +1165,44 @@ def main() -> None:
                 for c in COORDS
             }
     report["quantiles_unweighted"] = q_export
+
+    # Per-system papernorm half-widths on real test (for Earth-like table / Fig 1).
+    try:
+        g_paper = float(gamma_reg["surrogate"]["papernorm"])
+        dk_cal, dy_cal = delta["cal"]
+        dk_real, dy_real = delta["real"]
+        den_cal_paper = {c: g_paper + dk_cal[c] + dy_cal for c in COORDS}
+        den_real_paper = {c: g_paper + dk_real[c] + dy_real for c in COORDS}
+        paper_widths = export_per_system_widths(
+            cal_scores["surrogate"],
+            test_real,
+            hat["real"],
+            den_cal_paper,
+            den_real_paper,
+            g_paper,
+            dk_real,
+            dy_real,
+            w_cal=w_cal,
+        )
+        report["paper_widths_real_papernorm"] = {
+            "gamma": paper_widths["gamma"],
+            "q_normalized": paper_widths["q_normalized"],
+            "n_systems": paper_widths["n_systems"],
+            "median_halfwidth_0.10": {
+                c: float(np.nanmedian([row["halfwidths"]["0.10"][c] for row in paper_widths["systems"]]))
+                for c in COORDS
+            },
+            "median_halfwidth_0.40": {
+                c: float(np.nanmedian([row["halfwidths"]["0.40"][c] for row in paper_widths["systems"]]))
+                for c in COORDS
+            },
+        }
+        widths_path = args.out_dir / "per_system_widths_papernorm.json"
+        widths_path.write_text(json.dumps(paper_widths, indent=2))
+        print(f"wrote per-system papernorm widths -> {widths_path}")
+    except Exception as exc:  # noqa: BLE001 — paper export must not fail the CP run
+        print(f"WARNING: per-system width export failed: {exc}")
+
     (args.out_dir / "conformal_shift_metrics.json").write_text(
         json.dumps(report, indent=2))
     write_report(report, args.out_dir / "conformal_shift_report.txt")

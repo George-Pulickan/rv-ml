@@ -82,6 +82,39 @@ def _set_omega(th: np.ndarray, omega: float) -> np.ndarray:
     return out
 
 
+def _match_system_widths(theta_hat: np.ndarray, widths_blob: dict | None) -> dict[str, float] | None:
+    """Find papernorm half-widths for a psi(y) closest to theta_hat."""
+    if not widths_blob or not widths_blob.get("systems"):
+        return None
+    th = np.asarray(theta_hat, dtype=float)
+    best, best_d = None, np.inf
+    for row in widths_blob["systems"]:
+        d = float(np.linalg.norm(np.asarray(row["theta5"], dtype=float) - th))
+        if d < best_d:
+            best_d, best = d, row
+    if best is None or best_d > 1.0:  # loose match guard
+        return None
+    return {c: float(best["halfwidths"]["0.40"][c]) for c in ("log10_P", "log10_K", "e", "omega")}
+
+
+def _match_system_widths_alpha(
+    theta_hat: np.ndarray,
+    widths_blob: dict | None,
+    alpha: str = "0.10",
+) -> dict[str, float] | None:
+    if not widths_blob or not widths_blob.get("systems"):
+        return None
+    th = np.asarray(theta_hat, dtype=float)
+    best, best_d = None, np.inf
+    for row in widths_blob["systems"]:
+        d = float(np.linalg.norm(np.asarray(row["theta5"], dtype=float) - th))
+        if d < best_d:
+            best_d, best = d, row
+    if best is None or best_d > 1.0:
+        return None
+    return {c: float(best["halfwidths"][alpha][c]) for c in ("log10_P", "log10_K", "e", "omega")}
+
+
 def _sample_region(center5: np.ndarray, q: dict[str, float], n: int, rng: np.random.Generator) -> list[np.ndarray]:
     """Uniform samples in the Bonferroni box Γ_α around psi(y)."""
     samples = []
@@ -235,11 +268,18 @@ def figure1(
     n_region: int = 20,
     n_noisy: int = 12,
     seed: int = 0,
+    widths_blob: dict | None = None,
 ) -> None:
     rng = np.random.default_rng(seed)
     X = _feat_row_for_system(system, feature_cols)[None, :]
     th_tab = system["theta5"]
     th_psi = psi_predict(X)[0]
+
+    # Prefer per-system papernorm widths when available (tighter for well-measured hosts).
+    q_region = _match_system_widths(th_psi, widths_blob) or q04
+    # Cap omega half-width at π so Γ traces stay visually interpretable.
+    q_region = dict(q_region)
+    q_region["omega"] = float(min(q_region["omega"], math.pi))
 
     t, rv, sig = _obs_ms(system["curve"])
     P_fold = float(10.0 ** th_tab[0])
@@ -257,7 +297,12 @@ def figure1(
     def model_on_obs(th: np.ndarray) -> np.ndarray:
         return _kepler_on_grid(th, t, t_peri)
 
-    region = _sample_region(th_psi, q04, n_region, rng)
+    region = _sample_region(th_psi, q_region, n_region, rng)
+    # Phase-fold display: freeze P at the fold period so Γ traces stay
+    # single-valued in phase (varying P on a fixed phase grid creates
+    # multi-cycle nonsense). Widths on K/e/ω still show conformal uncertainty.
+    P_log_fold = float(np.log10(P_fold))
+    region = [np.array([P_log_fold, th[1], th[2], th[3], th[4]], dtype=float) for th in region]
 
     # Noisy simulator draws at psi(y): Kepler + residual noise on the real cadence.
     p_psi = _theta5_to_params(th_psi)
@@ -416,6 +461,7 @@ def earthlike_table(
     out_csv: Path,
     out_tex: Path,
     top_k: int = 10,
+    widths_blob: dict | None = None,
 ) -> None:
     labels = pd.read_csv(ROOT / "data" / "labels.csv")
     splits = pd.read_csv(ROOT / "data" / "splits.csv")
@@ -467,6 +513,7 @@ def earthlike_table(
         X = _feat_row_for_system(s, feature_cols)[None, :]
         pred = psi_predict(X)[0]
         tab = s["theta5"]
+        hw = _match_system_widths_alpha(pred, widths_blob, "0.10") or q01
         rows.append({
             "host": host,
             "pl_name": lab_row.get("pl_name", ""),
@@ -480,11 +527,11 @@ def earthlike_table(
             "K_pred_ms": float(10 ** pred[1]),
             "e_pred": float(pred[2]),
             "omega_pred_rad": float(_theta_to_omega(pred)),
-            # Global (split-CP) half-widths — identical across rows by construction.
-            "halfwidth_log10_P_a01": float(q01["log10_P"]),
-            "halfwidth_log10_K_a01": float(q01["log10_K"]),
-            "halfwidth_e_a01": float(q01["e"]),
-            "halfwidth_omega_a01": float(q01["omega"]),
+            "halfwidth_log10_P_a01": float(hw["log10_P"]),
+            "halfwidth_log10_K_a01": float(hw["log10_K"]),
+            "halfwidth_e_a01": float(hw["e"]),
+            "halfwidth_omega_a01": float(hw["omega"]),
+            "widths_source": "papernorm_per_system" if hw is not q01 else "global_raw",
         })
         if len(rows) >= top_k:
             break
@@ -513,12 +560,8 @@ def earthlike_table(
         )
     lines += [
         r"\hline",
-        r"\multicolumn{8}{l}{\footnotesize Global conformal half-widths at $\alpha{=}0.1$ "
-        r"(surrogate/raw; identical for all rows): "
-        f"$\\log_{{10}}P\\pm{q01['log10_P']:.3g}$, "
-        f"$\\log_{{10}}K\\pm{q01['log10_K']:.3g}$, "
-        f"$e\\pm{q01['e']:.3g}$, "
-        f"$\\omega\\pm{q01['omega']:.3g}$ rad. "
+        r"\multicolumn{8}{l}{\footnotesize Half-widths at $\alpha{=}0.1$ are per-system "
+        r"papernorm (fallback: global surrogate/raw). "
         r"Held-out (val/test) hosts only.} \\",
         r"\end{tabular}",
     ]
@@ -543,6 +586,19 @@ def write_overleaf(out_path: Path, q_blob: dict, coverage: dict | None = None) -
         if all(v is not None for v in (wP, wK, we, wO))
         else "see conformal\\_shift\\_metrics.json"
     )
+    paper_w = q_blob.get("paper_widths_real_papernorm") or {}
+    med10 = paper_w.get("median_halfwidth_0.10") or {}
+    papernorm_txt = ""
+    if med10:
+        papernorm_txt = (
+            f"Per-system papernorm half-widths at $\\alpha{{=}}0.1$ "
+            f"(median over real test hosts: "
+            f"$\\log_{{10}}P\\pm{med10.get('log10_P', float('nan')):.2f}$, "
+            f"$\\log_{{10}}K\\pm{med10.get('log10_K', float('nan')):.2f}$, "
+            f"$e\\pm{med10.get('e', float('nan')):.2f}$, "
+            f"$\\omega\\pm{med10.get('omega', float('nan')):.2f}$~rad) "
+            f"are used in the Earth-like table and for $\\Gamma_{{0.4}}$ sampling. "
+        )
     text = rf"""\subsection{{Exoplanet Radial-Velocity Experiment}}
 \label{{sec:exoplanet}}
 
@@ -556,24 +612,26 @@ The noiseless forward map $h(\theta)$ is the Keplerian RV model evaluated on the
 
 \paragraph{{Point predictor.}}
 The regressor $\psi$ is a multilayer perceptron trained on synthetic curves with a 74-dimensional summary+LSP feature vector and a dual eccentricity head (separate circular / eccentric pathways gated by an $e>0$ classifier).
-On a held-out synthetic validation split it recovers $(\log_{{10}} P, \log_{{10}} K, e)$ as shown in Figure~\ref{{fig:rv-pred}}.
+On a held-out synthetic validation split it recovers $(\log_{{10}} P, \log_{{10}} K, e)$ as shown in Figure~\ref{{fig:rv-pred}} ($R^2\approx 0.74/0.81/0.27$).
 The 74-D feature set does not encode periapsis epoch, so $\omega$ is weakly identifiable from these features alone; we therefore omit $\omega$ from the published pred-vs-true panel and treat $\omega$ conformal intervals as largely uninformative (near full-circle half-widths).
-A stable alternative targetisation uses Laplace coordinates $(k,h)=(e\cos\omega, e\sin\omega)$ (already available as \texttt{{--targets hk}} in our codebase); recovering $e=z_2/\cos\omega$ from $(\omega, e\cos\omega)$ is singular at $\omega=\pm\pi/2$ and is not recommended.
+Laplace coordinates $(k,h)=(e\cos\omega, e\sin\omega)$ improve $e$/$\omega$ when phase-fold features and catalog $t_{{\mathrm{{peri}}}}$ are available (109-D oracle-fold $R^2_e\approx 0.50$, angular MAE$\approx 23^\circ$ on $e>0.1$), but an epoch-free fold (phase origin at maximum RV) did not recover usable absolute $\omega$ on real curves without $t_{{\mathrm{{peri}}}}$; we therefore keep the 74-D $\psi$ for the main experiment and leave $\omega$ as an honest caveat.
+Recovering $e=z_2/\cos\omega$ from $(\omega, e\cos\omega)$ is singular at $\omega=\pm\pi/2$ and is not recommended.
 
 \paragraph{{Uncertainty.}}
-Prediction regions come from the simulation-based conformal procedure of this paper (split conformal calibrated on synthetic curves, evaluated under synthetic$\to$real covariate shift), with conformity scores on the physical coordinates $(\log_{{10}} P, \log_{{10}} K, e, \omega)$ and Bonferroni aggregation.
-We use the MLP as $\psi$ with the surrogate-label score.
-On the real test split (likelihood-ratio reweighted), joint coverage at $1-\alpha=0.90$ is approximately {joint_txt}, with {width_txt} (median support-capped widths).
-These regions are intentionally conservative under covariate shift with a moderately accurate $\psi$; $\alpha{{=}}0.1$ half-widths are reported in the Earth-like summary table and $\alpha{{=}}0.4$ regions are used for the light phase-folded overlays.
+Prediction regions come from the simulation-based conformal procedure of this paper (split conformal calibrated on synthetic curves, evaluated under synthetic$\to$real covariate shift with likelihood-ratio weights~\cite{{tibshirani2019}}), with conformity scores on the physical coordinates $(\log_{{10}} P, \log_{{10}} K, e, \omega)$ and Bonferroni aggregation.
+We use the MLP as $\psi$ with the surrogate-label score ($n_{{\mathrm{{cal}}}}=400$).
+On the real test split (reweighted), joint coverage at $1-\alpha=0.90$ is approximately {joint_txt}, with {width_txt} (median support-capped widths).
+{papernorm_txt}
+These regions are intentionally conservative under covariate shift with a moderately accurate $\psi$.
 
 \paragraph{{Figures.}}
-Figure~\ref{{fig:rv-heldout}} shows a held-out real RV series phase-folded at the tabulated period, with (i) observations, (ii) $h(\theta_{{\mathrm{{tab}}}})$, (iii) $h(\psi(y))$, (iv) light traces for $\theta\sim\mathrm{{Unif}}(\Gamma_{{0.4}})$, and (v) noisy simulator draws at $\psi(y)$.
+Figure~\ref{{fig:rv-heldout}} shows a held-out real RV series phase-folded at the tabulated period, with (i) observations, (ii) $h(\theta_{{\mathrm{{tab}}}})$, (iii) $h(\psi(y))$, (iv) light traces for $\theta\sim\mathrm{{Unif}}(\Gamma_{{0.4}})$ with $P$ fixed at the fold period (so overlays remain single-valued in phase), and (v) noisy simulator draws at $\psi(y)$.
 Figure~\ref{{fig:rv-pred}} shows synthetic validation pred-vs-true scatters for $\log_{{10}} P$, $\log_{{10}} K$, and $e$.
 
 \begin{{figure}}[t]
 \centering
 \includegraphics[width=\linewidth]{{rv_heldout_phasefold.png}}
-\caption{{Held-out real RV (HD~139357) phase-folded at the tabulated period. Overlays: observations; noiseless Keplerian from tabulated and predicted parameters; $\sim$20 light traces from the $\alpha{{=}}0.4$ conformal region; noisy simulator draws at $\psi(y)$.}}
+\caption{{Held-out real RV (HD~139357) phase-folded at the tabulated period. Overlays: observations; noiseless Keplerian from tabulated and predicted parameters; $\sim$20 light traces from the $\alpha{{=}}0.4$ conformal region with $P$ fixed at the fold period (varying $K,e,\omega$); noisy simulator draws at $\psi(y)$.}}
 \label{{fig:rv-heldout}}
 \end{{figure}}
 
@@ -583,12 +641,16 @@ Figure~\ref{{fig:rv-pred}} shows synthetic validation pred-vs-true scatters for 
 \caption{{Synthetic validation pred-vs-true for the 74-D MLP ($P$, $K$, $e$). Argument of periastron is omitted because the 74-D features lack periapsis-epoch information.}}
 \label{{fig:rv-pred}}
 \end{{figure}}
+
+\paragraph{{Reproducibility.}}
+\texttt{{python conformal\_shift.py --psi mlp --checkpoint checkpoints/regression\_mlp\_74.pt --csv synthetic\_generation/datasets/synthetic\_regression\_10000.csv --n-cal 400 --gd-steps 200}}; seed $0$; figures via \texttt{{scripts/paper\_rv\_figures.py}}.
 """
     note = (
         f"% MLP+CP quantiles (surrogate/raw, n_cal={q_blob.get('n_cal')}):\n"
         f"% alpha=0.10 -> {q01}\n"
         f"% alpha=0.40 -> {q04}\n"
         f"% coverage block: {cov}\n"
+        f"% papernorm medians: {paper_w.get('median_halfwidth_0.10')}\n"
     )
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(note + text)
@@ -601,6 +663,12 @@ def main() -> None:
     ap.add_argument("--csv", type=Path, default=DEFAULT_CSV)
     ap.add_argument("--quantiles", type=Path, default=DEFAULT_Q)
     ap.add_argument("--metrics", type=Path, default=DEFAULT_METRICS)
+    ap.add_argument(
+        "--widths",
+        type=Path,
+        default=ROOT / "synthetic_generation" / "regression" / "mlp_psi" / "per_system_widths_papernorm.json",
+        help="optional per-system papernorm widths JSON from conformal_shift",
+    )
     ap.add_argument("--host", default=None, help="held-out host for Figure 1 (default: auto)")
     ap.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     ap.add_argument("--seed", type=int, default=0)
@@ -612,6 +680,10 @@ def main() -> None:
     q_blob = load_quantiles(args.quantiles, args.metrics)
     q01 = q_blob["quantiles"]["0.10"]
     q04 = q_blob["quantiles"]["0.40"]
+    widths_blob = None
+    if args.widths.exists():
+        widths_blob = json.loads(args.widths.read_text())
+        print(f"loaded per-system widths ({widths_blob.get('n_systems')} systems) from {args.widths}")
 
     psi_predict, norm_stats = _load_mlp_psi(args.checkpoint, device)
     df = pd.read_csv(args.csv, nrows=1)
@@ -622,11 +694,12 @@ def main() -> None:
 
     system, info = pick_system(args.host)
     figure1(system, info, psi_predict, feature_cols, q04, OUT_DIR / "rv_heldout_phasefold.png",
-            seed=args.seed)
+            seed=args.seed, widths_blob=widths_blob)
     figure2(args.checkpoint, args.csv, OUT_DIR / "rv_pred_vs_true.png", device)
     earthlike_table(psi_predict, feature_cols, q01,
                     OUT_DIR / "earthlike_top10.csv",
-                    OUT_DIR / "earthlike_top10.tex")
+                    OUT_DIR / "earthlike_top10.tex",
+                    widths_blob=widths_blob)
     coverage = None
     metrics_path = args.metrics
     if metrics_path.exists():

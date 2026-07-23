@@ -66,5 +66,28 @@ class SpectralFeaturesTests(unittest.TestCase):
         )
 
 
+class PhaseFoldEpochFreeTests(unittest.TestCase):
+    def test_epoch_free_does_not_require_t_peri(self):
+        from time_series_features import phase_fold_features
+
+        t = np.linspace(0.0, 50.0, 80)
+        y = np.sin(2 * np.pi * t / 10.0)
+        feats = phase_fold_features(t, y, 10.0, n_bins=16, epoch_free=True)
+        self.assertEqual(feats.shape, (19,))
+        self.assertTrue(np.isfinite(feats).all())
+
+    def test_epoch_free_anchor_puts_max_near_phase_zero(self):
+        from time_series_features import phase_fold_anchor_from_curve, phase_fold_features
+
+        t = np.linspace(0.0, 40.0, 200)
+        P = 8.0
+        y = np.cos(2 * np.pi * t / P)  # max at t=0, P, ...
+        t0 = phase_fold_anchor_from_curve(t, y, P, n_bins=32)
+        feats = phase_fold_features(t, y, P, n_bins=32, epoch_free=True)
+        # Bin 0 (phase near 0) should be among the highest mean bins.
+        self.assertGreaterEqual(feats[0], np.percentile(feats[:32], 70))
+        self.assertTrue(np.isfinite(t0))
+
+
 if __name__ == "__main__":
     unittest.main()

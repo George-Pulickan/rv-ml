@@ -2,7 +2,6 @@
   "psi": "mlp",
   "checkpoint": "checkpoints\\regression_mlp_74.pt",
   "n_cal": 400,
-  "proxy_source": "gp_residual_svgp",
   "strategy": "surrogate",
   "norm": "raw",
   "quantiles": {
@@ -43,21 +42,35 @@
       "omega": 2.718299843987451
     }
   },
-  "real_weighted_0.10": {
-    "per_coord_coverage": {
-      "log10_P": 1.0,
-      "log10_K": 0.9824561403508771,
-      "e": 1.0,
-      "omega": 0.9649122807017544
+  "paper_widths_real_papernorm": {
+    "gamma": 31.458099161767954,
+    "q_normalized": {
+      "0.10": {
+        "log10_P": 0.05558791971406585,
+        "log10_K": 0.020170672501366307,
+        "e": 0.019452715713040858,
+        "omega": 0.09216412760301208
+      },
+      "0.40": {
+        "log10_P": 0.03152134051839911,
+        "log10_K": 0.009341336179816891,
+        "e": 0.013574438344621688,
+        "omega": 0.08026121406330129
+      }
     },
-    "per_coord_median_width": {
-      "log10_P": 2.602156315870957,
-      "log10_K": 1.2040900820736484,
-      "e": 0.8854764774220711,
-      "omega": 6.111998329451626
+    "n_systems": 57,
+    "median_halfwidth_0.10": {
+      "log10_P": 1.810909927471239,
+      "log10_K": 0.6547982344986012,
+      "e": 0.6318901868651517,
+      "omega": 3.0180514885615364
     },
-    "joint_coverage": 0.9473684210526315,
-    "frac_infinite": 0.0
+    "median_halfwidth_0.40": {
+      "log10_P": 1.0268833366240613,
+      "log10_K": 0.3032467280398152,
+      "e": 0.4409437997606779,
+      "omega": 2.6282728744625583
+    }
   },
   "source": "synthetic_generation/regression/mlp_psi/conformal_shift_metrics.json"
 }

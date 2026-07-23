@@ -357,8 +357,13 @@ def recompute_phasefold_block(
     seed: int,
     n_samples: int,
     f_multi: float = 0.0,
+    epoch_free: bool = False,
 ) -> np.ndarray:
-    """Recompute phase-fold features folding at ``10**log10_P`` (Gate C)."""
+    """Recompute phase-fold features folding at ``10**log10_P`` (Gate C).
+
+    With ``epoch_free=True``, anchor at the phase of max RV (matches the
+    epoch-free training CSV); otherwise use catalog ``t_peri``.
+    """
     params = corpus_orbital_params(seed, n_samples)
     out = np.zeros((len(row_indices), len(PHASE_FOLD_COLUMNS)), dtype=np.float64)
     n = len(row_indices)
@@ -369,13 +374,22 @@ def recompute_phasefold_block(
         t_days = xm[0] * float(info["t_span_days"])
         rv_ms = xm[1] * float(info["rv_std_ms"])
         P_days = float(10 ** lp)
-        phase = phase_fold_features(
-            t_days,
-            rv_ms,
-            P_days,
-            n_bins=PHASE_FOLD_N_BINS,
-            t_peri=float(info["t_peri"]),
-        )
+        if epoch_free:
+            phase = phase_fold_features(
+                t_days,
+                rv_ms,
+                P_days,
+                n_bins=PHASE_FOLD_N_BINS,
+                epoch_free=True,
+            )
+        else:
+            phase = phase_fold_features(
+                t_days,
+                rv_ms,
+                P_days,
+                n_bins=PHASE_FOLD_N_BINS,
+                t_peri=float(info["t_peri"]),
+            )
         out[j] = phase
         if (j + 1) % report_every == 0 or (j + 1) == n:
             print(f"    phase-fold progress {j + 1}/{n}", flush=True)

@@ -2,6 +2,7 @@
 % alpha=0.10 -> {'log10_P': 1.852863464608622, 'log10_K': 0.7210642050153828, 'e': 0.6437431975955525, 'omega': 3.043812346536477}
 % alpha=0.40 -> {'log10_P': 1.2216077948944926, 'log10_K': 0.3886337770549111, 'e': 0.506152803441515, 'omega': 2.718299843987451}
 % coverage block: {'per_coord_coverage': {'log10_P': 1.0, 'log10_K': 0.9824561403508771, 'e': 1.0, 'omega': 0.9649122807017544}, 'per_coord_median_width': {'log10_P': 2.602156315870957, 'log10_K': 1.2040900820736484, 'e': 0.8854764774220711, 'omega': 6.111998329451626}, 'joint_coverage': 0.9473684210526315, 'frac_infinite': 0.0}
+% papernorm medians: {'log10_P': 1.810909927471239, 'log10_K': 0.6547982344986012, 'e': 0.6318901868651517, 'omega': 3.0180514885615364}
 \subsection{Exoplanet Radial-Velocity Experiment}
 \label{sec:exoplanet}
 
@@ -15,24 +16,26 @@ The noiseless forward map $h(\theta)$ is the Keplerian RV model evaluated on the
 
 \paragraph{Point predictor.}
 The regressor $\psi$ is a multilayer perceptron trained on synthetic curves with a 74-dimensional summary+LSP feature vector and a dual eccentricity head (separate circular / eccentric pathways gated by an $e>0$ classifier).
-On a held-out synthetic validation split it recovers $(\log_{10} P, \log_{10} K, e)$ as shown in Figure~\ref{fig:rv-pred}.
+On a held-out synthetic validation split it recovers $(\log_{10} P, \log_{10} K, e)$ as shown in Figure~\ref{fig:rv-pred} ($R^2\approx 0.74/0.81/0.27$).
 The 74-D feature set does not encode periapsis epoch, so $\omega$ is weakly identifiable from these features alone; we therefore omit $\omega$ from the published pred-vs-true panel and treat $\omega$ conformal intervals as largely uninformative (near full-circle half-widths).
-A stable alternative targetisation uses Laplace coordinates $(k,h)=(e\cos\omega, e\sin\omega)$ (already available as \texttt{--targets hk} in our codebase); recovering $e=z_2/\cos\omega$ from $(\omega, e\cos\omega)$ is singular at $\omega=\pm\pi/2$ and is not recommended.
+Laplace coordinates $(k,h)=(e\cos\omega, e\sin\omega)$ improve $e$/$\omega$ when phase-fold features and catalog $t_{\mathrm{peri}}$ are available (109-D oracle-fold $R^2_e\approx 0.50$, angular MAE$\approx 23^\circ$ on $e>0.1$), but an epoch-free fold (phase origin at maximum RV) did not recover usable absolute $\omega$ on real curves without $t_{\mathrm{peri}}$; we therefore keep the 74-D $\psi$ for the main experiment and leave $\omega$ as an honest caveat.
+Recovering $e=z_2/\cos\omega$ from $(\omega, e\cos\omega)$ is singular at $\omega=\pm\pi/2$ and is not recommended.
 
 \paragraph{Uncertainty.}
-Prediction regions come from the simulation-based conformal procedure of this paper (split conformal calibrated on synthetic curves, evaluated under synthetic$\to$real covariate shift), with conformity scores on the physical coordinates $(\log_{10} P, \log_{10} K, e, \omega)$ and Bonferroni aggregation.
-We use the MLP as $\psi$ with the surrogate-label score.
-On the real test split (likelihood-ratio reweighted), joint coverage at $1-\alpha=0.90$ is approximately 0.95, with $\log_{10}P$ median width $2.60$, $\log_{10}K$ $1.20$, $e$ $0.89$, $\omega$ $6.11$~rad (median support-capped widths).
-These regions are intentionally conservative under covariate shift with a moderately accurate $\psi$; $\alpha{=}0.1$ half-widths are reported in the Earth-like summary table and $\alpha{=}0.4$ regions are used for the light phase-folded overlays.
+Prediction regions come from the simulation-based conformal procedure of this paper (split conformal calibrated on synthetic curves, evaluated under synthetic$\to$real covariate shift with likelihood-ratio weights~\cite{tibshirani2019}), with conformity scores on the physical coordinates $(\log_{10} P, \log_{10} K, e, \omega)$ and Bonferroni aggregation.
+We use the MLP as $\psi$ with the surrogate-label score ($n_{\mathrm{cal}}=400$).
+On the real test split (reweighted), joint coverage at $1-\alpha=0.90$ is approximately 0.95, with $\log_{10}P$ median width $2.60$, $\log_{10}K$ $1.20$, $e$ $0.89$, $\omega$ $6.11$~rad (median support-capped widths).
+Per-system papernorm half-widths at $\alpha{=}0.1$ (median over real test hosts: $\log_{10}P\pm1.81$, $\log_{10}K\pm0.65$, $e\pm0.63$, $\omega\pm3.02$~rad) are used in the Earth-like table and for $\Gamma_{0.4}$ sampling. 
+These regions are intentionally conservative under covariate shift with a moderately accurate $\psi$.
 
 \paragraph{Figures.}
-Figure~\ref{fig:rv-heldout} shows a held-out real RV series phase-folded at the tabulated period, with (i) observations, (ii) $h(\theta_{\mathrm{tab}})$, (iii) $h(\psi(y))$, (iv) light traces for $\theta\sim\mathrm{Unif}(\Gamma_{0.4})$, and (v) noisy simulator draws at $\psi(y)$.
+Figure~\ref{fig:rv-heldout} shows a held-out real RV series phase-folded at the tabulated period, with (i) observations, (ii) $h(\theta_{\mathrm{tab}})$, (iii) $h(\psi(y))$, (iv) light traces for $\theta\sim\mathrm{Unif}(\Gamma_{0.4})$ with $P$ fixed at the fold period (so overlays remain single-valued in phase), and (v) noisy simulator draws at $\psi(y)$.
 Figure~\ref{fig:rv-pred} shows synthetic validation pred-vs-true scatters for $\log_{10} P$, $\log_{10} K$, and $e$.
 
 \begin{figure}[t]
 \centering
 \includegraphics[width=\linewidth]{rv_heldout_phasefold.png}
-\caption{Held-out real RV (HD~139357) phase-folded at the tabulated period. Overlays: observations; noiseless Keplerian from tabulated and predicted parameters; $\sim$20 light traces from the $\alpha{=}0.4$ conformal region; noisy simulator draws at $\psi(y)$.}
+\caption{Held-out real RV (HD~139357) phase-folded at the tabulated period. Overlays: observations; noiseless Keplerian from tabulated and predicted parameters; $\sim$20 light traces from the $\alpha{=}0.4$ conformal region with $P$ fixed at the fold period (varying $K,e,\omega$); noisy simulator draws at $\psi(y)$.}
 \label{fig:rv-heldout}
 \end{figure}
 
@@ -42,3 +45,6 @@ Figure~\ref{fig:rv-pred} shows synthetic validation pred-vs-true scatters for $\
 \caption{Synthetic validation pred-vs-true for the 74-D MLP ($P$, $K$, $e$). Argument of periastron is omitted because the 74-D features lack periapsis-epoch information.}
 \label{fig:rv-pred}
 \end{figure}
+
+\paragraph{Reproducibility.}
+\texttt{python conformal\_shift.py --psi mlp --checkpoint checkpoints/regression\_mlp\_74.pt --csv synthetic\_generation/datasets/synthetic\_regression\_10000.csv --n-cal 400 --gd-steps 200}; seed $0$; figures via \texttt{scripts/paper\_rv\_figures.py}.

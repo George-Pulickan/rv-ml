@@ -66,6 +66,8 @@ OMEGA_DIMS = {"cos_omega": 3, "sin_omega": 4}
 
 def _summary_row(xm, info, lsp) -> dict:
     from preprocess import LSP_PERIODS
+    from feature_columns import PHASE_FOLD_COLUMNS, PHASE_FOLD_N_BINS
+    from time_series_features import phase_fold_features
 
     rv_std = float(info["rv_std_ms"])
     sigma = xm[2] * rv_std
@@ -86,6 +88,19 @@ def _summary_row(xm, info, lsp) -> dict:
         "p90_gap_d": float(np.percentile(gaps, 90)) if len(gaps) else np.nan,
     }
     row.update({n: float(v) for n, v in zip(SPECTRAL_COLUMNS, spectral)})
+    # Epoch-free phase-fold at LSP peak P (matches phasefold_epochfree CSV).
+    # Extra keys are ignored by RF FEATURES selection; used by 109-D MLP.
+    P_fold = float(row["lsp_peak_period_d"])
+    if P_fold > 0 and np.isfinite(P_fold):
+        phase = phase_fold_features(
+            t_days,
+            rv_ms,
+            P_fold,
+            n_bins=PHASE_FOLD_N_BINS,
+            epoch_free=True,
+        )
+        row.update({n: float(v) for n, v in zip(PHASE_FOLD_COLUMNS, phase)})
+        row["has_t_peri"] = 1.0
     return row
 
 
