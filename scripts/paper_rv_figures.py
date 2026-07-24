@@ -450,6 +450,28 @@ def earth_likeness(row: pd.Series) -> float:
     return float(score)
 
 
+def _mean_abs_err(err1, err2) -> float | None:
+    """Mean of |err1|, |err2| from NASA archive asymmetric uncertainties."""
+    vals = []
+    for v in (err1, err2):
+        if v is None or (isinstance(v, float) and math.isnan(v)):
+            continue
+        try:
+            fv = float(v)
+        except (TypeError, ValueError):
+            continue
+        if math.isfinite(fv):
+            vals.append(abs(fv))
+    if not vals:
+        return None
+    return float(sum(vals) / len(vals))
+
+
+def _log10_hw_to_physical(center: float, hw_log10: float) -> float:
+    """Convert a log10 half-width into an approximate physical half-width at ``center``."""
+    return float(center * (10.0 ** float(hw_log10) - 1.0))
+
+
 def earthlike_table(
     psi_predict,
     feature_cols: list[str],
@@ -513,23 +535,58 @@ def earthlike_table(
         source = "papernorm_per_system" if hw is not None else "global_raw"
         if hw is None:
             hw = q01
+
+        P_tab = float(10 ** tab[0])
+        K_tab = float(10 ** tab[1])
+        e_tab = float(tab[2])
+        P_pred = float(10 ** pred[0])
+        K_pred = float(10 ** pred[1])
+        e_pred = float(pred[2])
+
+        P_tab_err = _mean_abs_err(lab_row.get("pl_orbpererr1"), lab_row.get("pl_orbpererr2"))
+        K_tab_err = _mean_abs_err(lab_row.get("pl_rvamperr1"), lab_row.get("pl_rvamperr2"))
+        e_tab_err = _mean_abs_err(lab_row.get("pl_orbeccenerr1"), lab_row.get("pl_orbeccenerr2"))
+        # Asymmetric NASA errs (err2 typically negative lower, err1 positive upper).
+        P_tab_err_lo = lab_row.get("pl_orbpererr2")
+        P_tab_err_hi = lab_row.get("pl_orbpererr1")
+        K_tab_err_lo = lab_row.get("pl_rvamperr2")
+        K_tab_err_hi = lab_row.get("pl_rvamperr1")
+        e_tab_err_lo = lab_row.get("pl_orbeccenerr2")
+        e_tab_err_hi = lab_row.get("pl_orbeccenerr1")
+
+        P_cp_hw = _log10_hw_to_physical(P_pred, hw["log10_P"])
+        K_cp_hw = _log10_hw_to_physical(K_pred, hw["log10_K"])
+        e_cp_hw = float(hw["e"])
+
         rows.append({
             "host": host,
             "pl_name": lab_row.get("pl_name", ""),
             "split": s["split"],
             "earth_score": float(lab_row["earth_score"]),
-            "P_tab_d": float(10 ** tab[0]),
-            "K_tab_ms": float(10 ** tab[1]),
-            "e_tab": float(tab[2]),
+            "P_tab_d": P_tab,
+            "P_tab_err_d": P_tab_err,
+            "P_tab_err_lo_d": float(P_tab_err_lo) if pd.notna(P_tab_err_lo) else None,
+            "P_tab_err_hi_d": float(P_tab_err_hi) if pd.notna(P_tab_err_hi) else None,
+            "K_tab_ms": K_tab,
+            "K_tab_err_ms": K_tab_err,
+            "K_tab_err_lo_ms": float(K_tab_err_lo) if pd.notna(K_tab_err_lo) else None,
+            "K_tab_err_hi_ms": float(K_tab_err_hi) if pd.notna(K_tab_err_hi) else None,
+            "e_tab": e_tab,
+            "e_tab_err": e_tab_err,
+            "e_tab_err_lo": float(e_tab_err_lo) if pd.notna(e_tab_err_lo) else None,
+            "e_tab_err_hi": float(e_tab_err_hi) if pd.notna(e_tab_err_hi) else None,
             "omega_tab_rad": float(_theta_to_omega(tab)),
-            "P_pred_d": float(10 ** pred[0]),
-            "K_pred_ms": float(10 ** pred[1]),
-            "e_pred": float(pred[2]),
+            "P_pred_d": P_pred,
+            "K_pred_ms": K_pred,
+            "e_pred": e_pred,
             "omega_pred_rad": float(_theta_to_omega(pred)),
             "halfwidth_log10_P_a01": float(hw["log10_P"]),
             "halfwidth_log10_K_a01": float(hw["log10_K"]),
-            "halfwidth_e_a01": float(hw["e"]),
+            "halfwidth_e_a01": e_cp_hw,
             "halfwidth_omega_a01": float(hw["omega"]),
+            "P_cp_hw_d": P_cp_hw,
+            "K_cp_hw_ms": K_cp_hw,
+            "e_cp_hw": e_cp_hw,
             "widths_source": source,
         })
         if len(rows) >= top_k:
@@ -542,7 +599,26 @@ def earthlike_table(
     out_csv.parent.mkdir(parents=True, exist_ok=True)
     df.to_csv(out_csv, index=False)
 
-    # Compact LaTeX snippet: pred +- alpha=0.1 half-width (P/K widths are in dex).
+    def _fmt_num(x: float, kind: str = "P") -> str:
+        if kind == "e":
+            return f"{x:.2f}"
+        if abs(x) >= 1000.0:
+            exp = int(math.floor(math.log10(abs(x))))
+            mant = x / (10.0 ** exp)
+            return f"{mant:.2f}\\times 10^{{{exp}}}"
+        return f"{x:.2f}"
+
+    def _fmt_pm(val: float, err: float | None, kind: str = "P") -> str:
+        """Compact val ± err; sci notation for huge CP physical widths."""
+        if err is None or not math.isfinite(err):
+            return _fmt_num(val, kind)
+        if err < 0.01 and kind == "P":
+            return f"{val:.4f} $\\pm$ {err:.4f}"
+        if err < 0.005 and kind == "e":
+            return f"{val:.3f} $\\pm$ {err:.3f}"
+        return f"{_fmt_num(val, kind)} $\\pm$ {_fmt_num(err, kind)}"
+
+    # Compact LaTeX: tab +- NASA catalog err, pred +- CP physical half-width.
     lines = [
         r"\begin{tabular}{llrrrrrr}",
         r"\hline",
@@ -554,16 +630,20 @@ def earthlike_table(
     for r in rows:
         lines.append(
             f"{r['host']} & {r['split']} "
-            f"& {r['P_tab_d']:.2f} & {r['P_pred_d']:.2f} $\\pm$ {r['halfwidth_log10_P_a01']:.2f} dex "
-            f"& {r['K_tab_ms']:.2f} & {r['K_pred_ms']:.2f} $\\pm$ {r['halfwidth_log10_K_a01']:.2f} dex "
-            f"& {r['e_tab']:.2f} & {r['e_pred']:.2f} $\\pm$ {r['halfwidth_e_a01']:.2f} \\\\"
+            f"& {_fmt_pm(r['P_tab_d'], r['P_tab_err_d'], 'P')} "
+            f"& {_fmt_pm(r['P_pred_d'], r['P_cp_hw_d'], 'P')} "
+            f"& {_fmt_pm(r['K_tab_ms'], r['K_tab_err_ms'], 'K')} "
+            f"& {_fmt_pm(r['K_pred_ms'], r['K_cp_hw_ms'], 'K')} "
+            f"& {_fmt_pm(r['e_tab'], r['e_tab_err'], 'e')} "
+            f"& {_fmt_pm(r['e_pred'], r['e_cp_hw'], 'e')} \\\\"
         )
     omega_hw = float(np.median([r["halfwidth_omega_a01"] for r in rows]))
     lines += [
         r"\hline",
-        r"\multicolumn{8}{l}{\footnotesize $\pm$ are per-system papernorm half-widths of the "
-        r"$\alpha{=}0.1$ conformal region ($P$, $K$ in $\log_{10}$ dex). "
-        f"$\\omega$ half-width $\\approx{omega_hw:.2f}$~rad (near-vacuous, omitted). "
+        r"\multicolumn{8}{l}{\footnotesize Tabulated $\pm$: NASA archive published "
+        r"uncertainties ($\sim$1$\sigma$). Predicted $\pm$: physical half-widths of the "
+        r"$\alpha{=}0.1$ conformal region (from $\log_{10}$ for $P$, $K$). "
+        f"$\\omega$ CP half-width $\\approx{omega_hw:.2f}$~rad (near-vacuous, omitted). "
         r"Held-out (val/test) hosts only.} \\",
         r"\end{tabular}",
     ]
