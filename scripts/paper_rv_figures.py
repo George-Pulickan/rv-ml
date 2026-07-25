@@ -467,9 +467,15 @@ def _mean_abs_err(err1, err2) -> float | None:
     return float(sum(vals) / len(vals))
 
 
-def _log10_hw_to_physical(center: float, hw_log10: float) -> float:
-    """Convert a log10 half-width into an approximate physical half-width at ``center``."""
-    return float(center * (10.0 ** float(hw_log10) - 1.0))
+def _log10_hw_to_physical(center: float, hw_log10: float) -> tuple[float, float]:
+    """Physical bounds of a log10-symmetric half-width around ``center``.
+
+    The conformal region is symmetric in log10, so in physical units it is the
+    asymmetric interval [center*10^-hw, center*10^+hw] — it has no single
+    half-width, and the lower bound stays positive by construction.
+    """
+    factor = 10.0 ** float(hw_log10)
+    return float(center / factor), float(center * factor)
 
 
 def earthlike_table(
@@ -554,9 +560,8 @@ def earthlike_table(
         e_tab_err_lo = lab_row.get("pl_orbeccenerr2")
         e_tab_err_hi = lab_row.get("pl_orbeccenerr1")
 
-        P_cp_hw = _log10_hw_to_physical(P_pred, hw["log10_P"])
-        K_cp_hw = _log10_hw_to_physical(K_pred, hw["log10_K"])
-        e_cp_hw = float(hw["e"])
+        P_cp_lo, P_cp_hi = _log10_hw_to_physical(P_pred, hw["log10_P"])
+        K_cp_lo, K_cp_hi = _log10_hw_to_physical(K_pred, hw["log10_K"])
 
         rows.append({
             "host": host,
@@ -582,11 +587,12 @@ def earthlike_table(
             "omega_pred_rad": float(_theta_to_omega(pred)),
             "halfwidth_log10_P_a01": float(hw["log10_P"]),
             "halfwidth_log10_K_a01": float(hw["log10_K"]),
-            "halfwidth_e_a01": e_cp_hw,
+            "halfwidth_e_a01": float(hw["e"]),
             "halfwidth_omega_a01": float(hw["omega"]),
-            "P_cp_hw_d": P_cp_hw,
-            "K_cp_hw_ms": K_cp_hw,
-            "e_cp_hw": e_cp_hw,
+            "P_cp_lo_d": P_cp_lo,
+            "P_cp_hi_d": P_cp_hi,
+            "K_cp_lo_ms": K_cp_lo,
+            "K_cp_hi_ms": K_cp_hi,
             "widths_source": source,
         })
         if len(rows) >= top_k:
@@ -598,27 +604,37 @@ def earthlike_table(
     df = pd.DataFrame(rows)
     out_csv.parent.mkdir(parents=True, exist_ok=True)
     df.to_csv(out_csv, index=False)
+    out_tex.write_text(render_earthlike_tex(rows))
+    print(f"Earth-like table -> {out_csv} , {out_tex}")
 
-    def _fmt_num(x: float, kind: str = "P") -> str:
-        if kind == "e":
-            return f"{x:.2f}"
-        if abs(x) >= 1000.0:
-            exp = int(math.floor(math.log10(abs(x))))
-            mant = x / (10.0 ** exp)
-            return f"{mant:.2f}\\times 10^{{{exp}}}"
-        return f"{x:.2f}"
 
-    def _fmt_pm(val: float, err: float | None, kind: str = "P") -> str:
-        """Compact val ± err; sci notation for huge CP physical widths."""
-        if err is None or not math.isfinite(err):
-            return _fmt_num(val, kind)
-        if err < 0.01 and kind == "P":
-            return f"{val:.4f} $\\pm$ {err:.4f}"
-        if err < 0.005 and kind == "e":
-            return f"{val:.3f} $\\pm$ {err:.3f}"
-        return f"{_fmt_num(val, kind)} $\\pm$ {_fmt_num(err, kind)}"
+def _fmt_num(x: float, digits: int = 2) -> str:
+    """Plain fixed-point; everything emitted here must be text-mode safe."""
+    return f"{x:.{digits}f}"
 
-    # Compact LaTeX: tab +- NASA catalog err, pred +- CP physical half-width.
+
+def _fmt_pm(val: float, err: float | None, kind: str = "P") -> str:
+    """Catalog value as ``val ± err``, matching the err's precision."""
+    if err is None or not math.isfinite(err):
+        return _fmt_num(val)
+    if kind == "P" and err < 0.01:
+        return f"{val:.4f} $\\pm$ {err:.4f}"
+    if kind == "e" and err < 0.005:
+        return f"{val:.3f} $\\pm$ {err:.3f}"
+    return f"{_fmt_num(val)} $\\pm$ {_fmt_num(err)}"
+
+
+def _fmt_dex(val: float, hw_log10: float) -> str:
+    """Prediction with its log10-symmetric CP half-width, stated in dex."""
+    return f"{_fmt_num(val)} $\\pm$ {hw_log10:.2f} dex"
+
+
+def render_earthlike_tex(rows: list[dict]) -> str:
+    """LaTeX for the Earth-like table: tab +- NASA catalog err, pred +- CP half-width.
+
+    Pure function of the rows written to ``earthlike_top10.csv``, so the table can
+    be re-rendered from that CSV without reloading the (gitignored) MLP checkpoint.
+    """
     lines = [
         r"\begin{tabular}{llrrrrrr}",
         r"\hline",
@@ -631,24 +647,26 @@ def earthlike_table(
         lines.append(
             f"{r['host']} & {r['split']} "
             f"& {_fmt_pm(r['P_tab_d'], r['P_tab_err_d'], 'P')} "
-            f"& {_fmt_pm(r['P_pred_d'], r['P_cp_hw_d'], 'P')} "
+            f"& {_fmt_dex(r['P_pred_d'], r['halfwidth_log10_P_a01'])} "
             f"& {_fmt_pm(r['K_tab_ms'], r['K_tab_err_ms'], 'K')} "
-            f"& {_fmt_pm(r['K_pred_ms'], r['K_cp_hw_ms'], 'K')} "
+            f"& {_fmt_dex(r['K_pred_ms'], r['halfwidth_log10_K_a01'])} "
             f"& {_fmt_pm(r['e_tab'], r['e_tab_err'], 'e')} "
-            f"& {_fmt_pm(r['e_pred'], r['e_cp_hw'], 'e')} \\\\"
+            f"& {_fmt_pm(r['e_pred'], r['halfwidth_e_a01'], 'e')} \\\\"
         )
     omega_hw = float(np.median([r["halfwidth_omega_a01"] for r in rows]))
     lines += [
         r"\hline",
         r"\multicolumn{8}{l}{\footnotesize Tabulated $\pm$: NASA archive published "
-        r"uncertainties ($\sim$1$\sigma$). Predicted $\pm$: physical half-widths of the "
-        r"$\alpha{=}0.1$ conformal region (from $\log_{10}$ for $P$, $K$). "
+        r"uncertainties ($\sim$1$\sigma$). Predicted $\pm$: per-system papernorm "
+        r"half-widths of the $\alpha{=}0.1$ conformal region; for $P$ and $K$ these are "
+        r"symmetric in $\log_{10}$ (dex), i.e. the physical region is the asymmetric "
+        r"interval $[\hat{x}10^{-\mathrm{hw}},\,\hat{x}10^{+\mathrm{hw}}]$ "
+        r"(tabulated in the accompanying CSV). "
         f"$\\omega$ CP half-width $\\approx{omega_hw:.2f}$~rad (near-vacuous, omitted). "
         r"Held-out (val/test) hosts only.} \\",
         r"\end{tabular}",
     ]
-    out_tex.write_text("\n".join(lines) + "\n")
-    print(f"Earth-like table -> {out_csv} , {out_tex}")
+    return "\n".join(lines) + "\n"
 
 
 def main() -> None:
