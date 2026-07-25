@@ -1,0 +1,16 @@
+{
+  "omega_norm_pre": {
+    "mean": 2.0092106603322657,
+    "std": 2.822793315153585,
+    "frac_near_1": 0.0475,
+    "frac_lt_0.5": 0.156
+  },
+  "omega_norm_post": {
+    "mean": 1.0,
+    "frac_near_1": 1.0
+  },
+  "e_raw": {
+    "frac_negative": 0.104,
+    "frac_gt_0.99": 0.001
+  }
+}

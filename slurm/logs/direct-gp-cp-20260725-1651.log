@@ -192,3 +192,26 @@ estimating Assumption 2.3 constants on 25 prior draws ...
   kappa(H) median=2e+04 max=8.8e+07  ||grad h|| median=172
 
 total 3016s — wrote metrics/report to synthetic_generation/regression/gamma_real_val, figures to synthetic_generation/figures/synthetic_regression_10000/gamma_real_val
+[main b497fa3] RHUL results: gp_conformal (2026-07-25, job manual)
+ 24 files changed, 17655 insertions(+), 10729 deletions(-)
+ create mode 100644 slurm/logs/direct-gp-cp-20260714-1220.log
+ create mode 100644 slurm/logs/direct-gp-cp-20260725-1650.log
+ create mode 100644 slurm/logs/direct-gp-cp-20260725-1651.log
+ create mode 100644 slurm/logs/direct-wrapper-20260725-1650.log
+ create mode 100644 slurm/logs/direct-wrapper-20260725-1651.log
+ create mode 100644 slurm/logs/runner.log
+ create mode 100644 synthetic_generation/figures/synthetic_regression_10000/gamma_real_val/conformal_shift_coverage.png
+ create mode 100644 synthetic_generation/figures/synthetic_regression_10000/gamma_real_val/conformal_shift_widths.png
+ create mode 100644 synthetic_generation/regression/gamma_real_val/conformal_shift_metrics.json
+ create mode 100644 synthetic_generation/regression/gamma_real_val/conformal_shift_report.txt
+remote: 
+remote: Create a pull request for 'rhul-results' on GitHub by visiting:        
+remote:      https://github.com/George-Pulickan/rv-ml/pull/new/rhul-results        
+remote: 
+To https://github.com/George-Pulickan/rv-ml.git
+ * [new branch]      HEAD -> rhul-results
+Done.
+  GP metrics:  models/gp_residual_metrics.json
+  CP report:   synthetic_generation/regression/conformal_shift_report.txt
+  CP metrics:  synthetic_generation/regression/conformal_shift_metrics.json
+  CP (gamma on real val): synthetic_generation/regression/gamma_real_val/

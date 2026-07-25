@@ -1,0 +1,204 @@
+/home/cim/misc/vpac005/rv-ml/.venv/lib/python3.12/site-packages/linear_operator/utils/cholesky.py:41: NumericalWarning: A not p.d., added jitter of 1.0e-06 to the diagonal
+  warnings.warn(
+/home/cim/misc/vpac005/rv-ml/.venv/lib/python3.12/site-packages/linear_operator/utils/cholesky.py:41: NumericalWarning: A not p.d., added jitter of 1.0e-05 to the diagonal
+  warnings.warn(
+/home/cim/misc/vpac005/rv-ml/.venv/lib/python3.12/site-packages/linear_operator/utils/cholesky.py:41: NumericalWarning: A not p.d., added jitter of 1.0e-04 to the diagonal
+  warnings.warn(
+/home/cim/misc/vpac005/rv-ml/.venv/lib/python3.12/site-packages/linear_operator/operators/_linear_operator.py:2180: NumericalWarning: Runtime Error when computing Cholesky decomposition: Matrix not positive definite after repeatedly adding jitter up to 1.0e-04.. Using symeig method.
+  warnings.warn(
+[synthetic_dataset] loaded 242 real observation profiles from training split
+generated 1,000/10,000 rows
+generated 2,000/10,000 rows
+generated 3,000/10,000 rows
+generated 4,000/10,000 rows
+generated 5,000/10,000 rows
+generated 6,000/10,000 rows
+generated 7,000/10,000 rows
+generated 8,000/10,000 rows
+generated 9,000/10,000 rows
+generated 10,000/10,000 rows
+wrote 10,000 rows to synthetic_generation/datasets/synthetic_regression_10000_phasefold.csv
+test_replay_matches_generate_rows (tests.test_replay_synthetic_sample.ReplaySyntheticSampleTests.test_replay_matches_generate_rows) ... /home/cim/misc/vpac005/rv-ml/.venv/lib/python3.12/site-packages/torch/jit/_script.py:1488: DeprecationWarning: `torch.jit.script` is deprecated. Please switch to `torch.compile` or `torch.export`.
+  warnings.warn(
+ok
+test_replay_matches_tracked_csv (tests.test_replay_synthetic_sample.ReplaySyntheticSampleTests.test_replay_matches_tracked_csv) ... ok
+
+----------------------------------------------------------------------
+Ran 2 tests in 3.187s
+
+OK
+[synthetic_dataset] loaded 242 real observation profiles from training split
+/home/cim/misc/vpac005/rv-ml/.venv/lib/python3.12/site-packages/linear_operator/utils/cholesky.py:41: NumericalWarning: A not p.d., added jitter of 1.0e-06 to the diagonal
+  warnings.warn(
+/home/cim/misc/vpac005/rv-ml/.venv/lib/python3.12/site-packages/linear_operator/utils/cholesky.py:41: NumericalWarning: A not p.d., added jitter of 1.0e-05 to the diagonal
+  warnings.warn(
+/home/cim/misc/vpac005/rv-ml/.venv/lib/python3.12/site-packages/linear_operator/utils/cholesky.py:41: NumericalWarning: A not p.d., added jitter of 1.0e-04 to the diagonal
+  warnings.warn(
+/home/cim/misc/vpac005/rv-ml/.venv/lib/python3.12/site-packages/linear_operator/operators/_linear_operator.py:2180: NumericalWarning: Runtime Error when computing Cholesky decomposition: Matrix not positive definite after repeatedly adding jitter up to 1.0e-04.. Using symeig method.
+  warnings.warn(
+============================================================
+Gate A: 35-D phase-fold only (oracle P)
+  epoch    1  val_mse=0.66445
+  epoch   50  val_mse=0.50564
+  early stop at epoch 50 (patience=30)
+Gate A pass: True  (e R2>0.15 or omega R2>0.1 on e>0.1)
+omega headline (e>0.1, n=1001): angular MAE=22.6 deg  cos R2=0.598  sin R2=0.740
+============================================================
+Gate B baseline: 74-D (oracle)
+  epoch    1  val_mse=0.75945
+  epoch   50  val_mse=0.60915
+  early stop at epoch 94 (patience=30)
+Gate B: 109-D (oracle P)
+  epoch    1  val_mse=0.58388
+  epoch   50  val_mse=0.34569
+  early stop at epoch 78 (patience=30)
+saved checkpoint -> checkpoints/regression_mlp.pt
+Gate B pass (e R2 improves): True  74=0.172 109=0.430
+  omega R2 (e>0.1, has_t_peri) ~ 0.641
+omega headline (e>0.1, n=1001): angular MAE=24.6 deg  cos R2=0.628  sin R2=0.654
+============================================================
+Gate C: 109-D eval with predicted-P phase fold
+[synthetic_dataset] loaded 242 real observation profiles from training split
+Gate C omega R2 (e>0.1, predicted P): -0.768  collapse=True
+saved plot -> figures/regression_synthetic/pred_vs_true_omega_circle.png
+saved plot -> figures/regression_synthetic/pred_vs_true_omega_deg.png
+saved benchmark -> figures/regression_synthetic/benchmark.json
+/home/cim/misc/vpac005/rv-ml/.venv/lib/python3.12/site-packages/linear_operator/utils/cholesky.py:41: NumericalWarning: A not p.d., added jitter of 1.0e-06 to the diagonal
+  warnings.warn(
+/home/cim/misc/vpac005/rv-ml/.venv/lib/python3.12/site-packages/linear_operator/utils/cholesky.py:41: NumericalWarning: A not p.d., added jitter of 1.0e-05 to the diagonal
+  warnings.warn(
+/home/cim/misc/vpac005/rv-ml/.venv/lib/python3.12/site-packages/linear_operator/utils/cholesky.py:41: NumericalWarning: A not p.d., added jitter of 1.0e-04 to the diagonal
+  warnings.warn(
+/home/cim/misc/vpac005/rv-ml/.venv/lib/python3.12/site-packages/linear_operator/operators/_linear_operator.py:2180: NumericalWarning: Runtime Error when computing Cholesky decomposition: Matrix not positive definite after repeatedly adding jitter up to 1.0e-04.. Using symeig method.
+  warnings.warn(
+============================================================
+Two-step Stage 1: train 74-D (P/K baseline features)
+  epoch    1  val_mse=0.77191
+  epoch   50  val_mse=0.61269
+  early stop at epoch 97 (patience=30)
+saved checkpoint -> checkpoints/regression_mlp_74.pt
+  74-D log10_P R2=0.646
+============================================================
+Two-step Stage 2: train 109-D (oracle phase-fold)
+  epoch    1  val_mse=0.59056
+  epoch   50  val_mse=0.33492
+  epoch  100  val_mse=0.34070
+  early stop at epoch 117 (patience=30)
+saved checkpoint -> checkpoints/regression_mlp_109.pt
+  109-D oracle e R2=0.444
+omega headline (e>0.1, n=1001): angular MAE=23.7 deg  cos R2=0.629  sin R2=0.673
+============================================================
+Gate C baseline: 109-D fold at P predicted by same 109-D model
+[synthetic_dataset] loaded 242 real observation profiles from training split
+  Gate C omega R2 (e>0.1): -0.726
+============================================================
+Two-step eval: P from 74-D, re-fold, e/omega from 109-D
+  two-step P R2 (stage1)=0.646
+  two-step e R2=-0.097
+  two-step omega R2 (e>0.1)=-0.724  angular MAE=79.9 deg
+omega headline (e>0.1, n=1001): angular MAE=79.9 deg  cos R2=-0.681  sin R2=-0.768
+saved plot -> figures/regression_synthetic/pred_vs_true_two_step.png
+saved plot -> figures/regression_synthetic/pred_vs_true_two_step_log10_P.png
+saved plot -> figures/regression_synthetic/pred_vs_true_two_step_log10_K.png
+saved plot -> figures/regression_synthetic/pred_vs_true_two_step_e.png
+saved plot -> figures/regression_synthetic/pred_vs_true_two_step_cos_omega.png
+saved plot -> figures/regression_synthetic/pred_vs_true_two_step_sin_omega.png
+saved plot -> figures/regression_synthetic/pred_vs_true_omega_circle.png
+saved plot -> figures/regression_synthetic/pred_vs_true_omega_deg.png
+saved benchmark -> figures/regression_synthetic/two_step_metrics.json
+=== e prior (train split) ===
+saved -> figures/regression_synthetic/diagnostics/e_prior_train_hist.png
+=== SNR-sliced errors ===
+saved -> figures/regression_synthetic/diagnostics/metrics_by_snr.json
+=== P / baseline identifiability ===
+saved -> figures/regression_synthetic/diagnostics/p_baseline_metrics.json
+=== LSP vs MLP period recovery ===
+saved -> figures/regression_synthetic/diagnostics/period_recovery.json
+=== Raw output histograms ===
+saved -> figures/regression_synthetic/diagnostics/raw_output_stats.json
+=== Sanity report ===
+saved -> figures/regression_synthetic/diagnostics/sanity_report.json
+saved -> figures/regression_synthetic/diagnostics/diagnostics_summary.json
+
+Diagnostics complete -> figures/regression_synthetic/diagnostics
+loading CSV from synthetic_generation/datasets/synthetic_regression_10000_phasefold.csv (feature-set=109) ...
+dataset: 10,000 samples, 109 features -> 5 targets
+  epoch    1  val_mse=0.66321
+  epoch   50  val_mse=0.37932
+  early stop at epoch 97 (patience=30)
+saved checkpoint -> checkpoints/regression_mlp_109_ebalance.pt
+saved plot -> figures/regression_synthetic/e_head_balance/pred_vs_true.png
+saved plot -> figures/regression_synthetic/e_head_balance/pred_vs_true_log10_P.png
+saved plot -> figures/regression_synthetic/e_head_balance/pred_vs_true_log10_K.png
+saved plot -> figures/regression_synthetic/e_head_balance/pred_vs_true_e.png
+saved plot -> figures/regression_synthetic/e_head_balance/pred_vs_true_cos_omega.png
+saved plot -> figures/regression_synthetic/e_head_balance/pred_vs_true_sin_omega.png
+saved plot -> figures/regression_synthetic/e_head_balance/pred_vs_true_omega_circle.png
+saved plot -> figures/regression_synthetic/e_head_balance/pred_vs_true_omega_deg.png
+collecting real reference systems (split=all) ...
+rejected 7 real systems with median sigma outside [0.1, 100.0] m/s
+real reference: 357 systems
+real transfer: excluded 357 rows (missing phase-fold / non-finite)
+real transfer: no real systems with finite features; skipping transfer eval
+saved metrics -> figures/regression_synthetic/e_head_balance/metrics.json
+validation MSE: 0.15818
+  log10_P       R2=0.691  MSE=0.34937
+  log10_K       R2=0.774  MSE=0.06308
+  e             R2=0.224  MSE=0.05271
+  cos_omega     R2=0.694  MSE=0.16930
+  sin_omega     R2=0.517  MSE=0.15643
+omega headline (e>0.1, n=1001): angular MAE=24.1 deg  cos R2=0.617  sin R2=0.673
+loading CSV from synthetic_generation/datasets/synthetic_regression_10000_phasefold.csv (feature-set=109) ...
+dataset: 10,000 samples, 109 features -> 5 targets
+  epoch    1  val_mse=1.06738
+  epoch   50  val_mse=0.79118
+  early stop at epoch 66 (patience=30)
+saved checkpoint -> checkpoints/regression_mlp_109_hurdle.pt
+saved plot -> figures/regression_synthetic/e_head_hurdle/pred_vs_true.png
+saved plot -> figures/regression_synthetic/e_head_hurdle/pred_vs_true_log10_P.png
+saved plot -> figures/regression_synthetic/e_head_hurdle/pred_vs_true_log10_K.png
+saved plot -> figures/regression_synthetic/e_head_hurdle/pred_vs_true_e.png
+saved plot -> figures/regression_synthetic/e_head_hurdle/pred_vs_true_cos_omega.png
+saved plot -> figures/regression_synthetic/e_head_hurdle/pred_vs_true_sin_omega.png
+saved plot -> figures/regression_synthetic/e_head_hurdle/pred_vs_true_omega_circle.png
+saved plot -> figures/regression_synthetic/e_head_hurdle/pred_vs_true_omega_deg.png
+collecting real reference systems (split=all) ...
+rejected 7 real systems with median sigma outside [0.1, 100.0] m/s
+real reference: 357 systems
+real transfer: excluded 357 rows (missing phase-fold / non-finite)
+real transfer: no real systems with finite features; skipping transfer eval
+saved metrics -> figures/regression_synthetic/e_head_hurdle/metrics.json
+validation MSE: 0.16882
+  log10_P       R2=0.657  MSE=0.38806
+  log10_K       R2=0.768  MSE=0.06499
+  e             R2=0.410  MSE=0.04006
+  cos_omega     R2=0.677  MSE=0.17872
+  sin_omega     R2=0.469  MSE=0.17224
+omega headline (e>0.1, n=1001): angular MAE=24.9 deg  cos R2=0.618  sin R2=0.644
+loading CSV from synthetic_generation/datasets/synthetic_regression_10000_phasefold.csv (feature-set=109) ...
+dataset: 10,000 samples, 109 features -> 5 targets
+  epoch    1  val_mse=1.13237
+  epoch   50  val_mse=0.78117
+  early stop at epoch 58 (patience=30)
+saved checkpoint -> checkpoints/regression_mlp_109_hurdle_ebalance.pt
+saved plot -> figures/regression_synthetic/e_head_hurdle_balance/pred_vs_true.png
+saved plot -> figures/regression_synthetic/e_head_hurdle_balance/pred_vs_true_log10_P.png
+saved plot -> figures/regression_synthetic/e_head_hurdle_balance/pred_vs_true_log10_K.png
+saved plot -> figures/regression_synthetic/e_head_hurdle_balance/pred_vs_true_e.png
+saved plot -> figures/regression_synthetic/e_head_hurdle_balance/pred_vs_true_cos_omega.png
+saved plot -> figures/regression_synthetic/e_head_hurdle_balance/pred_vs_true_sin_omega.png
+saved plot -> figures/regression_synthetic/e_head_hurdle_balance/pred_vs_true_omega_circle.png
+saved plot -> figures/regression_synthetic/e_head_hurdle_balance/pred_vs_true_omega_deg.png
+collecting real reference systems (split=all) ...
+rejected 7 real systems with median sigma outside [0.1, 100.0] m/s
+real reference: 357 systems
+real transfer: excluded 357 rows (missing phase-fold / non-finite)
+real transfer: no real systems with finite features; skipping transfer eval
+saved metrics -> figures/regression_synthetic/e_head_hurdle_balance/metrics.json
+validation MSE: 0.17932
+  log10_P       R2=0.646  MSE=0.39985
+  log10_K       R2=0.762  MSE=0.06668
+  e             R2=0.211  MSE=0.05360
+  cos_omega     R2=0.626  MSE=0.20695
+  sin_omega     R2=0.477  MSE=0.16951
+omega headline (e>0.1, n=1001): angular MAE=25.1 deg  cos R2=0.616  sin R2=0.640

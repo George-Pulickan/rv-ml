@@ -1,0 +1,16 @@
+{
+  "n_valid": 2000,
+  "mlp": {
+    "mae_dlog10_P": 0.4112174073564821,
+    "r2_log10_P": 0.7000415601840272,
+    "frac_within_5pct": 0.044,
+    "frac_within_10pct": 0.089
+  },
+  "lsp_peak": {
+    "mae_dlog10_P": 0.4738397707891006,
+    "frac_within_5pct": 0.403,
+    "frac_within_10pct": 0.4495
+  },
+  "lsp_wins_count": 1284,
+  "mlp_wins_count": 716
+}
