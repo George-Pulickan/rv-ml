@@ -246,11 +246,17 @@ python kepler_check.py --all      # corpus-wide -> data/validation_summary.csv
 
 51 Peg b is the gold-standard single-system check: the Kepler model traces the
 data to within the measurement noise with **zero** free physical parameters (γ is
-anchored at the first observation). `--all` writes a per-file table to
-`data/validation_summary.csv` and prints a quality-filtered summary
-(`n_obs ≥ 10`, median σ ∈ [0.1, 100] m/s); expect a median RMS/σ of a few, which
-is the stellar-activity floor that catalog uncertainties do not include, not a
-pipeline error. The run takes ~20 min over the full corpus.
+anchored at the first observation).
+
+`--all` takes ~40 min over the full corpus and writes `data/validation_summary.csv`.
+Measured 2026-07-25 on the committed data: 535 of 1071 files validate cleanly;
+after the quality filter (`n_obs ≥ 10`, median σ ∈ [0.1, 100] m/s) **440 systems
+have a median RMS/σ of 3.67** (median residual 18.1 m/s; 42.7% below 3, 62.3%
+below 5). That excess over 1 is the stellar-activity floor that catalog
+uncertainties do not include — not a pipeline error. The status breakdown
+accounts for the rest: 260 files whose planets have no catalog `t_peri` (usable
+only with `--fit-tperi`), 198 with no label match, 69 with neither K nor M sin i,
+9 with no period.
 
 The host join matches **857 of 1071** files (766 by direct identifier, 91
 recovered via SIMBAD aliases); the 214 unmatched are predominantly 2MASS-designated
