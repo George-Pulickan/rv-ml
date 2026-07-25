@@ -155,6 +155,8 @@ def make_real(split: str, sigma_min: float, sigma_max: float) -> list[dict]:
             "feat_row": feats,
             "lsp": np.asarray(lsp, dtype=float),
             "theta5": np.asarray([float(theta[k]) for k in range(5)], dtype=float),
+            # Carried so downstream figures can label systems by star.
+            "host": str(info.get("host", "")),
         })
     return systems
 

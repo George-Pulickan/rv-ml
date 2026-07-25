@@ -45,6 +45,7 @@ from conformal import (  # noqa: E402
 from conformal_shift import _load_mlp_psi  # noqa: E402
 from feature_columns import TARGET_COLUMNS  # noqa: E402
 from kepler_check import rv_keplerian  # noqa: E402
+from models.kepler_torch import KeplerDecoder  # noqa: E402
 from preprocess import RVDataset  # noqa: E402
 from regression import (  # noqa: E402
     load_from_csv,
@@ -429,6 +430,411 @@ def figure2(checkpoint: Path, csv_path: Path, out_path: Path, device: torch.devi
     plot_pred_vs_true(y_true, y_pred, out_path.with_name("rv_pred_vs_true_full5.png"), metrics)
 
 
+def _recon_mse(theta5: np.ndarray, curve: dict) -> tuple[float, float]:
+    """Reconstruction error of a parameter set against the observed curve.
+
+    Both t_peri and gamma are refit analytically inside KeplerDecoder, so a
+    parameter set is never penalised for phase or systemic-velocity convention.
+    That is what makes this a fair label-free comparison between the tabulated
+    parameters and psi(y): neither side is scored against the other.
+
+    Returns (mse_rv_std, chi2_red): mean squared residual in units of the
+    curve's own RV scatter, and the sigma-weighted reduced chi-square.
+    """
+    decoder = KeplerDecoder().eval()
+    t_norm = torch.from_numpy(curve["t_norm"]).unsqueeze(0)
+    rv_obs = torch.from_numpy(curve["rv_obs"]).unsqueeze(0)
+    mask = torch.from_numpy(curve["mask"]).unsqueeze(0)
+    t_span = torch.tensor([curve["t_span"]], dtype=torch.float32)
+    t_min = torch.tensor([curve["t_min"]], dtype=torch.float32)
+    rv_std = torch.tensor([curve["rv_std"]], dtype=torch.float32)
+    th = torch.as_tensor(np.asarray(theta5, dtype=float)[None, :], dtype=torch.float32)
+    with torch.no_grad():
+        rv_pred = decoder(th, t_norm, t_span, t_min, rv_obs, rv_std, mask)[0].numpy()
+    m = curve["mask"] > 0.5
+    resid = curve["rv_obs"][m] - rv_pred[m]          # rv_std units
+    sig = np.maximum(curve["sig"][m], 1e-6)          # rv_std units
+    return float(np.mean(resid ** 2)), float(np.mean((resid / sig) ** 2))
+
+
+def figure_mse_scatter(
+    psi_predict,
+    feature_cols: list[str],
+    out_path: Path,
+    *,
+    real_split: str = "test",
+    sigma_min: float = 0.1,
+    sigma_max: float = 100.0,
+    surrogate: bool = True,
+    gd_steps: int = 200,
+    gd_lr: float = 0.02,
+) -> dict:
+    """Per-planet reconstruction MSE: tabulated (x) vs our prediction (y).
+
+    Nicolo's 2026-07-25 point: scoring both our prediction and the tabulated
+    parameters against GD-inferred labels that were themselves initialised at
+    the tabulated values is circular. This figure removes labels from the
+    comparison entirely — every parameter set is judged only by how well it
+    reconstructs the observed RV curve. Points below the diagonal are planets
+    where we explain the data better than the catalog does.
+
+    The GD surrogate theta* is overlaid as the achievable floor: it is the
+    argmin of the same objective, so no parameter set can sit below it.
+    """
+    systems = make_real(real_split, sigma_min, sigma_max)
+    if not systems:
+        raise RuntimeError(f"no real systems in split {real_split!r}")
+
+    X = np.asarray([_feat_row_for_system(s, feature_cols) for s in systems], dtype=float)
+    th_psi = psi_predict(X)
+
+    rows = []
+    for i, s in enumerate(systems):
+        mse_tab, chi_tab = _recon_mse(s["theta5"], s["curve"])
+        mse_psi, chi_psi = _recon_mse(th_psi[i], s["curve"])
+        rows.append({
+            "host": s.get("host", ""),
+            "mse_tab": mse_tab, "mse_psi": mse_psi,
+            "chi2_tab": chi_tab, "chi2_psi": chi_psi,
+        })
+
+    if surrogate:
+        from conformal_shift import surrogate_fit_gd
+
+        decoder = KeplerDecoder().eval()
+        stars = surrogate_fit_gd(decoder, [s["theta5"] for s in systems], systems,
+                                 gd_steps, gd_lr)
+        for i, s in enumerate(systems):
+            rows[i]["mse_star"], rows[i]["chi2_star"] = _recon_mse(stars[i], s["curve"])
+
+    df = pd.DataFrame(rows)
+    x = df["mse_tab"].to_numpy()
+    y = df["mse_psi"].to_numpy()
+    ok = np.isfinite(x) & np.isfinite(y) & (x > 0) & (y > 0)
+    frac_better = float(np.mean(y[ok] <= x[ok])) if ok.any() else float("nan")
+
+    fig, ax = plt.subplots(figsize=(5.8, 5.6))
+    lo = float(np.nanmin(np.concatenate([x[ok], y[ok]]))) * 0.6
+    hi = float(np.nanmax(np.concatenate([x[ok], y[ok]]))) * 1.6
+    ax.plot([lo, hi], [lo, hi], "k--", lw=1.0, zorder=1, label="equal fit")
+    ax.fill_between([lo, hi], [lo, hi], [lo, lo], color="tab:green", alpha=0.06, zorder=0)
+    if surrogate and "mse_star" in df:
+        ax.scatter(x[ok], df["mse_star"].to_numpy()[ok], s=26, marker="^",
+                   color="0.55", alpha=0.8, edgecolors="none", zorder=2,
+                   label=r"$\theta^{*}$ (GD floor)")
+    ax.scatter(x[ok], y[ok], s=44, color="tab:blue", edgecolor="k", linewidth=0.4,
+               zorder=3, label=r"$\psi(y)$")
+    ax.set_xscale("log")
+    ax.set_yscale("log")
+    ax.set_xlim(lo, hi)
+    ax.set_ylim(lo, hi)
+    ax.set_aspect("equal", adjustable="box")
+    ax.set_xlabel(r"reconstruction MSE, tabulated $\theta_{\mathrm{tab}}$  [$\mathrm{rv\_std}^2$]")
+    ax.set_ylabel(r"reconstruction MSE, predicted $\psi(y)$  [$\mathrm{rv\_std}^2$]")
+    ax.set_title(f"Held-out {real_split}: who explains the data better?\n"
+                 f"{frac_better:.0%} of planets on or below the diagonal "
+                 f"(n={int(ok.sum())})")
+    ax.legend(loc="upper left", fontsize=8, frameon=False)
+    ax.grid(alpha=0.25, which="both")
+    fig.tight_layout()
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(out_path, dpi=160, bbox_inches="tight")
+    plt.close(fig)
+
+    df.to_csv(out_path.with_suffix(".csv"), index=False)
+    summary = {
+        "n": int(ok.sum()),
+        "frac_psi_at_or_below_tab": frac_better,
+        "median_mse_tab": float(np.median(x[ok])),
+        "median_mse_psi": float(np.median(y[ok])),
+        "median_chi2_tab": float(np.median(df["chi2_tab"])),
+        "median_chi2_psi": float(np.median(df["chi2_psi"])),
+    }
+    if surrogate and "mse_star" in df:
+        summary["median_mse_star"] = float(np.median(df["mse_star"]))
+    print(f"MSE scatter -> {out_path}  ({summary})")
+    return summary
+
+
+# Parameter pairs for the 2-D prediction-region figure (Nicolo's ask: K/T, T/e, omega/K).
+BOX_PAIRS = [("P", "K"), ("P", "e"), ("K", "omega")]
+
+_BOX_AXES = {
+    # key: (csv predicted col, csv tabulated col, label, log-scale?)
+    "P": ("P_pred_d", "P_tab_d", r"$P$ [d]", True),
+    "K": ("K_pred_ms", "K_tab_ms", r"$K$ [m/s]", True),
+    "e": ("e_pred", "e_tab", r"$e$", False),
+    "omega": ("omega_pred_rad", "omega_tab_rad", r"$\omega$ [rad]", False),
+}
+
+
+def _cp_bounds(row: pd.Series, key: str) -> tuple[float, float]:
+    """Physical CP interval for one coordinate, from the alpha=0.1 half-widths.
+
+    P and K are symmetric in log10, so the physical region is asymmetric; the
+    CSV carries the precomputed bounds. e and omega are linear.
+    """
+    if key == "P":
+        return float(row["P_cp_lo_d"]), float(row["P_cp_hi_d"])
+    if key == "K":
+        return float(row["K_cp_lo_ms"]), float(row["K_cp_hi_ms"])
+    if key == "e":
+        hw = float(row["halfwidth_e_a01"])
+        return float(row["e_pred"]) - hw, float(row["e_pred"]) + hw
+    hw = float(row["halfwidth_omega_a01"])
+    return float(row["omega_pred_rad"]) - hw, float(row["omega_pred_rad"]) + hw
+
+
+def _bayes_bounds(row: pd.Series, key: str, sigma_scale: float) -> tuple[float, float]:
+    """Catalog interval = tabulated value +/- sigma_scale * published 1-sigma."""
+    col = {"P": "P_tab_err_d", "K": "K_tab_err_ms", "e": "e_tab_err"}.get(key)
+    centre = float(row[_BOX_AXES[key][1]])
+    if col is None or col not in row or not np.isfinite(row.get(col, np.nan)):
+        return float("nan"), float("nan")
+    half = sigma_scale * float(row[col])
+    return centre - half, centre + half
+
+
+def _to_relative(key: str, value: float, centre: float) -> float:
+    """Express a coordinate relative to that planet's tabulated value.
+
+    P and K become log10(x / x_tab) (dex), e and omega become x - x_tab. This
+    puts every planet in a common frame centred on the catalog value, so the
+    two region sizes can be compared on one axis despite spanning orders of
+    magnitude in absolute terms.
+    """
+    if key in ("P", "K"):
+        if value <= 0 or centre <= 0:
+            return float("nan")
+        return math.log10(value / centre)
+    if key == "omega":
+        return float((value - centre + math.pi) % (2 * math.pi) - math.pi)
+    return float(value - centre)
+
+
+def figure_region_boxes(
+    cp_csv: Path,
+    out_path: Path,
+    *,
+    sigma_scale: float = 1.6449,
+    pairs: list[tuple[str, str]] | None = None,
+    space: str = "relative",
+) -> None:
+    """2-D CP boxes vs catalog (Bayesian) boxes for the Earth-like sample.
+
+    One panel per parameter pair. For each planet the conformal region is the
+    rectangle spanned by its two alpha=0.1 half-widths; the catalog region is
+    the rectangle spanned by the published 1-sigma uncertainties scaled to the
+    same nominal level. Planets are colour-coded and drawn in physical units,
+    with log axes for P and K because the two region sizes differ by orders of
+    magnitude — which is itself the result.
+    """
+    pairs = pairs or BOX_PAIRS
+    if space not in ("relative", "physical"):
+        raise ValueError(f"unknown space {space!r}")
+    df = pd.read_csv(cp_csv, float_precision="round_trip")
+    cmap = plt.get_cmap("tab10")
+    colors = [cmap(i % 10) for i in range(len(df))]
+    rel = space == "relative"
+
+    def _axis_label(key: str) -> str:
+        if not rel:
+            return _BOX_AXES[key][2]
+        if key in ("P", "K"):
+            return rf"$\log_{{10}}({key}/{key}_{{\mathrm{{tab}}}})$ [dex]"
+        sym = r"\omega" if key == "omega" else key
+        unit = " [rad]" if key == "omega" else ""
+        return rf"${sym} - {sym}_{{\mathrm{{tab}}}}${unit}"
+
+    fig, axes = plt.subplots(1, len(pairs), figsize=(5.0 * len(pairs), 4.8))
+    axes = np.atleast_1d(axes)
+    for ax, (kx, ky) in zip(axes, pairs):
+        for i, (_, row) in enumerate(df.iterrows()):
+            c = colors[i]
+            cx = float(row[_BOX_AXES[kx][1]])
+            cy = float(row[_BOX_AXES[ky][1]])
+
+            def conv(key, val, centre):
+                return _to_relative(key, val, centre) if rel else val
+
+            x_lo, x_hi = (conv(kx, v, cx) for v in _cp_bounds(row, kx))
+            y_lo, y_hi = (conv(ky, v, cy) for v in _cp_bounds(row, ky))
+            # Unfilled in relative space: ten overlapping conformal regions of
+            # similar size become unreadable if filled.
+            ax.add_patch(plt.Rectangle(
+                (x_lo, y_lo), x_hi - x_lo, y_hi - y_lo,
+                facecolor="none" if rel else c, alpha=1.0 if rel else 0.10,
+                edgecolor=c, lw=1.3, zorder=2))
+
+            bx = _bayes_bounds(row, kx, sigma_scale)
+            by = _bayes_bounds(row, ky, sigma_scale)
+            if np.isfinite(bx[0]) and np.isfinite(by[0]):
+                bx_lo, bx_hi = (conv(kx, v, cx) for v in bx)
+                by_lo, by_hi = (conv(ky, v, cy) for v in by)
+                ax.add_patch(plt.Rectangle(
+                    (bx_lo, by_lo), max(bx_hi - bx_lo, 1e-12), max(by_hi - by_lo, 1e-12),
+                    facecolor=c, alpha=0.9, edgecolor="k", lw=0.6, zorder=4))
+
+            ax.scatter([conv(kx, cx, cx)], [conv(ky, cy, cy)],
+                       marker="*", s=70, color=c, edgecolor="k", linewidth=0.4, zorder=5)
+            ax.scatter([conv(kx, float(row[_BOX_AXES[kx][0]]), cx)],
+                       [conv(ky, float(row[_BOX_AXES[ky][0]]), cy)],
+                       marker="x", s=34, color=c, linewidth=1.4, zorder=5)
+
+        if rel:
+            ax.axhline(0.0, color="0.6", lw=0.7, ls=":", zorder=1)
+            ax.axvline(0.0, color="0.6", lw=0.7, ls=":", zorder=1)
+        else:
+            if _BOX_AXES[kx][3]:
+                ax.set_xscale("log")
+            if _BOX_AXES[ky][3]:
+                ax.set_yscale("log")
+        ax.set_xlabel(_axis_label(kx))
+        ax.set_ylabel(_axis_label(ky))
+        ax.set_title(f"{_BOX_AXES[kx][2]} vs {_BOX_AXES[ky][2]}")
+        ax.grid(alpha=0.22, which="both")
+        ax.autoscale_view()
+
+    handles = [
+        plt.Line2D([], [], marker="s", ls="", ms=11, mfc="0.7", mec="0.3", alpha=0.35,
+                   label=r"conformal region ($\alpha=0.1$)"),
+        plt.Line2D([], [], marker="s", ls="", ms=7, mfc="0.35", mec="k",
+                   label=f"catalog {sigma_scale:g}$\\sigma$ region"),
+        plt.Line2D([], [], marker="*", ls="", ms=11, mfc="0.5", mec="k", label="tabulated"),
+        plt.Line2D([], [], marker="x", ls="", ms=8, color="0.35", label=r"$\psi(y)$"),
+    ]
+    fig.legend(handles=handles, loc="lower center", ncol=4, frameon=False, fontsize=9)
+    space_note = ("each planet centred on its own tabulated value"
+                  if space == "relative" else "physical units, log axes")
+    fig.suptitle("Conformal vs catalog prediction regions, Earth-like held-out "
+                 f"planets\n({space_note})", fontsize=12)
+    fig.tight_layout(rect=(0, 0.07, 1, 0.95))
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(out_path, dpi=160, bbox_inches="tight")
+    plt.close(fig)
+    print(f"Region-box figure -> {out_path}")
+
+
+def figure_trajectories(
+    psi_predict,
+    feature_cols: list[str],
+    out_path: Path,
+    *,
+    real_split: str = "test",
+    n_systems: int = 6,
+    n_cycles: float = 10.0,
+    sigma_min: float = 0.1,
+    sigma_max: float = 100.0,
+) -> None:
+    """RV trajectories in time — no projection onto a single period.
+
+    Nicolo's 2026-07-25 preference: show the observations as they were taken,
+    with the tabulated and predicted Keplerian curves overlaid, rather than
+    phase-folding. Systems with the most observations are chosen so the
+    sampling pattern is visible.
+    """
+    systems = make_real(real_split, sigma_min, sigma_max)
+    # One panel per star: several .tbl files can share a host, and duplicate
+    # panels of the same system waste the figure.
+    by_host: dict[str, dict] = {}
+    for s in systems:
+        h = s.get("host") or ""
+        if h not in by_host or int(s["curve"]["mask"].sum()) > int(by_host[h]["curve"]["mask"].sum()):
+            by_host[h] = s
+
+    def _best_window(s: dict) -> tuple[float, int, float]:
+        """(window start, points inside, observed span) for the densest window."""
+        t, _, _ = _obs_ms(s["curve"])
+        P = float(10.0 ** s["theta5"][0])
+        win = min(n_cycles * P, float(t.max() - t.min()))
+        if win <= 0:
+            return float(t.min()), len(t), float(t.max() - t.min())
+        starts = np.linspace(t.min(), max(t.max() - win, t.min()), 200)
+        counts = [int(((t >= a) & (t <= a + win)).sum()) for a in starts]
+        t0 = float(starts[int(np.argmax(counts))])
+        sel = (t >= t0) & (t <= t0 + win)
+        return t0, int(sel.sum()), float(t[sel].max() - t[sel].min()) if sel.any() else 0.0
+
+    # A panel is only informative if the window holds enough points AND they
+    # actually spread across it — several hosts have all their observations
+    # clumped into two nights, which yields a degenerate near-zero-span window.
+    scored = []
+    for s in by_host.values():
+        P = float(10.0 ** s["theta5"][0])
+        t, _, _ = _obs_ms(s["curve"])
+        win = min(n_cycles * P, float(t.max() - t.min()))
+        baseline = float(t.max() - t.min())
+        _, n_in, span_in = _best_window(s)
+        # >= 2 full orbits of baseline: transit-survey targets often have their
+        # whole RV series inside a single night, which shows no orbital motion.
+        if n_in >= 20 and win > 0 and span_in >= 0.3 * win and baseline >= 2.0 * P:
+            scored.append((n_in, s))
+    if not scored:  # fall back to raw point count rather than failing outright
+        scored = [(int(s["curve"]["mask"].sum()), s) for s in by_host.values()]
+    scored.sort(key=lambda z: -z[0])
+    systems = [s for _, s in scored[:n_systems]]
+    if not systems:
+        raise RuntimeError(f"no real systems in split {real_split!r}")
+
+    X = np.asarray([_feat_row_for_system(s, feature_cols) for s in systems], dtype=float)
+    th_psi = psi_predict(X)
+
+    ncol = 2
+    nrow = int(np.ceil(len(systems) / ncol))
+    fig, axes = plt.subplots(nrow, ncol, figsize=(6.4 * ncol, 2.9 * nrow), squeeze=False)
+    for k, s in enumerate(systems):
+        ax = axes[k // ncol][k % ncol]
+        t, rv, sig = _obs_ms(s["curve"])
+
+        # Zoom to the densest window spanning ~n_cycles orbits. Plotting the full
+        # baseline is unreadable when it holds hundreds of cycles (a 4 d planet
+        # over 3000 d is a solid band) — this keeps the trajectory legible
+        # without projecting onto a single period.
+        P_tab = float(10.0 ** s["theta5"][0])
+        win = min(n_cycles * P_tab, float(t.max() - t.min()))
+        if win > 0 and win < (t.max() - t.min()):
+            starts = np.linspace(t.min(), t.max() - win, 200)
+            counts = [int(((t >= a) & (t <= a + win)).sum()) for a in starts]
+            t0 = float(starts[int(np.argmax(counts))])
+            sel = (t >= t0) & (t <= t0 + win)
+            t, rv, sig = t[sel], rv[sel], sig[sel]
+
+        span = max(t.max() - t.min(), 1e-6)
+        t_grid = np.linspace(t.min() - 0.02 * span, t.max() + 0.02 * span, 2000)
+
+        th_tab = s["theta5"]
+        tp_tab = _anchor_t_peri(th_tab, t, rv)
+        tp_psi = _anchor_t_peri(th_psi[k], t, rv)
+        y_tab = _kepler_on_grid(th_tab, t_grid, tp_tab)
+        y_psi = _kepler_on_grid(th_psi[k], t_grid, tp_psi)
+        y_tab += float(np.median(rv - _kepler_on_grid(th_tab, t, tp_tab)))
+        y_psi += float(np.median(rv - _kepler_on_grid(th_psi[k], t, tp_psi)))
+
+        ax.plot(t_grid, y_tab, color="tab:blue", lw=1.2, alpha=0.9,
+                label=r"$h(\theta_{\mathrm{tab}})$")
+        ax.plot(t_grid, y_psi, color="tab:red", lw=1.2, alpha=0.9, label=r"$h(\psi(y))$")
+        ax.errorbar(t, rv, yerr=sig, fmt="o", ms=3.0, color="k", ecolor="0.6",
+                    elinewidth=0.6, capsize=0, zorder=5)
+        host = s.get("host") or f"system {k}"
+        ax.set_title(f"{host}  ($P_{{\\mathrm{{tab}}}}$={10 ** th_tab[0]:.1f} d, "
+                     f"{len(t)} obs in a {span:.0f} d window)", fontsize=9)
+        ax.set_xlabel("BJD [d]", fontsize=8)
+        ax.set_ylabel("RV [m/s]", fontsize=8)
+        ax.tick_params(labelsize=7)
+        ax.grid(alpha=0.22)
+        if k == 0:
+            ax.legend(loc="best", fontsize=7, frameon=False)
+
+    for k in range(len(systems), nrow * ncol):
+        axes[k // ncol][k % ncol].axis("off")
+    fig.suptitle(f"Held-out {real_split} RV trajectories (unfolded)", fontsize=12)
+    fig.tight_layout(rect=(0, 0, 1, 0.96))
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(out_path, dpi=160, bbox_inches="tight")
+    plt.close(fig)
+    print(f"Trajectory figure -> {out_path}")
+
+
 def earth_likeness(row: pd.Series) -> float:
     """Lower is more Earth-like (P~365 d, low e, mass~1 Mearth when known)."""
     P = float(row["pl_orbper"]) if pd.notna(row.get("pl_orbper")) else np.nan
@@ -684,10 +1090,38 @@ def main() -> None:
     ap.add_argument("--host", default=None, help="held-out host for Figure 1 (default: auto)")
     ap.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--real-split", default="test", choices=("all", "train", "val", "test"),
+                   help="held-out split for the MSE-scatter and trajectory figures")
+    ap.add_argument("--sigma-scale", type=float, default=1.6449,
+                   help="catalog 1-sigma -> interval scale in the region-box figure "
+                        "(default 1.6449 = two-sided 90%%, matching alpha=0.1)")
+    ap.add_argument("--n-trajectories", type=int, default=6)
+    ap.add_argument("--traj-cycles", type=float, default=10.0,
+                   help="orbits shown per trajectory panel; the densest window of "
+                        "this length is chosen (full baseline if shorter)")
+    ap.add_argument("--no-surrogate-floor", action="store_true",
+                   help="skip the GD theta* floor in the MSE scatter (much faster)")
+    ap.add_argument(
+        "--only",
+        choices=("all", "phasefold", "predtrue", "table", "mse", "boxes", "trajectories"),
+        default="all",
+        help="regenerate a single figure (boxes needs no checkpoint)",
+    )
     args = ap.parse_args()
 
     device = torch.device(args.device)
     OUT_DIR.mkdir(parents=True, exist_ok=True)
+
+    # The region-box figure is a pure function of committed artifacts (the CP csv
+    # + catalog sigmas), so it runs without the psi checkpoint — which matters
+    # because that checkpoint is not in the repo (see README, issue #10).
+    if args.only == "boxes":
+        for sp in ("relative", "physical"):
+            suffix = "" if sp == "relative" else "_physical"
+            figure_region_boxes(OUT_DIR / "earthlike_top10.csv",
+                                OUT_DIR / f"rv_region_boxes{suffix}.png",
+                                sigma_scale=args.sigma_scale, space=sp)
+        return
 
     q_blob = load_quantiles(args.quantiles, args.metrics)
     q01 = q_blob["quantiles"]["0.10"]
@@ -704,14 +1138,34 @@ def main() -> None:
     if len(feature_cols) != in_dim:
         raise ValueError(f"csv features {len(feature_cols)} != MLP in_dim {in_dim}")
 
-    system, info = pick_system(args.host)
-    figure1(system, info, psi_predict, feature_cols, q04, OUT_DIR / "rv_heldout_phasefold.png",
-            seed=args.seed, widths_blob=widths_blob)
-    figure2(args.checkpoint, args.csv, OUT_DIR / "rv_pred_vs_true.png", device)
-    earthlike_table(psi_predict, feature_cols, q01,
-                    OUT_DIR / "earthlike_top10.csv",
-                    OUT_DIR / "earthlike_top10.tex",
-                    widths_blob=widths_blob)
+    want = args.only
+
+    if want in ("all", "phasefold"):
+        system, info = pick_system(args.host)
+        figure1(system, info, psi_predict, feature_cols, q04,
+                OUT_DIR / "rv_heldout_phasefold.png",
+                seed=args.seed, widths_blob=widths_blob)
+    if want in ("all", "predtrue"):
+        figure2(args.checkpoint, args.csv, OUT_DIR / "rv_pred_vs_true.png", device)
+    if want in ("all", "mse"):
+        figure_mse_scatter(psi_predict, feature_cols, OUT_DIR / "rv_mse_scatter.png",
+                           real_split=args.real_split,
+                           surrogate=not args.no_surrogate_floor)
+    if want in ("all", "trajectories"):
+        figure_trajectories(psi_predict, feature_cols, OUT_DIR / "rv_trajectories.png",
+                            real_split=args.real_split, n_systems=args.n_trajectories,
+                            n_cycles=args.traj_cycles)
+    if want in ("all", "table"):
+        earthlike_table(psi_predict, feature_cols, q01,
+                        OUT_DIR / "earthlike_top10.csv",
+                        OUT_DIR / "earthlike_top10.tex",
+                        widths_blob=widths_blob)
+    if want == "all":
+        for sp in ("relative", "physical"):
+            suffix = "" if sp == "relative" else "_physical"
+            figure_region_boxes(OUT_DIR / "earthlike_top10.csv",
+                                OUT_DIR / f"rv_region_boxes{suffix}.png",
+                                sigma_scale=args.sigma_scale, space=sp)
 
 
 if __name__ == "__main__":

@@ -147,7 +147,7 @@ Feature sets: **74-D** = 64 spectral power bins + 10 observation summaries ·
 |---|---|
 | `conformal_shift.py` | **The paper's method.** Split-CP calibrated on synthetic, tested on real. Three score strategies × four normalisations, likelihood-ratio reweighting, Bonferroni over 4 coordinates |
 | `conformal.py` | *Unsupervised* CP via the reconstruction residual ‖Kepler(θ) − y‖ (E1 coverage, E2 monotonicity, profiled scores). **Descoped from the paper** (Nicolò, 2026-07-14) but still runnable; it also supplies the shared `Scorer` / `make_real` / `make_synthetic` / `histogram_grids` helpers |
-| `scripts/paper_rv_figures.py` | Fig 1 (phase-fold), Fig 2 (pred-vs-true), Earth-like table with per-system CP half-widths beside catalog σ |
+| `scripts/paper_rv_figures.py` | All paper deliverables, selectable with `--only`: `phasefold`, `predtrue`, `table`, plus three added 2026-07-25 on Nicolò's request — `mse` (per-planet reconstruction MSE, tabulated vs ours, with the GD θ\* floor), `boxes` (2-D conformal vs catalog regions), `trajectories` (unfolded RV time series). `--only boxes` needs no checkpoint; the rest do |
 | `scripts/bayesian_interval_comparison.py` | CP half-widths vs the tabulated NASA `*err1/err2` intervals for held-out hosts |
 
 ### Diagnostics and tests
