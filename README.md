@@ -1,308 +1,424 @@
 # rv-ml
 
-ML pipeline for predicting exoplanet orbital parameters from radial velocity
-time series. Encoder → embedding → continuous-output decoder, with conformal
-prediction intervals.
+Predicting Keplerian orbital parameters from radial-velocity (RV) time series,
+with **conformal prediction intervals that are calibrated on simulated data and
+remain valid on real stars**.
 
-## 📋 Project log & coordination — read before starting work
+The method is simulation-based split conformal prediction under covariate shift:
+a point predictor ψ is trained on synthetic RV curves drawn from priors fitted to
+the real training split; the conformity scores are calibrated on synthetic curves
+only; and the calibration quantile is reweighted by a real-vs-synthetic
+likelihood ratio (Tibshirani et al. 2019) so the coverage guarantee transfers to
+real observations that were never used for calibration.
 
-Current steps, task assignments, and status updates live in the shared project log:
+**Headline result** (committed, reproducible from this repo — see
+[Verifying the results](#verifying-the-results)): at nominal 90% joint coverage
+over the four physical coordinates, the intervals achieve **0.89 on held-out
+synthetic** and **0.97 on real held-out systems**, with 1.8% of real systems
+receiving an infinite (vacuous) interval. The intervals are honest but wide —
+that trade-off, and its cause, is documented in [Limitations](#limitations).
 
-**https://docs.google.com/document/d/1OZliqxJH3tyKIoUy9zpJO3d2aDqwG9eJZJ9lcB3FvqU/edit**
+---
 
-Check it (and post an update) before you start a task, so work isn't duplicated. The
-"Current state" section below tracks the canonical code/models; the Google Doc tracks the
-*who/what/next* of the ongoing work. Session-to-session working state (immediate next
-actions, pending decisions) lives in `handover.md`.
+## Quick start
 
-## Repository structure
+```bash
+python3 -m venv .venv && source .venv/bin/activate
+pip install -r requirements.txt
 
-The pipeline flows: **download real RV → parse/label → validate against Kepler →
-fit a noise model + priors → generate synthetic training data → train the
-encoder (pretrain on synthetic, finetune on real) → quantify uncertainty (CP).**
-
-```
-rv-ml/
-├── data/                  # (gitignored) real RV .tbl files, labels, splits, stats, GP fits
-│   ├── rv_raw/            #   raw NASA Exoplanet Archive RV time series (.tbl)
-│   ├── labels.csv         #   tabulated Keplerian parameters per system
-│   ├── splits.csv         #   train/val/test assignment (single-planet aware)
-│   ├── dataset_stats.json #   train-split normalisation stats (used everywhere)
-│   └── gp_fits.json       #   per-system GP noise fits
-├── models/                # model code + the trained noise-model checkpoint
-│   ├── encoder.py         #   RVEncoder architectures (resnet/deep/tcn/lstm/transformer/…)
-│   ├── kepler_torch.py    #   KeplerDecoder — differentiable Kepler RV integrator (fixed decoder)
-│   └── gp_residual_svgp.pt#   trained global SVGP residual noise model (committed)
-├── checkpoints/           # (gitignored) trained encoder checkpoints (*.pt)
-├── figures/               # diagnostic + real-vs-synthetic validation plots
-├── slurm/                 # sbatch scripts for cluster (RHUL GPU) training
-└── synthetic_generation/  # regression-baseline & analysis sub-project (see below)
+python -m unittest discover -s tests     # 51 tests, ~1 s
+python kepler_check.py                   # end-to-end pipeline validation on 51 Peg b
 ```
 
-### Root modules by pipeline stage
+`data/` is committed (~10 MB: 1071 raw `.tbl` RV curves, labels, splits,
+normalisation stats), so both commands work in a fresh clone. Large regenerable
+artifacts — `checkpoints/`, the pretrain caches, the 512-bin LSP CSV — are not;
+see [Reproducibility status](#reproducibility-status).
 
-**Data acquisition & labelling**
-| File | Purpose |
-|---|---|
-| `scripts/data/download_rv.py` | Download all RV time series from the NASA Exoplanet Archive → `data/rv_raw/` |
-| `scripts/data/parse_and_label.py` | Parse raw `.tbl` → ML-ready `(X, y)`; SIMBAD alias matching; writes `labels.csv`/`splits.csv` |
-| `kepler_check.py` | Pipeline validator: forward-model Keplerian RV from tabulated params vs observations (51 Peg b canonical) |
+> Running `python -m unittest discover -s tests` overwrites the tracked PNGs in
+> `figures/synthetic_plots/` (one test is an import-time plotting script).
+> `git checkout figures/synthetic_plots/` afterwards.
 
-**Preprocessing & features**
-| File | Purpose |
-|---|---|
-| `preprocess.py` | `RVDataset`: normalised `(x, lsp, theta)` tensors, Lomb–Scargle periodogram, splits, `dataset_stats.json` |
-| `time_series_features.py` | Fixed-length spectral + summary features for unevenly-sampled RV |
-| `feature_columns.py` | Canonical target/input column names for 74-D, 35-D phase-fold, and 109-D regression feature sets |
+---
 
-New scripts should import regression target and feature-column lists from
-`feature_columns.py` directly, rather than redefining them or importing them
-indirectly through a CSV-generation script.
+## The pipeline
 
-**Noise model (Gaussian Processes)**
-| File | Purpose |
-|---|---|
-| `gp_residual_model.py` | Global SVGP + Student-t fit to real residuals (Nicolò's spec; least-squares systemic offset γ, σ-conditioned via a log10 σ feature) → `models/gp_residual_svgp.pt` |
-| `gp_noise_model.py` | Per-system celerite2 GP noise model |
-| `scripts/gp/gp_corpus_fit.py` / `scripts/gp/gp_sensitivity.py` / `scripts/gp/gp_demo.py` | Corpus-wide GP fit + kernel selection, threshold sensitivity, 3-system demo |
-| `cache_residuals.py` | Cache `(t, residual, sigma)` per system for the residual GP |
-
-**Synthetic data generation & validation**
-| File | Purpose |
-|---|---|
-| `synthetic_dataset.py` | Synthetic RV generator for encoder pretraining (empirical priors, GP-residual noise, real-cadence bootstrap); `SyntheticRVDataset`, `generate_cache` |
-| `scripts/legacy/synthetic_rv.py` | Catalog-resampling generator (300-system sets) + example/classifier plots |
-| `validate_synthetic_dataset.py` | Real-vs-synthetic validation: classifier, histograms, split-aware diagnostics → `figures/synthetic_validation/` |
-
-**Model & training**
-| File | Purpose |
-|---|---|
-| `train.py` | Two-phase encoder training: pretrain on synthetic → finetune on real → `checkpoints/` |
-| `slurm/train_encoder.sbatch` | RHUL GPU batch job wrapping `train.py` (pretrain 300 ep on the synthetic cache → finetune 100 ep on real); submit from repo root with `sbatch slurm/train_encoder.sbatch` |
-| `slurm/gp_conformal.sbatch` | RHUL CPU batch job: full-scale SVGP retrain (LS-γ offset) → full-scale `conformal_shift.py` (n_cal=400); submit from repo root with `sbatch slurm/gp_conformal.sbatch` |
-| `injection_recovery.py` | Injection-recovery benchmark for a trained encoder |
-| `regression.py` | MLP regression on 74-dim encoder features → 5 Kepler params (default: 74-D CSV). For **e / ω**, use `--feature-set 109` with the phasefold CSV (`--with-phasefold` in `generate_synthetic_regression_csv.py`). The zero-inflated **e** prior (~24% exact zeros) has opt-in counters: `--e-balance` (inverse-frequency e-loss reweighting), `--e-head hurdle` (shared MLP + e>0 classifier), and `--e-head dual` (separate circular / eccentric MLPs + gate; compared by `slurm/regression_benchmark.sbatch` / `--e-head-ablate`). Run **`--diagnose`** for SNR/P-baseline/LSP/sanity diagnostics before changing targets. |
-
-**Uncertainty quantification (Step 6)**
-| File | Purpose |
-|---|---|
-| `conformal.py` | Unsupervised conformal prediction: turns the Step-5 regressor's point predictions into prediction sets via the reconstruction-residual score `‖Kepler(θ)−y‖` (no ground-truth θ). Runs coverage (E1) + monotonicity (E2). Score variants: profiled over nuisance coords (`--profile {none,K,Keomega}`, default K) and σ-normalized χ² (`--chi2`, opt-in) |
-| `conformal_shift.py` | Split-CP calibrated on fake data, tested on real (Nicolò's 2026-07 spec): naive score `\|ψ(y)−θ̄\|` (ground-truth θ̄) vs surrogate score (θ* = argmin of the L1 reconstruction error by gradient descent, init at θ̄/tabulated), likelihood-ratio reweighting `p_real/p_fake` via a real-vs-fake discriminator (Tibshirani et al. 2019 weighted quantile), and the normalized scores `s/(γ+v_y)` and two-factor `s_c/(γ+v_y+v_c)` (v_c = surrogate-label-error model) with tuned γ. ψ trains on the 512-bin raw-LSP dataset by default (feature columns follow `--csv`) |
-| `scripts/paper_rv_figures.py` | Paper deliverables: Fig 1 (held-out phase-fold), Fig 2 (P/K/e pred-vs-true), and the `earthlike_top10` table (`figures/paper/earthlike_top10.{csv,tex}`) — per-system papernorm CP half-widths next to the NASA catalog `*err1/err2`. `render_earthlike_tex(rows)` re-renders the LaTeX from the CSV alone (no checkpoint needed). **Do not regenerate the table without the original checkpoint** — see the reproducibility warning below. |
-| `scripts/bayesian_interval_comparison.py` | **CP vs Bayesian** (Nicolò's Task 4): joins the CP α=0.1 half-widths (`figures/paper/earthlike_top10.csv`) against the catalog "Bayesian" intervals — tabulated NASA Archive `*err1/err2` (`data/labels.csv`) — for held-out hosts. Emits a tidy CSV, an Overleaf `.tex` summary, and a CP-vs-Bayes half-width scatter. Comparison conventions (P/K in log10 dex; catalog σ→interval via `--sigma-scale`, default 1.6449 = 90%; near-vacuous ω flagged) are isolated at the top of the file. |
-
-**Diagnostics & misc**
-| File | Purpose |
-|---|---|
-| `scripts/diagnostics/diagnostics.py` | Corpus-level diagnostic plots (RMS vs params, galleries, parameter histograms) |
-| `scripts/diagnostics/init_experiment.py` | Quantify least-squares corrections to tabulated params (Nicolò's request) |
-| `scripts/legacy/random_forest_regressor.py` | Standalone RF (log10_P from 64 spectral features on real data) — cautionary baseline |
-| `tests/test_*.py` | Unit tests and smoke checks (parser, time-series features, 300-system generation) |
-
-### `synthetic_generation/` — regression baselines & real-vs-synthetic analysis
-
-A self-contained sub-project (its own `README.md`). Builds an input→output regression
-CSV (power spectrum + summary features → true Keplerian params) and analyses it.
-
-| File | Purpose |
-|---|---|
-| `generate_synthetic_regression_csv.py` | Build the 74-D regression CSV (64 spectral bins + 10 summaries → 5 targets) |
-| `generate_lsp_regression_csv.py` | Variant storing the full 512-bin Lomb–Scargle spectrum (resolution experiment) |
-| `validate_synthetic_regression_csv.py` | Structural/physical sanity checks on a CSV |
-| `plot_synthetic_regression_csv.py` | Real-vs-synthetic comparison plots (+ `collect_real_summary`) |
-| `train_regression_models.py` | RF regression baseline: joint vs separate, feature-block ablation, CV, synthetic→real transfer |
-| `regression_diagnostics.py` | Automated MLP diagnostics: SNR slicing, P/baseline, LSP vs MLP, e prior, ω-vs-e pair plots (blue=true / red=pred), sanity JSON |
-| `pca_real_vs_synthetic.py` | 2D PCA of real (white) vs synthetic (black) systems |
-| `lsp_resolution_experiment.py` | 64-bin vs 512-bin power-spectrum recovery comparison |
-| `eval_omega_nn_vs_rf.py` | ω recovery: trained NN encoder vs RF, on matched real systems |
-| `datasets/`, `figures/`, `regression/`, `validation/` | Generated CSVs, figures, metrics/reports |
-
-> **Note:** `data/` and `checkpoints/` are gitignored — regenerate them with `download_rv.py`
-> / `parse_and_label.py` / `preprocess.py` and `train.py`. The trained residual noise model
-> (`models/gp_residual_svgp.pt`) *is* committed.
-
-## Current state — canonical models & configuration
-
-This project has several files that do similar things; the list below is the **currently
-canonical** choice for each stage, so collaborators build on the live path, not a legacy one.
-(Query the live noise backend at runtime with `synthetic_dataset.get_noise_model_status()`.)
-
-**Noise model — global SVGP + Student-t residual GP.**
-`gp_residual_model.py` → checkpoint `models/gp_residual_svgp.pt` (512 inducing points, ARD
-Matérn-5/2, Student-t likelihood; fit to real single-system residuals, with a least-squares
-systemic offset γ and a **log10 σ conditioning feature** — the per-obs measurement uncertainty,
-so the GP can track per-system noise amplitude; both per Nicolò 2026-07. The *committed*
-checkpoint predates these changes (7 features, first-obs γ) and is
-refreshed by `slurm/gp_conformal.sbatch`; consumers detect the feature set from the
-checkpoint's `feature_names`). It is the **primary**
-backend in `synthetic_dataset._inject_noise`, which falls back in order to: the per-system
-celerite2 `GPNoiseLibrary` (`data/gp_fits.json`, produced by `gp_noise_model.py` /
-`gp_corpus_fit.py` — *legacy/fallback*) → i.i.d. white Gaussian. GP-sample amplitude is scaled
-by env `RVML_GP_RESIDUAL_SCALE` (default **0.85**). The σ feature targets the known
-per-system-amplitude miscalibration (generative-validation std ratio 1.76 with ~zero
-std log-correlation) — verify std log-corr on the retrained checkpoint.
-
-**Synthetic generator — `synthetic_dataset.py`** (canonical for encoder pretraining). Current
-priors, all bootstrapped from the **train split** of the real corpus (Nicolò, 2026-07: H is
-fit train-only; real val/test are held out for testing the CP intervals):
-- **Eccentricity:** zero-preserving empirical histogram (30 bins over (0, 0.99] + explicit point
-  mass at e=0) from `data/splits.csv` (`has_ecc` single-planet); Beta(0.867, 3.03) fallback.
-- **Period:** 3-component log10 Gaussian mixture (modes ≈ 3.3, 35, 638 d).
-- **Semi-amplitude K:** LogUniform(8, 400) m/s.
-- **Cadence + σ:** bootstrapped paired `(time grid, per-obs σ)` from real training `.tbl` files.
-- `synthetic_rv.py` is a **separate** catalog-resampling generator (300-system diagnostic sets),
-  *not* the pretraining source — don't confuse the two.
-
-**Encoder — `models/encoder.py`, default arch `resnet`** (registry: resnet/deep/tcn/inception/
-lstm/transformer/nolsp). Decoder is the fixed `models/kepler_torch.py:KeplerDecoder` (no learned
-weights; refits `t_peri` analytically). Train with `train.py` (pretrain on synthetic → finetune
-on real); checkpoints save as `checkpoints/<arch>_finetune_best.pt`. **Regenerate the pretrain
-cache** (e.g. `generate_cache(...)`) before a real run — an old `data/pretrain_cache.pt` predates
-the current priors.
-
-**Regression baseline — `synthetic_generation/train_regression_models.py`** on
-`datasets/synthetic_regression_10000.csv` (74-D: 64 spectral bins + 10 summaries → 5 targets).
-Baseline for the encoder task; key result — summaries recover P/K well, the raw power spectrum
-only helps at full 512-bin resolution (`lsp_resolution_experiment.py`).
-
-**Regression diagnostics — run before changing targets or priors:**
-
-```powershell
-.venv\Scripts\python.exe regression.py --diagnose --feature-set 109 `
-  --csv synthetic_generation/datasets/synthetic_regression_10000_phasefold.csv `
-  --checkpoint checkpoints/regression_mlp_109.pt
+```
+ raw RV (NASA Exoplanet Archive)
+   └─ scripts/data/download_rv.py ────────────────► data/rv_raw/*.tbl
+   └─ scripts/data/parse_and_label.py ────────────► data/labels.csv, data/rv_index.csv
+        │   (TAP query + SIMBAD alias resolution)
+        ▼
+ validation & splits
+   └─ kepler_check.py ────────────────────────────► forward-model check vs catalog
+   └─ cache_residuals.py ─────────────────────────► data/residuals*.{npz,csv}
+   └─ preprocess.py ──────────────────────────────► data/splits.csv, data/dataset_stats.json
+        ▼
+ noise model (fit to REAL residuals)
+   └─ gp_residual_model.py ───────────────────────► models/gp_residual_svgp.pt
+        ▼
+ synthetic corpus (priors H fitted on the TRAIN split only)
+   └─ synthetic_dataset.py ───────────────────────► pretrain cache / on-the-fly samples
+   └─ synthetic_generation/generate_synthetic_regression_csv.py ──► regression CSVs
+        ▼
+ point predictor ψ
+   └─ regression.py (MLP)  /  synthetic_generation/train_regression_models.py (RF baseline)
+        ▼
+ uncertainty quantification  ◄── the paper's contribution
+   └─ conformal_shift.py ─────────────────────────► coverage/width tables, per-system widths
+   └─ scripts/paper_rv_figures.py ────────────────► Fig 1, Fig 2, Earth-like table
+   └─ scripts/bayesian_interval_comparison.py ────► CP vs catalog "Bayesian" intervals
 ```
 
-Outputs land in `figures/regression_synthetic/diagnostics/`:
+**Held-out discipline.** `data/splits.csv` is a host-grouped 70/15/15 split
+(seed 42), so no star appears in two splits. Everything that could leak is fitted
+on `train` only: the normalisation stats, the empirical parameter priors H, the
+cadence/σ bootstrap pool, the GP noise model, and the real-vs-synthetic
+discriminator. Real `val`/`test` systems are used **only** to test intervals.
 
-| Artifact | What it answers |
+**Parameter vector.** θ = `[log10_P, log10_K, e, cos ω, sin ω]`. Periastron time
+`t_peri` is deliberately excluded — it is an epoch-dependent phase offset that is
+refit analytically inside the decoder, and including it would restrict the corpus
+to the ~43% of systems with a catalog value. CP operates on the four *physical*
+coordinates `(log10_P, log10_K, e, ω)`, since `(cos ω, sin ω)` redundantly encode
+one angle.
+
+---
+
+## Repository map
+
+### Data acquisition and labelling
+
+| File | Purpose |
 |---|---|
-| `metrics_by_snr.json`, `pred_vs_true_*_by_snr*.png` | Is error dominated by low-SNR systems? |
-| `p_baseline_metrics.json` | Does P error blow up when P > baseline? |
-| `period_recovery.json` | Does Lomb–Scargle argmax beat the MLP on period? |
-| `raw_output_hist.png` | Are ±1 pileups from unit-circle projection vs saturation? |
-| `e_prior_train_hist.png` | Is e banding from the discrete histogram prior? |
-| `omega_vs_e.png`, `parameter_pairs.png` | ω vs e (and other pairs): blue=true, red=pred — investigates ω=0 pileup |
-| `sanity_report.json` | Train/val gap, residual vs covariates, ω MAE vs e, leakage notes |
+| `scripts/data/download_rv.py` | Bulk-download RV time series from the NASA Exoplanet Archive → `data/rv_raw/` |
+| `scripts/data/parse_and_label.py` | IPAC `.tbl` parser + TAP label query + SIMBAD alias matching → `labels.csv`, `rv_index.csv` |
+| `parse_and_label.py` | Compatibility shim re-exporting the above (keeps root-level imports working) |
+| `kepler_check.py` | Forward-models the RV curve from tabulated parameters and compares to observations; also the shared numpy Kepler solver |
+| `cache_residuals.py` | Runs `kepler_check.validate_one` over the corpus, caches `(t, residual, σ)` per system |
 
-**Uncertainty quantification (the paper's main contribution) — implemented in `conformal.py`.**
-*Unsupervised* conformal prediction: the conformity score is the reconstruction residual
-`‖Kepler(θ) − y‖` (evaluated via the fixed `KeplerDecoder`, no ground-truth θ), with split-conformal
-calibration + Bonferroni over the four physical coordinates (log10_P, log10_K, e, ω). All
-calibration draws and parameter search grids come from the empirical corpus histograms H, not
-ad-hoc priors. **Result: coverage is valid (≥ nominal) on synthetic AND real data** (the guarantee
-transfers — the point vs Baragatti's supervised calibration). The sets are currently *valid but
-wide*: a σ-normalized (χ²) score did **not** tighten them, because the width is limited by the
-weak nuisance point-estimate the univariate CP conditions on (+ period aliasing), not the noise
-scale. A *profiled* conformity score (minimise over nuisance coords instead of fixing at θ̂;
-`--profile K` / `--profile Keomega`) is now implemented; in a quick run (n=40) profiling K left
-the median widths unchanged — a full-scale run and/or a stronger point predictor is the open
-question. See the Overleaf draft (§2.2.1) linked at the bottom.
+### Preprocessing and features
 
-**Nicolò's 2026-07 CP spec is implemented in `conformal_shift.py`** — the paper's comparison is
-now: split-CP calibrated *only on fake data* and tested on real, (i) naive score `|ψ(y)−θ̄|`
-with the ground-truth generating parameter θ̄ vs (ii) the surrogate-label strategy — per his
-Slack follow-up, θ* = argmin_θ E_t|y_t−Kepler(θ,t)| solved by Adam gradient descent through the
-differentiable decoder, initialized at the data-generating (synthetic) / tabulated (real)
-values — the latter reweighted by the likelihood ratio `p_real/p_fake`
-(estimated by a real-vs-fake logistic discriminator; weighted quantile per Tibshirani et al.
-2019). Two normalized-score variants (γ tuned per variant on a synthetic tuning set):
-`s/(γ+v_y)` (v_y = SVGP predictive-std proxy; Nicolò confirmed this reading of his `s/(γ+s)`)
-and the two-factor `s_c/(γ+v_y+v_c)` with v_c a per-coordinate RF model of the surrogate-label
-error E|θ̄_c−θ*_c| fit on the tuning set. ψ defaults to the 512-bin raw-LSP feature set
-(Nicolò OK'd more Fourier bins); the weight discriminator and the v_c model deliberately stay
-on the 74-dim summary features to keep the likelihood-ratio weights non-degenerate.
+| File | Purpose |
+|---|---|
+| `preprocess.py` | `RVDataset`, host-grouped splits, normalisation stats, 512-bin GLS periodogram (`compute_lsp`) |
+| `time_series_features.py` | Fixed-length features for unevenly sampled series: spline→FFT spectral bins, phase-fold bins (`t_peri`-anchored or epoch-free) |
+| `feature_columns.py` | **Canonical** column names for the 74-D / 35-D / 109-D feature sets — import from here, never redefine |
 
-**Next steps:** (1) full-scale SVGP retrain + `conformal_shift.py` run on the RHUL cluster
-(`slurm/gp_conformal.sbatch`; the committed checkpoint/CSVs still predate the LS-γ,
-σ-conditioning and train-only-H changes — heavy jobs run on the cluster, not locally);
-(2) full-scale profiled-CP
-run (`--profile Keomega`, default n=400) + a stronger point predictor to tighten the sets;
-(3) a full-scale encoder training
-run (`slurm/train_encoder.sbatch` on the RHUL GPU cluster; needs the regenerated
-`data/pretrain_cache_v3.pt`), evaluated with `injection_recovery.py`. Nicolò is writing the
-full-pipeline section in the Overleaf draft — treat it as the reference spec when it lands.
+Feature sets: **74-D** = 64 spectral power bins + 10 observation summaries ·
+**35-D** = 32 phase-fold RV bins + 3 shape scalars · **109-D** = 74 + 35.
 
-## Setup
+### Noise model
 
-    python3 -m venv .venv && source .venv/bin/activate
-    pip install -r requirements.txt
+| File | Purpose |
+|---|---|
+| `gp_residual_model.py` | **Canonical.** Global SVGP + Student-t fit to *real* residuals → `models/gp_residual_svgp.pt` |
+| `gp_noise_model.py` | Per-system celerite2 GP (5 kernels, BIC selection, KS/Ljung-Box diagnostics) — *legacy fallback* |
+| `scripts/gp/gp_corpus_fit.py`, `gp_sensitivity.py`, `gp_demo.py` | Corpus-wide celerite2 fit, threshold sensitivity, 3-system demo |
 
-## Usage
+### Synthetic generation and validation
 
-    python scripts/data/download_rv.py    --out data/rv_raw
-    python scripts/data/parse_and_label.py --rv-dir data/rv_raw --out data/labels.csv
+| File | Purpose |
+|---|---|
+| `synthetic_dataset.py` | **Canonical** generator for pretraining/CP: empirical priors, GP-residual noise, real-cadence bootstrap |
+| `synthetic_generation/generate_synthetic_regression_csv.py` | Builds the 74-D (and 109-D with `--with-phasefold`) regression CSV; also `replay_synthetic_sample` for exact row replay |
+| `synthetic_generation/generate_lsp_regression_csv.py` | Same corpus, storing the full 512-bin LSP (591 cols, gitignored — regenerate in ~30 s) |
+| `validate_synthetic_dataset.py` | Real-vs-synthetic validation: classifier, histograms, cadence/noise diagnostics |
+| `synthetic_generation/validate_synthetic_regression_csv.py` | Structural/physical sanity checks on a generated CSV |
+| `synthetic_generation/plot_synthetic_regression_csv.py` | Real-vs-synthetic comparison plots; `collect_real_summary` builds real feature rows |
+| `synthetic_generation/pca_real_vs_synthetic.py` | 2-D PCA of real (white) vs synthetic (black) systems |
+| `scripts/legacy/synthetic_rv.py` | Separate catalog-resampling generator (300-system diagnostic sets) — **not** the pretraining source |
 
-## Data sources
+### Models and point predictors
 
-- NASA Exoplanet Archive bulk RV download (1,072 RV curves)
-- NASA Exoplanet Archive Planetary Systems table via TAP service
+| File | Purpose |
+|---|---|
+| `models/kepler_torch.py` | Differentiable Kepler decoder (Newton solve + analytic `t_peri`/γ refit). **No learned weights** |
+| `models/encoder.py` | `RVEncoder` zoo — 7 dual-branch architectures (resnet/deep/tcn/inception/lstm/transformer/nolsp) |
+| `theta_loss.py` | Shared losses: circular ω loss, ω gating on low-e, e-balance weights, θ↔h/k conversion |
+| `regression.py` | **The paper's ψ.** MLP on 74/35/109-D features → θ or h/k. e-head variants, two-step pipeline, gates, ablations |
+| `synthetic_generation/train_regression_models.py` | Random-forest baseline (joint vs separate, feature-block ablation, CV, synthetic→real transfer) |
+| `train.py` | Two-phase encoder training (pretrain on synthetic → finetune on real) |
+| `injection_recovery.py` | Injection-recovery benchmark on a (period × SNR) grid, classical-LS or encoder mode |
 
-## Validation
+### Uncertainty quantification — the contribution
 
-The pipeline is validated end-to-end by forward-modeling the radial velocity
-signal from each host's tabulated Keplerian parameters and comparing to the
-published observations:
+| File | Purpose |
+|---|---|
+| `conformal_shift.py` | **The paper's method.** Split-CP calibrated on synthetic, tested on real. Three score strategies × four normalisations, likelihood-ratio reweighting, Bonferroni over 4 coordinates |
+| `conformal.py` | *Unsupervised* CP via the reconstruction residual ‖Kepler(θ) − y‖ (E1 coverage, E2 monotonicity, profiled scores). **Descoped from the paper** (Nicolò, 2026-07-14) but still runnable; it also supplies the shared `Scorer` / `make_real` / `make_synthetic` / `histogram_grids` helpers |
+| `scripts/paper_rv_figures.py` | Fig 1 (phase-fold), Fig 2 (pred-vs-true), Earth-like table with per-system CP half-widths beside catalog σ |
+| `scripts/bayesian_interval_comparison.py` | CP half-widths vs the tabulated NASA `*err1/err2` intervals for held-out hosts |
 
-    python kepler_check.py            # canonical test (51 Peg b)
-    python kepler_check.py --all      # corpus-wide summary
+### Diagnostics and tests
 
-51 Peg b is the gold-standard test (χ²_reduced = 1.31, RMS/σ = 1.19); the
-Kepler model traces the data within measurement noise. Across the full
-corpus, 432 quality-filtered systems validate with a median RMS/σ of 3.7,
-consistent with the stellar-activity floor that catalog uncertainties do
-not include. The pipeline matches 857 of 1,071 files to known planet
-hosts (766 by direct identifier matching, plus 91 recovered via SIMBAD
-alias resolution); the remaining 214 unmatched files are predominantly
-2MASS-designated survey candidates that don't appear in NASA's confirmed-
-planet table.
+| File | Purpose |
+|---|---|
+| `synthetic_generation/regression_diagnostics.py` | SNR slicing, P-vs-baseline, LSP-vs-MLP period recovery, e-prior histogram, ω-vs-e pair plots, sanity JSON |
+| `synthetic_generation/lsp_resolution_experiment.py` | 64-bin vs 512-bin power-spectrum recovery comparison |
+| `synthetic_generation/eval_omega_nn_vs_rf.py` | ω recovery: trained encoder vs RF on matched real systems |
+| `scripts/diagnostics/diagnostics.py`, `init_experiment.py` | Corpus-level plots; least-squares corrections to tabulated parameters |
+| `scripts/legacy/random_forest_regressor.py` | Real-only, raw-spectrum RF (R² = −0.16) — kept as a cautionary baseline |
+| `tests/` | 51 unit tests (see [Verifying the results](#verifying-the-results)) |
 
-## Overleaf draft
+---
 
-A work-in-progress draft about the methodology and related work is here: https://www.overleaf.com/8188483955gysdcwmjrwhq#ac30a1
+## Canonical choices
 
-## Next steps (AAAI submission)
+Several files do similar things. These are the live ones; the rest are baselines
+or ablations kept for the record.
 
-Nicolò (2026-07-23) asked George to coordinate and split the remaining paper work across
-George / Shuaib / Daksh. The three workstreams, with current repo status:
+**Noise — `gp_residual_model.py`.** A single global sparse variational GP (512
+inducing points, ARD Matérn-5/2) with a **Student-t** likelihood, fitted to real
+single-planet residuals. Features are
+`(phase, log10 P, log10 K, e, cos ω, sin ω, y_rel, log10 σ)`; the label is the
+residual `r(t) = y(t) − ŷ(t)` against the catalog Keplerian with a
+least-squares systemic offset γ. `y_rel` (RV *change* since the first
+observation) is used rather than raw model RV, which would carry each star's
+arbitrary systemic velocity. Quality cuts: median σ ∈ [0.1, 100] m/s and
+residual RMS/σ ≤ 30. Training-set augmentation resamples ŷ ~ U(ŷ−σ, ŷ+σ) 20×;
+val/test use the nominal residual.
 
-1. **Plots + table — done.** `scripts/paper_rv_figures.py` (PR #7) regenerates
-   Fig 1 (phase-fold), Fig 2 (P/K/e pred-vs-true), and the `earthlike_top10` table with
-   per-system papernorm CP half-widths; PR #9 added the NASA catalog `*err1/err2` alongside them,
-   so the table now shows CP and "Bayesian" uncertainties side by side. *Remaining:* make sure
-   Overleaf pulls the latest PNGs, not the old 5-panel ω plot.
-2. **Method write-up in Overleaf — not started (lives in Overleaf, not the repo).** ψ = 74-D MLP;
-   UQ = weighted split-conformal under covariate shift. Cite Tibshirani et al. 2019. This is the
-   un-started workstream.
-3. **Bayesian-interval comparison — done** in `scripts/bayesian_interval_comparison.py`
-   (PR #8): CP α=0.1 half-widths vs tabulated catalog 1σ for held-out hosts. Live result — CP
-   intervals are honest but ~550× / 16× / 6.5× / 3× the tabulated Bayes interval for P / K / e / ω.
-   *For Nicolò to confirm:* P/K compared in log10 dex; catalog σ→interval scale (`--sigma-scale`,
-   default 90%); near-vacuous ω handling.
+`synthetic_dataset._inject_noise` prefers this SVGP, then falls back to the
+per-system `GPNoiseLibrary` (`data/gp_fits.json`), then to i.i.d. Gaussian.
+Query the live backend with `synthetic_dataset.get_noise_model_status()`.
+Sample amplitude is scaled by `RVML_GP_RESIDUAL_SCALE` (default **0.85**).
 
-**Still pending (heavy compute — RHUL cluster, not local):**
-- Full-scale SVGP retrain + `conformal_shift.py` (`slurm/gp_conformal.sbatch`) — the committed
-  checkpoint/CSVs predate the LS-γ + σ-conditioning + train-only-H changes.
-- Full-scale profiled-CP run (`--profile Keomega`, n=400) + a stronger point predictor to tighten sets.
-- Full-scale encoder training (`slurm/train_encoder.sbatch`, GPU) evaluated with `injection_recovery.py`.
+**Generator — `synthetic_dataset.py`.** Priors, all fitted on the **train split**
+of the real corpus:
 
-**Honest limitation to state in the paper:** ω is not recovered without a periapsis epoch
-(intervals near-vacuous, ~171°); the epoch-free phase-fold experiment did **not** restore it
-(e R²≈0.08 epoch-free vs ≈0.50 with oracle t_peri).
+| Quantity | Prior | Fallback if the corpus files are absent |
+|---|---|---|
+| P | empirical 40-bin histogram in log10(P/d) | 3-component log10 Gaussian mixture (modes ≈ 3.3, 35, 638 d) |
+| K | empirical 40-bin histogram in log10(K) | LogUniform(8, 400) m/s |
+| e | zero-preserving 30-bin histogram over (0, 0.99] **plus an explicit point mass at e = 0** | Beta(0.867, 3.03) (Kipping 2013) |
+| ω | Uniform(0, 2π) for e > 0.05; **ω ≡ 0 for near-circular orbits** (degenerate) | — |
+| cadence + σ | paired `(time grid, per-obs σ)` bootstrapped from real train `.tbl` files | seasonal Poisson-gap model + hierarchical log-normal σ |
 
-**Pre-submit hygiene:** anonymize author names / repo URLs for review; confirm AAAI style + page
-limit; add a reproducibility supplement (seed, checkpoint path, CSV, and the CP-run CLI).
+Companions are injected with probability `f_multi = 0.30` (1 companion w.p. ¾,
+2 w.p. ¼); the label is always the dominant planet (highest K), matching
+`preprocess._usable_systems`. One noise realisation is shared across planets.
 
-> ⚠️ **The paper table is not reproducible from this repo — [issue #10](https://github.com/George-Pulickan/rv-ml/issues/10),
-> blocks the reproducibility supplement.** `checkpoints/` is gitignored, and `figures/paper/mlp_cp_quantiles.json` records
-> `checkpoint: 'checkpoints\regression_mlp_74.pt'` — a Windows path, i.e. the committed
-> `earthlike_top10.*` numbers come from an MLP checkpoint that lives on one collaborator's machine.
-> Re-running `scripts/paper_rv_figures.py` with a *different* local `regression_mlp_74.pt` silently
-> produces different predictions (observed: GJ 649 `P_pred` 714.6 d vs 40.1 d, all hosts collapsing
-> toward the mean) and overwrites the paper's numbers. **Until that checkpoint is pinned somewhere
-> fetchable (it is only ~77 KB — committing it with `git add -f` is the simplest fix), do not
-> regenerate the table**; use `render_earthlike_tex(rows)` to re-render the LaTeX from the committed
-> CSV instead. Note the local/`laptop-sync` `regression_mlp_74.pt` is **not** the one — it is a
-> 15-epoch smoke artifact from 07-14 and predicts near the mean. Checkpoint `norm_stats` records no
-> seed/epochs/source-CSV, so checkpoints cannot be told apart from the files alone; stamping the
-> training config at save time is the durable fix.
+**Point predictor ψ — `regression.py`,** an MLP (hidden 128→64, ReLU, AdamW,
+early stopping) on the 74-D feature set for the paper runs. ω is masked out of
+the loss below e = 0.05 (degenerate) and scored only on e > 0.1. The
+zero-inflated e prior (~24% exact zeros) has three opt-in counters: `--e-balance`
+(inverse-frequency reweighting), `--e-head hurdle` (shared trunk + e>0
+classifier), `--e-head dual` (separate circular/eccentric MLPs + gate).
+`--targets hk` swaps `(e, cos ω, sin ω)` for `(k = e cos ω, h = e sin ω)`.
+
+**UQ — `conformal_shift.py`.** Calibration uses synthetic curves only. Two score
+strategies plus one adjustment:
+
+- `naive` — `s_c = |ψ(y)_c − θ̄_c|` against the data-generating θ̄ (synthetic only);
+- `surrogate` — `s_c = |ψ(y)_c − θ*_c|`, where θ* minimises the **L1**
+  reconstruction error `E_t|y_t − Kepler(θ, t)|` by Adam through the
+  differentiable decoder, initialised at θ̄ (synthetic) / tabulated (real).
+  Computable on real curves, hence usable under shift;
+- `naive_adj` — `naive` with the quantile shifted by the worst observed
+  surrogate gap Δ_c (paper eq. 41).
+
+Four score normalisations `s' = s/(γ + ·)`, with γ tuned per variant to minimise
+support-normalised median width: `raw`, `vnorm` (GP predictive std), `v2norm`
+(+ per-coordinate surrogate-label error model), `papernorm` (re-encode residual
+δ_c + reconstruction residual δ_y, computed pointwise). Coverage under shift uses
+the Tibshirani et al. (2019) weighted quantile with likelihood ratios from a
+logistic real-vs-synthetic discriminator on the 74-D summaries (deliberately not
+ψ's 586-D set, which separates the classes too well and degenerates the weights);
+weights are clipped to [1/20, 20] and the effective sample size is reported.
+
+Two assumptions from the draft are checked empirically: **2.1** (bounded noise) —
+synthetic draws exceeding the real-train reconstruction bound are discarded; and
+**2.3** — κ(H) and ‖∇h‖ are estimated on prior draws and reported.
+
+---
+
+## Verifying the results
+
+Everything below runs from a fresh clone unless marked otherwise.
+
+**1. The pipeline reproduces published RV curves.**
+
+```bash
+python kepler_check.py            # 51 Peg b: chi2_red = 1.31, RMS/sigma = 1.19
+python kepler_check.py --all      # corpus-wide -> data/validation_summary.csv
+```
+
+51 Peg b is the gold-standard single-system check: the Kepler model traces the
+data to within the measurement noise with **zero** free physical parameters (γ is
+anchored at the first observation). `--all` writes a per-file table to
+`data/validation_summary.csv` and prints a quality-filtered summary
+(`n_obs ≥ 10`, median σ ∈ [0.1, 100] m/s); expect a median RMS/σ of a few, which
+is the stellar-activity floor that catalog uncertainties do not include, not a
+pipeline error. The run takes ~20 min over the full corpus.
+
+The host join matches **857 of 1071** files (766 by direct identifier, 91
+recovered via SIMBAD aliases); the 214 unmatched are predominantly 2MASS-designated
+survey candidates absent from the confirmed-planet table.
+
+**2. The synthetic corpus is hard to distinguish from real data.**
+
+```bash
+python validate_synthetic_dataset.py --real-split test
+```
+
+Balanced accuracy of a random-forest real-vs-synthetic classifier, last measured
+2026-06-30: **0.498 on test**, 0.522 on val, 0.599 on train, 0.650 pooled — i.e.
+indistinguishable on held-out data. (Train/pooled sit above 0.5 by design: the
+pretraining priors are deliberately broader than the catalog.) These predate the
+switch to empirical P/K histogram priors, so a fresh run will not match to three
+decimals; the held-out figure should still sit near 0.5.
+
+**3. The conformal intervals cover.** The paper's run is committed under
+`synthetic_generation/regression/mlp_psi/` (n_cal = 400, ψ = MLP, surrogate
+score, papernorm):
+
+| Test domain | Joint coverage @ nominal 0.90 | Vacuous intervals |
+|---|---|---|
+| synthetic (in-distribution) | 0.890 | 0% |
+| real, unweighted | 0.965 | 1.8% |
+| real, likelihood-ratio weighted | 0.965 | 1.8% |
+
+Median α = 0.1 half-widths: `log10_P` 1.81 dex · `log10_K` 0.65 dex · `e` 0.63 ·
+`ω` 3.02 rad. Weight ESS 203/400, 0% clipped. The Assumption-2.1 filter rejected
+47% of synthetic draws (bound ≈ 6.5 rv_std) — it is cutting the Student-t
+heavy-tail realisations that real data never shows, and it truncates the
+calibration distribution relative to pre-2026-07-14 runs.
+
+Read the full tables with:
+
+```bash
+less synthetic_generation/regression/mlp_psi/conformal_shift_report.txt
+```
+
+Re-running end to end needs the ψ checkpoint — see
+[Reproducibility status](#reproducibility-status).
+
+**4. CP vs the tabulated "Bayesian" intervals.**
+
+```bash
+python scripts/bayesian_interval_comparison.py
+```
+
+Reproduces the median width ratios CP / catalog-90%: **P 549× · K 15.7× ·
+e 6.5× · ω 3.1×**. The script prints its own caveats: the CP half-width is nearly
+constant across systems (CV < 0.1), so the ratio reflects a fixed near-vacuous
+width rather than per-system adaptivity, and the point predictor is one-sided on
+K and e.
+
+**5. Unit tests.**
+
+```bash
+python -m unittest discover -s tests    # 51 tests
+```
+
+Notable guards: `test_replay_synthetic_sample.py` pins the RNG-prefix contract
+that makes CSV row replay exact (a bug here silently folded the wrong system);
+`test_bayesian_interval_comparison.py` covers the CP-vs-catalog join on synthetic
+frames, independent of any generated CSV.
+
+---
+
+## Limitations
+
+State these plainly in the paper; they are properties of the problem, not bugs.
+
+- **ω is not recovered without a periastron epoch.** Real systems lack catalog
+  `t_peri`, and the epoch-free phase-fold anchor did not restore absolute ω
+  (e R² ≈ 0.08 epoch-free vs ≈ 0.50 with oracle `t_peri`). The CP interval for ω
+  is correspondingly near-vacuous (~3.0 rad of a 2π support) — valid, but
+  uninformative.
+- **The intervals are valid but wide.** For `log10_P` the 1.81 dex half-width
+  spans most of the prior support. The width is set by the weak nuisance point
+  estimate the univariate CP conditions on, and by period aliasing — not by the
+  noise scale. A σ-normalised (χ²) score did *not* tighten them, and profiling
+  the nuisance coordinates left median widths unchanged at n = 40.
+- **CP half-widths are nearly system-independent** (CV < 0.1 across held-out
+  hosts), so the CP-vs-Bayes ratio should not be read as per-system UQ.
+- **The residual GP cannot predict per-system noise amplitude from orbital
+  geometry.** Generative validation found a std ratio ≈ 1.76 with ≈ 0 std
+  log-correlation, which motivated adding `log10 σ` as a conditioning feature.
+  The related scientific finding: the famous heavy tails of *pooled* RV residuals
+  (excess kurtosis ~30) are a **scale mixture across systems**, not heavy tails
+  within systems — each system is roughly Gaussian at its own amplitude.
+- **The empirical priors couple the model to the current catalog** and will not
+  generalise beyond it. This is a deliberate choice (all distributional
+  assumptions come from H, not ad-hoc priors) with a real cost.
+
+---
+
+## Reproducibility status
+
+**Committed and directly checkable:** `data/` (raw curves, labels, splits,
+stats), `models/gp_residual_svgp.pt`, the 74-D and phase-fold regression CSVs,
+and the paper's CP outputs in `synthetic_generation/regression/mlp_psi/`.
+
+**Not committed** (gitignored, regenerable): `checkpoints/`, the pretrain caches,
+`synthetic_generation/datasets/synthetic_lsp_regression_10000.csv`.
+
+Three traps for anyone re-running things:
+
+> ⚠️ **The ψ checkpoint that produced the paper table is not in the repo.**
+> `checkpoints/` is gitignored, and `figures/paper/mlp_cp_quantiles.json` records
+> `checkpoint: 'checkpoints\regression_mlp_74.pt'` — a Windows path, i.e. a
+> collaborator's machine. Re-running `scripts/paper_rv_figures.py` with a
+> *different* local `regression_mlp_74.pt` silently produces different numbers
+> (observed: GJ 649 `P_pred` 714.6 d vs 40.1 d, all hosts collapsing toward the
+> mean) and overwrites the paper's table. Until that checkpoint is pinned, use
+> `paper_rv_figures.render_earthlike_tex(rows)` to re-render the LaTeX from the
+> committed CSV instead. Tracked as
+> [issue #10](https://github.com/George-Pulickan/rv-ml/issues/10).
+
+> ⚠️ **`synthetic_generation/regression/conformal_shift_metrics.json` is a stale
+> n_cal = 30 smoke run** from 2026-07-04 with the RF ψ. It is *not* the paper's
+> result and is trivially conservative. The paper's numbers live one directory
+> down, in `mlp_psi/`.
+
+> ⚠️ **`figures/regression_synthetic/benchmark.json` predates the replay fix**
+> (2026-07-11) and was computed with a bug that folded the wrong system per row.
+> Do not quote it until `slurm/regression_benchmark.sbatch` has been rerun.
+
+Checkpoints record only normalisation arrays and dimensions in `norm_stats` — no
+seed, epoch count, or source CSV — so two checkpoints cannot be told apart from
+the files alone. Stamping the training config at save time is the durable fix.
+
+---
+
+## Cluster jobs
+
+Heavy runs go to the RHUL cluster, never a laptop. Submit from the repo root.
+
+| Script | What it does | Est. wall |
+|---|---|---|
+| `slurm/gp_conformal.sbatch` | SVGP retrain (LS-γ + σ-conditioning) → regenerate both regression CSVs → `conformal_shift.py` at n_cal = 400 | 6–14 h, CPU |
+| `slurm/regression_benchmark.sbatch` | Regenerate phase-fold CSV → replay guard → Gates A/B/C + ablations → two-step → 109-D diagnostics → e-head ablation | 3–6 h, CPU |
+| `slurm/train_encoder.sbatch` | Two-phase encoder training (needs `data/pretrain_cache_v3.pt` and CUDA) | ~8 h, GPU |
+
+Run `gp_conformal` **before** `regression_benchmark` — the latter consumes the
+refreshed checkpoint. Set `--partition` (and `--account` if required) from
+`sinfo` first; both files mark those lines `ADJUST`.
+
+Still outstanding: the full-scale SVGP retrain + CP run (the committed checkpoint
+and CSVs predate the LS-γ, σ-conditioning and train-only-H changes), and a
+full-scale encoder run evaluated with `injection_recovery.py`.
+
+---
+
+## Coordination
+
+- Project log (who is doing what): <https://docs.google.com/document/d/1OZliqxJH3tyKIoUy9zpJO3d2aDqwG9eJZJ9lcB3FvqU/edit>
+- Overleaf draft: <https://www.overleaf.com/8188483955gysdcwmjrwhq#ac30a1>
+- Session-to-session working state, open decisions, and cluster access notes:
+  `handover.md` (gitignored, local only).
+
+Data sources: NASA Exoplanet Archive bulk RV download (1071 curves) and the
+Planetary Systems table via TAP.
+
+### References
+
+- Kipping, D. M. 2013, MNRAS 434, L51 — eccentricity prior Beta(0.867, 3.03)
+- Zechmeister & Kürster 2009, A&A 496, 577 — generalised Lomb–Scargle
+- Foreman-Mackey et al. 2017, AJ 154, 220 — celerite
+- Titsias 2009; Hensman et al. 2013, 2015 — sparse variational GPs
+- Tibshirani, Barber, Candès & Ramdas 2019 — conformal prediction under covariate shift
+- Howard et al. 2010, Science 330, 653 — RV multiplicity fraction

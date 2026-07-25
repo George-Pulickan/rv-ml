@@ -380,7 +380,8 @@ def _run_cell(
         t_peri = float(t.min()) + rng.uniform() * P
 
         rv_clean = rv_np(t, P, K, e, omega, t_peri)
-        noise    = _inject_noise(t, sigma, rng)
+        # _inject_noise returns (noise, backend_name) — see synthetic_dataset.
+        noise, _ = _inject_noise(t, sigma, rng)
         rv_obs   = rv_clean + noise
 
         row = {"P_true": P, "snr": snr, "K_true": K,

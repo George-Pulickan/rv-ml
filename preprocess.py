@@ -446,20 +446,9 @@ class RVDataset:
         return x, lsp, theta_raw, info
 
 
-# --------------------------------------------------------------------------- #
-# Collate for DataLoader                                                        #
-# --------------------------------------------------------------------------- #
-
-def collate_fn(batch):
-    """Drop invalid items; stack valid ones into batched tensors."""
-    import torch
-    xs, thetas, infos = zip(*batch)
-    valid = [i for i, info in enumerate(infos) if info.get('valid', True)]
-    if not valid:
-        return None, None, []
-    return (torch.stack([xs[i] for i in valid]),
-            torch.stack([thetas[i] for i in valid]),
-            [infos[i] for i in valid])
+# Collation for DataLoader lives in train.py (`collate_rv`): it is the only
+# consumer, and it needs the per-system scaling metadata (t_span/t_min/rv_std)
+# that the reconstruction loss depends on.
 
 
 # --------------------------------------------------------------------------- #
