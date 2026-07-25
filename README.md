@@ -88,6 +88,7 @@ indirectly through a CSV-generation script.
 |---|---|
 | `conformal.py` | Unsupervised conformal prediction: turns the Step-5 regressor's point predictions into prediction sets via the reconstruction-residual score `‖Kepler(θ)−y‖` (no ground-truth θ). Runs coverage (E1) + monotonicity (E2). Score variants: profiled over nuisance coords (`--profile {none,K,Keomega}`, default K) and σ-normalized χ² (`--chi2`, opt-in) |
 | `conformal_shift.py` | Split-CP calibrated on fake data, tested on real (Nicolò's 2026-07 spec): naive score `\|ψ(y)−θ̄\|` (ground-truth θ̄) vs surrogate score (θ* = argmin of the L1 reconstruction error by gradient descent, init at θ̄/tabulated), likelihood-ratio reweighting `p_real/p_fake` via a real-vs-fake discriminator (Tibshirani et al. 2019 weighted quantile), and the normalized scores `s/(γ+v_y)` and two-factor `s_c/(γ+v_y+v_c)` (v_c = surrogate-label-error model) with tuned γ. ψ trains on the 512-bin raw-LSP dataset by default (feature columns follow `--csv`) |
+| `scripts/paper_rv_figures.py` | Paper deliverables: Fig 1 (held-out phase-fold), Fig 2 (P/K/e pred-vs-true), and the `earthlike_top10` table (`figures/paper/earthlike_top10.{csv,tex}`) — per-system papernorm CP half-widths next to the NASA catalog `*err1/err2`. `render_earthlike_tex(rows)` re-renders the LaTeX from the CSV alone (no checkpoint needed). **Do not regenerate the table without the original checkpoint** — see the reproducibility warning below. |
 | `scripts/bayesian_interval_comparison.py` | **CP vs Bayesian** (Nicolò's Task 4): joins the CP α=0.1 half-widths (`figures/paper/earthlike_top10.csv`) against the catalog "Bayesian" intervals — tabulated NASA Archive `*err1/err2` (`data/labels.csv`) — for held-out hosts. Emits a tidy CSV, an Overleaf `.tex` summary, and a CP-vs-Bayes half-width scatter. Comparison conventions (P/K in log10 dex; catalog σ→interval via `--sigma-scale`, default 1.6449 = 90%; near-vacuous ω flagged) are isolated at the top of the file. |
 
 **Diagnostics & misc**
@@ -265,14 +266,15 @@ A work-in-progress draft about the methodology and related work is here: https:/
 Nicolò (2026-07-23) asked George to coordinate and split the remaining paper work across
 George / Shuaib / Daksh. The three workstreams, with current repo status:
 
-1. **Plots + table — essentially done.** `scripts/paper_rv_figures.py` (PR #7) regenerates
+1. **Plots + table — done.** `scripts/paper_rv_figures.py` (PR #7) regenerates
    Fig 1 (phase-fold), Fig 2 (P/K/e pred-vs-true), and the `earthlike_top10` table with
-   per-system papernorm CP half-widths. *Remaining:* make sure Overleaf pulls the latest PNGs,
-   not the old 5-panel ω plot.
+   per-system papernorm CP half-widths; PR #9 added the NASA catalog `*err1/err2` alongside them,
+   so the table now shows CP and "Bayesian" uncertainties side by side. *Remaining:* make sure
+   Overleaf pulls the latest PNGs, not the old 5-panel ω plot.
 2. **Method write-up in Overleaf — not started (lives in Overleaf, not the repo).** ψ = 74-D MLP;
    UQ = weighted split-conformal under covariate shift. Cite Tibshirani et al. 2019. This is the
    un-started workstream.
-3. **Bayesian-interval comparison — scaffolded** in `scripts/bayesian_interval_comparison.py`
+3. **Bayesian-interval comparison — done** in `scripts/bayesian_interval_comparison.py`
    (PR #8): CP α=0.1 half-widths vs tabulated catalog 1σ for held-out hosts. Live result — CP
    intervals are honest but ~550× / 16× / 6.5× / 3× the tabulated Bayes interval for P / K / e / ω.
    *For Nicolò to confirm:* P/K compared in log10 dex; catalog σ→interval scale (`--sigma-scale`,
@@ -291,5 +293,12 @@ George / Shuaib / Daksh. The three workstreams, with current repo status:
 **Pre-submit hygiene:** anonymize author names / repo URLs for review; confirm AAAI style + page
 limit; add a reproducibility supplement (seed, checkpoint path, CSV, and the CP-run CLI).
 
-> **Merge order:** PR #7 before PR #8 — the comparison script's default input
-> (`earthlike_top10.csv`) lands with #7.
+> ⚠️ **The paper table is not reproducible from this repo (open issue, blocks the reproducibility
+> supplement).** `checkpoints/` is gitignored, and `figures/paper/mlp_cp_quantiles.json` records
+> `checkpoint: 'checkpoints\regression_mlp_74.pt'` — a Windows path, i.e. the committed
+> `earthlike_top10.*` numbers come from an MLP checkpoint that lives on one collaborator's machine.
+> Re-running `scripts/paper_rv_figures.py` with a *different* local `regression_mlp_74.pt` silently
+> produces different predictions (observed: GJ 649 `P_pred` 714.6 d vs 40.1 d, all hosts collapsing
+> toward the mean) and overwrites the paper's numbers. **Until that checkpoint is pinned somewhere
+> fetchable (it is only ~77 KB — committing it is the simplest fix), do not regenerate the table**;
+> use `render_earthlike_tex(rows)` to re-render the LaTeX from the committed CSV instead.
