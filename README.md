@@ -293,12 +293,16 @@ George / Shuaib / Daksh. The three workstreams, with current repo status:
 **Pre-submit hygiene:** anonymize author names / repo URLs for review; confirm AAAI style + page
 limit; add a reproducibility supplement (seed, checkpoint path, CSV, and the CP-run CLI).
 
-> ⚠️ **The paper table is not reproducible from this repo (open issue, blocks the reproducibility
-> supplement).** `checkpoints/` is gitignored, and `figures/paper/mlp_cp_quantiles.json` records
+> ⚠️ **The paper table is not reproducible from this repo — [issue #10](https://github.com/George-Pulickan/rv-ml/issues/10),
+> blocks the reproducibility supplement.** `checkpoints/` is gitignored, and `figures/paper/mlp_cp_quantiles.json` records
 > `checkpoint: 'checkpoints\regression_mlp_74.pt'` — a Windows path, i.e. the committed
 > `earthlike_top10.*` numbers come from an MLP checkpoint that lives on one collaborator's machine.
 > Re-running `scripts/paper_rv_figures.py` with a *different* local `regression_mlp_74.pt` silently
 > produces different predictions (observed: GJ 649 `P_pred` 714.6 d vs 40.1 d, all hosts collapsing
 > toward the mean) and overwrites the paper's numbers. **Until that checkpoint is pinned somewhere
-> fetchable (it is only ~77 KB — committing it is the simplest fix), do not regenerate the table**;
-> use `render_earthlike_tex(rows)` to re-render the LaTeX from the committed CSV instead.
+> fetchable (it is only ~77 KB — committing it with `git add -f` is the simplest fix), do not
+> regenerate the table**; use `render_earthlike_tex(rows)` to re-render the LaTeX from the committed
+> CSV instead. Note the local/`laptop-sync` `regression_mlp_74.pt` is **not** the one — it is a
+> 15-epoch smoke artifact from 07-14 and predicts near the mean. Checkpoint `norm_stats` records no
+> seed/epochs/source-CSV, so checkpoints cannot be told apart from the files alone; stamping the
+> training config at save time is the durable fix.
