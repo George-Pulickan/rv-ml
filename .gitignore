@@ -9,6 +9,14 @@ nicolo_reply_draft.md
 nicolo_reply_20260726.md
 handover.md
 
+# Local paper working docs. These quote / discuss an anonymised submission
+# under review, and `main` is public — they must never be committed. They
+# previously described themselves as gitignored while merely being untracked.
+paper_corrections.md
+paper_code_audit.md
+paper_section4_draft.tex
+meeting_*.md
+
 checkpoints/
 *.pt
 *.pdf
