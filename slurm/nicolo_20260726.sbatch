@@ -46,9 +46,15 @@
 #      bring you to a nearly flat region ... What happens if we ignore omega?").
 #      4000 steps x 25 draws is the slow part (~80 s/draw locally).
 #
-# Prerequisite that is NOT automated: a fresh GitHub PAT in the cluster clone's
-# .git/config.  The old one expired ~2026-07-21, so step 5's push fails
-# silently without it and rhul-results still will not appear.
+# Prerequisite that is NOT automated: a valid GitHub PAT in the cluster clone's
+# .git/config.  Re-verified 2026-07-26; it expires 2026-08-13, after which it
+# must be reissued or step 5 cannot push.  (An earlier note here claimed it had
+# expired ~2026-07-21 -- that was wrong.)
+#
+# Step 5 will fail anyway for an unrelated reason: rhul-results already exists
+# on GitHub with the 2026-07-25 results and has diverged from main, so the push
+# is rejected non-fast-forward.  Non-fatal -- artifacts stay on disk -- but they
+# then need pushing to a fresh branch or rsyncing off by hand.
 # -------------------------------------------------------------------------
 
 set -euo pipefail
@@ -73,7 +79,8 @@ CKPT_DIR=checkpoints/psi_20260726
 mkdir -p "$CKPT_DIR"
 
 # ---- 1. psi retrain across seeds -----------------------------------------
-# ~15 s each; the spread is what we report, not any single seed.
+# ~65 s each on a CIM ts-node (measured 2026-07-26; the "~15 s" quoted here
+# before was wrong).  The spread is what we report, not any single seed.
 for SEED in 0 1 2 7 42 123; do
     srun python regression.py --feature-set 74 --epochs 200 --seed "$SEED" \
         --real-split test \
