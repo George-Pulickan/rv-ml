@@ -94,6 +94,37 @@ from generate_synthetic_regression_csv import _masked_observations  # noqa: E402
 COORDS = ["log10_P", "log10_K", "e", "omega"]
 D = len(COORDS)
 
+# Named coordinate sets.  omega is not identifiable at this SNR — its median CP
+# half-width exceeds pi, i.e. the interval wraps the full circle — so the paper
+# reports P, K, e and states omega's non-identifiability rather than tabulating
+# a number that reads like a measurement (Nicolò, 2026-07-26: "Let's skip
+# showing and using omega as a target").  omega is *not* removed from theta5:
+# the decoder still needs it, GD still optimises it, and it still enters the
+# reconstruction through h/k.  Only the reported CP coordinates change, which
+# also drops the Bonferroni divisor from 4 to 3.
+COORD_SETS = {
+    "PKew": ["log10_P", "log10_K", "e", "omega"],
+    "PKe": ["log10_P", "log10_K", "e"],
+}
+
+
+def set_coords(names: list[str]) -> None:
+    """Rebind the reported CP coordinates in place.
+
+    Mutates the COORDS list rather than reassigning it, so modules that did
+    `from conformal import COORDS` see the change.  Use len(COORDS) rather than
+    the D constant anywhere the Bonferroni divisor matters.
+    """
+    unknown = [n for n in names if n not in COORD_SETS["PKew"]]
+    if unknown:
+        raise ValueError(f"unknown coordinates: {unknown}")
+    COORDS[:] = list(names)
+
+# Minimum distinct observing nights for a real RV series to be usable.  Series
+# below this are single-night transit/RM sequences that cannot constrain an
+# orbital period; see make_real.  Label-free by construction.
+MIN_NIGHTS = 5
+
 
 # ---------------------------------------------------------------------------
 # System construction: curve tensors (for the decoder) + features + true theta
@@ -102,6 +133,21 @@ D = len(COORDS)
 
 def _theta_to_omega(theta5: np.ndarray) -> float:
     return float(np.arctan2(theta5[4], theta5[3]))
+
+
+def curve_times_days(curve: dict, mask: np.ndarray | None = None) -> np.ndarray:
+    """Absolute observation times in days, reconstructed in float64.
+
+    t_norm is stored float32 (fine: it lives in [0, 1]), but t_min is a JD near
+    2.45e6 where float32 spacing is 0.25 d.  Doing t_norm*t_span + t_min in
+    float32 therefore snaps distinct epochs onto a coarse grid: 20 of the 57
+    real test series lost distinct epochs that way (51 Peg 256 -> 110), and one
+    collapsed far enough to yield an all-NaN periodogram, which silently
+    poisoned delta_c.  Always reconstruct times through this helper.
+    """
+    m = (curve["mask"] > 0.5) if mask is None else mask
+    t_norm = np.asarray(curve["t_norm"], dtype=np.float64)[m]
+    return t_norm * float(curve["t_span"]) + float(curve["t_min"])
 
 
 def _curve_from_x(x: np.ndarray, info: dict) -> dict:
@@ -135,7 +181,32 @@ def make_synthetic(n: int, seed: int) -> list[dict]:
     return systems
 
 
-def make_real(split: str, sigma_min: float, sigma_max: float) -> list[dict]:
+def _distinct_nights(curve: dict) -> int:
+    """Number of distinct calendar nights spanned by a curve's observations."""
+    m = np.asarray(curve["mask"], dtype=bool)
+    t = np.asarray(curve["t_norm"], dtype=float)[m] * float(curve["t_span"]) + float(curve["t_min"])
+    if t.size == 0:
+        return 0
+    return int(np.unique(np.floor(t)).size)
+
+
+def make_real(split: str, sigma_min: float, sigma_max: float,
+              min_nights: int = MIN_NIGHTS, one_per_host: bool = False) -> list[dict]:
+    """Real single-planet systems for one split.
+
+    ``min_nights`` drops series whose observations fall on fewer than that many
+    distinct nights.  These are Rossiter-McLaughlin / transit-night sequences:
+    high cadence within one night, so they carry no information about an orbital
+    period of days or longer (e.g. HD 17156 with 13 points in 0.102 d against a
+    21.2 d period).  The cut is deliberately label-free — it uses only the
+    observing pattern, never the tabulated P — so it selects the test set
+    without consulting the values we are later scored against.
+
+    ``one_per_host`` keeps only the best-sampled series per star (most nights,
+    then longest baseline).  The corpus stores one row per RV file, so a single
+    star can contribute several correlated series that share the same true
+    theta; enable this to make the test points independent across stars.
+    """
     ds = RVDataset(split, normalize=False, single_planet=True)
     systems = []
     for i in range(len(ds)):
@@ -148,16 +219,29 @@ def make_real(split: str, sigma_min: float, sigma_max: float) -> list[dict]:
         med_sigma = float(np.median(xm[2] * float(info["rv_std_ms"])))
         if not (sigma_min <= med_sigma <= sigma_max):
             continue
+        curve = _curve_from_x(x, info)
+        n_nights = _distinct_nights(curve)
+        if n_nights < min_nights:
+            continue
         feats = _summary_row(xm, info, lsp)
         systems.append({
-            "curve": _curve_from_x(x, info),
+            "curve": curve,
             "features": np.array([feats[c] for c in FEATURES], dtype=float),
             "feat_row": feats,
             "lsp": np.asarray(lsp, dtype=float),
             "theta5": np.asarray([float(theta[k]) for k in range(5)], dtype=float),
             # Carried so downstream figures can label systems by star.
             "host": str(info.get("host", "")),
+            "n_nights": n_nights,
         })
+    if one_per_host:
+        best: dict[str, dict] = {}
+        for s in systems:
+            key = s["host"]
+            cur = best.get(key)
+            if cur is None or (s["n_nights"], s["curve"]["t_span"]) > (cur["n_nights"], cur["curve"]["t_span"]):
+                best[key] = s
+        systems = [best[h] for h in sorted(best)]
     return systems
 
 
@@ -348,7 +432,7 @@ def _calib_scores(scorer, calib, theta_hats, profile_coords, pgrids) -> dict:
 
 def _bonferroni_q(calib_scores_c: np.ndarray, alpha: float) -> float:
     n = len(calib_scores_c)
-    level = 1.0 - alpha / D
+    level = 1.0 - alpha / len(COORDS)
     k = min(int(math.ceil((n + 1) * level)), n)          # rank (1-indexed)
     return float(np.sort(calib_scores_c)[k - 1])
 
@@ -398,7 +482,7 @@ def run_e1(scorer, rf, calib, test_syn, test_real, grids, alphas, out_dir, fig_d
     pre_syn = _precompute_test(scorer, test_syn, hats(test_syn), grids, profile_coords, pgrids)
     pre_real = _precompute_test(scorer, test_real, hats(test_real), grids, profile_coords, pgrids)
 
-    report = {"d": D, "coords": COORDS, "n_cal": len(calib),
+    report = {"d": len(COORDS), "coords": list(COORDS), "n_cal": len(calib),
               "n_test_syn": len(test_syn), "n_test_real": len(test_real),
               "profile_coords": list(profile_coords),
               "alphas": alphas, "synthetic": {}, "real": {}}
@@ -457,7 +541,8 @@ def run_e2(scorer, systems, out_dir, fig_dir, n_offsets=25, n_sys=250, suffix=""
             curves[c][si] = profiled_min(scorer, th_true, c, vals,
                                          profile_coords, pgrids, s["curve"])
 
-    fig, axs = plt.subplots(1, D, figsize=(4.2 * D, 4.2))
+    n_c = len(COORDS)
+    fig, axs = plt.subplots(1, n_c, figsize=(4.2 * n_c, 4.2))
     mono = {}
     for ax, c in zip(axs, COORDS):
         mean = curves[c].mean(axis=0)
@@ -489,7 +574,7 @@ def plot_width_comparison(report_by_mode: dict, alpha: float, fig_dir: Path) -> 
     modes = list(report_by_mode)
     fig, axs = plt.subplots(1, 2, figsize=(13, 5))
     for ax, dom in zip(axs, ["synthetic", "real"]):
-        x = np.arange(D)
+        x = np.arange(len(COORDS))
         w = 0.8 / len(modes)
         for k, m in enumerate(modes):
             widths = report_by_mode[m][dom][f"{alpha:.2f}"]["per_coord_median_width"]

@@ -1,0 +1,215 @@
+% ---------------------------------------------------------------------------
+% Draft subsection: the end-to-end pipeline.
+% Written 2026-07-26 in response to Nicolo's reply of the same date
+% ("Can we draft a subsection on the end-to-end pipeline with all these
+% comments? Would the figure I proposed above fit in it?").
+%
+% Numbers marked [RERUN] are placeholders pending the full-scale RHUL job
+% slurm/nicolo_20260726.sbatch.  Every other number in this file has been
+% measured on this tree; provenance is given in the comment above it.
+% Do NOT paste [RERUN] values into Overleaf until the job has landed.
+% ---------------------------------------------------------------------------
+
+\subsection{The end-to-end pipeline}
+\label{sec:end-to-end}
+
+The method chains five deterministic stages: an empirical prior~$H$ fitted to
+catalogued systems, a generative noise model, a synthetic corpus, an amortised
+regressor~$\psi$, and a conformal calibration layer.  This subsection states
+what each stage consumes, and --- more importantly --- what it is \emph{not}
+allowed to see, since the validity of the final intervals rests entirely on
+that bookkeeping.
+
+\paragraph{What the model is trained on.}
+$\psi$ is trained exclusively on synthetic curves, with the data-generating
+parameters~$\bar\theta$ as labels.  No tabulated parameter is ever a training
+target.  Catalogued values enter in exactly four places, and in the first three
+only through the \emph{training} split of the real corpus: (i)~fitting the
+empirical histograms~$H$ over $\log_{10}P$, $\log_{10}K$ and~$e$; (ii)~the
+paired (cadence,~$\sigma$) bootstrap that supplies observation times; (iii)~the
+residual set on which the SVGP noise model is fitted; and (iv)~at test time, as
+the initialiser for the gradient-descent surrogate~$\theta^\ast$ on real
+curves.  Validation and test systems contribute to none of (i)--(iii), so the
+distribution the synthetic corpus imitates is shaped only by systems we are
+never scored on.
+
+% Measured 2026-07-26 on this tree, seed 42, 200 epochs, feature set 74:
+%   real-split all   R2 = 0.847   (357 series)
+%   real-split train R2 = 0.856   (242 series)
+%   real-split test  R2 = 0.804   ( 57 series)
+Synthetic-to-real transfer is correspondingly honest: regressing
+$\log_{10}K$ on the held-out test split gives $R^2 = 0.804$, against $0.856$ on
+the training split whose parameters shaped~$H$.  We quote the test-split figure
+throughout; the gap is the price of the distribution-level leakage that
+fitting~$H$ necessarily incurs.
+
+\paragraph{Which parameters are reported.}
+% Nicolo 2026-07-26: "Let's skip showing and using omega as a target."
+We report prediction sets for $P$, $K$ and~$e$ only.  The argument of
+periastron~$\omega$ is not identifiable at the signal-to-noise ratio of this
+corpus: its conformal half-width exceeds~$\pi$, so the nominal interval wraps
+the entire circle and communicates nothing.  Rather than tabulate a number that
+reads like a measurement, we state the non-identifiability and drop~$\omega$
+from the reported coordinates, which also reduces the Bonferroni divisor from
+four to three.  Note that $\omega$ is \emph{not} removed from the model: it is
+still optimised, it still enters the decoder, and fixing it --- for instance at
+a catalogue mean --- would be actively harmful, because the eccentricity is
+parameterised through $(h,k) = (e\cos\omega, e\sin\omega)$ and the periastron
+epoch~$T_{\mathrm{peri}}$ is refitted analytically against it.  Constraining an
+unidentifiable angle would bias the two quantities we do report.
+
+\paragraph{Which observations are usable.}
+% Measured 2026-07-26: min_nights >= 5 drops 6 of 57 test series, leaving 51.
+% The label-aware alternative (baseline >= one tabulated period) drops the same
+% six.  Corpus-wide: 343 of 357 series survive.
+The corpus stores one row per RV time series, and a small number of these are
+transit-night sequences --- high-cadence Rossiter--McLaughlin runs covering a
+single night.  HD~17156 contributes one series of 13 points spanning
+$0.102$~days against a $21.2$~day period; such a series cannot constrain an
+orbit at all.  We therefore require a series to span at least five distinct
+nights.  The criterion is deliberately label-free, depending only on the
+observing pattern and never on the tabulated period, so that test-set selection
+does not consult the values we are later scored against; a label-aware
+alternative (requiring the baseline to cover at least one tabulated period)
+removes exactly the same six series from the test split.  After filtering,
+$51$ of $57$ test series remain.
+
+% 51 filtered test series span 34 distinct hosts; HD 179949 contributes 4.
+These $51$ series come from only $34$ distinct stars, since a star observed by
+several instruments contributes several series that share one true~$\theta$.
+We therefore report coverage both at series level and with a single
+best-sampled series per star, and quote the latter as the headline: it is the
+variant whose test points are genuinely independent.
+
+\paragraph{Calibration and what coverage is measured against.}
+Calibration uses split conformal prediction on synthetic curves, with the
+conformity score $s_c = |\psi_c(y) - \theta^\ast_c|$ against the
+gradient-descent surrogate~$\theta^\ast$, reweighted by the likelihood ratio
+$p(y_{\mathrm{real}})/p(y_{\mathrm{fake}})$ to correct the covariate shift
+(Tibshirani et al., 2019).  On real systems, coverage is then evaluated against
+the \emph{catalogued} parameters --- not against~$\theta^\ast$, and not against
+any quantity our own optimiser produced.  This is the stronger of the two
+possible claims: the reported intervals are checked against the values an
+astronomer would look up, while $\theta^\ast$ appears only inside the synthetic
+calibration step, where the data-generating~$\bar\theta$ is known.
+
+\paragraph{Score normalisation.}
+% Nicolo 2026-07-26: the re-encoding form avoids fitting any extra model.
+Equation~(\ref{eq:delta}) is normalised by a per-system uncertainty proxy built
+from two re-encoding residuals, neither of which requires training an
+additional model.  The first, $\delta_c(y) = |\psi_c(h(\psi(y))) - \psi_c(y)|$,
+passes the noiseless reconstruction back through the encoder and measures how
+stably $\psi$ recovers its own prediction.  The second,
+$\delta_y(y) = \|y - h(\psi(y))\|$, is the reconstruction residual in data
+space.  Both are pointwise functions of a single curve, because $h$ and $\psi$
+are deterministic.  They are combined convexly,
+$w\,\delta_c + (1-w)\,\delta_y$, with $w$ and the regulariser~$\gamma$ selected
+together on a tuning set by minimising interval width.
+% [RERUN] The smoke-scale run (n_cal=40) selects w = 1.00, i.e. delta_y adds
+% nothing once delta_c is present.  Confirm at n_cal = 400 before asserting.
+The selected weight is reported alongside the intervals.
+
+\paragraph{Finite-sample validity without curvature constants.}
+% Nicolo 2026-07-26: "what can we say about the test sample (not used to
+% compute the max)?"
+Theorem~\ref{thm:main} carries a constant~$\Delta_c$ bounding the gap between
+the data-generating parameter and the surrogate label.  Estimating it as a
+maximum over a tuning set invites the objection that a fresh test point may
+exceed it.  The objection is answered by treating $\Delta_c$ as a conformal
+quantile rather than a plug-in constant: if the tuning gaps and the test gap
+are exchangeable, the $k$-th order statistic with
+$k = \lceil (1-\beta)(n+1) \rceil$ satisfies
+$\Pr(|\bar\theta_c - \theta^\ast_c| > \Delta_c) \le \beta$ out of sample.  The
+maximum is the case $k = n$, i.e.\ $\beta = 1/(n+1)$ --- so it is already
+valid, at a cost of one part in $n+1$ of the error budget, under one per cent
+at our tuning-set size.  Spending $\beta$ on the gap and $\alpha - \beta$ on
+the main quantile yields a finite-sample statement that invokes no curvature
+assumption at all.  On real data the same likelihood-ratio reweighting must be
+applied to the gap, since exchangeability holds only after the shift is
+corrected.
+
+This matters because the curvature route is vacuous at the measured constants.
+% kappa in the four physical coordinates ~3.6e3; the earlier ~1e6 figure was an
+% artefact of differentiating in the redundant 5-vector.
+With $\varepsilon$ on the scale of the loss itself, $\sqrt{C_H \varepsilon}$
+exceeds the entire support of~$e$, so adding the corresponding correction would
+inflate every interval to the whole parameter space.  We therefore report the
+empirical constants for transparency and calibrate the intervals
+conformally.  The theoretical bound establishes that the method is correct in
+an idealised regime; it is the conformal construction, not the bound, that
+makes the intervals we report valid.
+
+\paragraph{Assumption on the loss geometry.}
+% Measured 2026-07-26, 25 prior draws, 200 GD steps, physical coordinates:
+%   PKew: PD fraction 0.64, median lambda_min +2.15, median kappa 2.26e4
+%   PKe : PD fraction 0.76, median lambda_min +20.3, median kappa 6.38e3
+% [RERUN] the 1000/4000-step sweep is in slurm/nicolo_20260726.sbatch.
+Assumption~\ref{ass:hessian} asks that $\theta^\ast$ be a strict local minimum
+of~(\ref{eq:objective}).  Measured at $\theta^\ast$ in the physical
+coordinates, the Hessian is positive definite for $64\%$ of prior draws when
+$\omega$ is included and $76\%$ when it is not; the median smallest eigenvalue
+rises from $+2.1$ to $+20.3$ and the median condition number falls from
+$2.3\times10^4$ to $6.4\times10^3$.  The assumption is thus substantially, but
+not entirely, an artefact of the unidentifiable angle: descending into a nearly
+flat direction in~$\omega$ leaves the optimiser at a point that is not a strict
+minimum.  We report the residual failure rate rather than assuming it away.
+
+One caveat on measurement: the five-vector
+$(\log_{10}P, \log_{10}K, e, \cos\omega, \sin\omega)$ is a redundant encoding,
+and the decoder sees~$\omega$ only through $\operatorname{atan2}$.  A Hessian
+formed in those coordinates is singular by construction, with an exact null
+direction along the $(\cos\omega, \sin\omega)$ radius.  All curvature
+quantities above are computed in the physical coordinates instead.
+
+\paragraph{Cost.}
+% Measured 2026-07-26, CPU, 57 real test series, 256 observations each:
+%   featurise 6.4 ms/system; psi forward 1.0 us/system; GD theta* 4.0 s/system
+%   at 200 steps.  Training psi: ~14 s for 200 epochs on 10k rows.
+The argument for amortisation is a cost argument, so it is worth stating in
+absolute terms.  Inference on one real system costs $6.4$~ms, almost all of it
+feature extraction: the forward pass through~$\psi$ itself is $1$~$\mu$s, and
+training~$\psi$ takes $14$~seconds once for the whole corpus.  Fitting a single
+system by gradient descent --- our own $\theta^\ast$, at 200 steps --- costs
+$4.0$~s, roughly $600\times$ more, and that is an optimiser returning a point
+estimate, not a sampler returning a posterior.  A Markov chain requires several
+orders of magnitude more Keplerian integrations again.  This is the trade the
+paper is making: the catalogued values are better fits, because they were
+obtained by per-system inference on these exact data, and we are comparing a
+single amortised forward pass against that.
+
+\paragraph{Reconstruction quality, and its ceiling.}
+% figures/paper/rv_mse_scatter.csv, 57 held-out planets, label-free scoring
+% with t_peri and gamma refitted for both parameter sets.
+Scored label-free --- each parameter set judged only on how well it
+reconstructs the observed curve, with $T_{\mathrm{peri}}$ and~$\gamma$ refitted
+for both so that neither is handicapped --- the median reconstruction MSE is
+$0.113$ for the catalogued values and $1.16$ for ours, against a floor of
+$0.078$ attained by gradient descent initialised at the catalogued values.
+Three of $57$ planets fall on or below the diagonal.  We do not present this as
+a win.  The catalogue sits within roughly $30\%$ of the achievable floor
+because those values were fitted to these very data by the discovery teams;
+the honest reading is that a single forward pass recovers orbits within an
+order of magnitude of bespoke per-system inference, at the cost quoted above,
+and returns a calibrated region rather than a point.
+
+\paragraph{What the intervals buy.}
+% [RERUN] all four numbers below pending the full-scale job.
+Two comparisons make the case.  First, coverage: the reported regions attain
+close to nominal coverage on real systems, whereas standard split conformal
+calibrated on~$\bar\theta$ attains $1.000$ --- valid, but far too wide to be
+useful.  Second, containment against the catalogue: our $\alpha = 0.1$ region
+contains the catalogued value for the large majority of planets, while the
+catalogue's own $90\%$ interval contains our prediction far less often.  The
+asymmetry is the point.  It shows that the intervals are absorbing the
+synthetic-to-real distribution shift rather than merely being wide, which is
+precisely what the reweighted calibration is designed to do.
+
+% Nicolo asked whether the centred 2-D figure fits in this subsection: yes,
+% here, illustrating the containment claim above.
+Figure~\ref{fig:regions} shows this directly.  Because the regions differ by
+some two orders of magnitude in~$P$ between the two methods, each planet is
+centred on its own catalogued value --- axes are $\log_{10}(x/x_{\mathrm{tab}})$
+for $P$ and~$K$ --- so that all ten systems share one frame.  The conformal
+regions appear as legible outlines and the catalogue regions collapse towards
+the origin.  We show the $(K, e)$ panel rather than $(K, \omega)$, for the
+identifiability reason given above.

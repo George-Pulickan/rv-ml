@@ -104,11 +104,15 @@ import torch
 
 from conformal import (
     COORDS,
+    COORD_SETS,
     D,
+    MIN_NIGHTS,
     SG,
+    set_coords,
     Scorer,
     _curve_from_x,
     _theta_to_omega,
+    curve_times_days,
     _true_coord,
     histogram_grids,
     make_real,
@@ -172,13 +176,21 @@ def _coord_abs_err(theta_a5: np.ndarray, theta_b5: np.ndarray, coord: str) -> fl
 
 
 def _gd_batch(decoder, init5s: np.ndarray, curves: list, steps: int,
-              lr: float) -> np.ndarray:
-    """Batched Adam minimisation of the masked mean-absolute reconstruction
-    error (Nicolò's E_t |y_t - kepler(theta', t)|, in rv_std units) over a set
-    of curves sharing one padded length.  t_peri / gamma are refit analytically
-    inside the decoder every step (their refit is detached — envelope-style;
-    gradients flow through the RV evaluation).  The best iterate per curve is
-    kept, so the fit can only improve on the initialization."""
+              lr: float, objective: str = "sq") -> np.ndarray:
+    """Batched Adam minimisation of the masked reconstruction error (in rv_std
+    units) over a set of curves sharing one padded length.
+
+    objective="sq" (default) minimises the mean *squared* residual, which is
+    eq (2)'s ||h(theta) - y||^2 and the loss whose Hessian Assumption 3.2 talks
+    about.  objective="l1" is the earlier mean-absolute form (Nicolò's literal
+    E_t |y_t - kepler(theta', t)|); it is kept for reproducing pre-2026-07-26
+    numbers, but theta* and the assumption were then defined on different
+    objectives.
+
+    t_peri / gamma are refit analytically inside the decoder every step (their
+    refit is detached — envelope-style; gradients flow through the RV
+    evaluation).  The best iterate per curve is kept, so the fit can only
+    improve on the initialization."""
     th = torch.as_tensor(np.asarray(init5s), dtype=torch.float32).clone()  # (B,5)
     t_norm = torch.from_numpy(np.stack([c["t_norm"] for c in curves]))
     rv_obs = torch.from_numpy(np.stack([c["rv_obs"] for c in curves]))
@@ -190,7 +202,9 @@ def _gd_batch(decoder, init5s: np.ndarray, curves: list, steps: int,
 
     def losses(theta: torch.Tensor) -> torch.Tensor:
         rv_pred = decoder(theta, t_norm, t_span, t_min, rv_obs, rv_std, mask)
-        return ((rv_obs - rv_pred).abs() * mask).sum(dim=1) / n            # (B,)
+        resid = rv_obs - rv_pred
+        dev = resid.abs() if objective == "l1" else resid ** 2
+        return (dev * mask).sum(dim=1) / n                                 # (B,)
 
     th.requires_grad_(True)
     opt = torch.optim.Adam([th], lr=lr)
@@ -215,7 +229,7 @@ def _gd_batch(decoder, init5s: np.ndarray, curves: list, steps: int,
 
 
 def surrogate_fit_gd(decoder, init5s: list, systems: list, steps: int = 200,
-                     lr: float = 0.02) -> list:
+                     lr: float = 0.02, objective: str = "sq") -> list:
     """Surrogate labels for a list of systems, batched by padded curve length,
     initialized at init5s (= theta_bar on synthetic curves, tabulated values on
     real ones, per Nicolò 2026-07)."""
@@ -225,7 +239,7 @@ def surrogate_fit_gd(decoder, init5s: list, systems: list, steps: int = 200,
         by_len.setdefault(len(s["curve"]["t_norm"]), []).append(i)
     for idx in by_len.values():
         fitted = _gd_batch(decoder, np.asarray([init5s[i] for i in idx]),
-                           [systems[i]["curve"] for i in idx], steps, lr)
+                           [systems[i]["curve"] for i in idx], steps, lr, objective)
         for k, i in enumerate(idx):
             out[i] = fitted[k]
     return out
@@ -264,7 +278,7 @@ class NoiseProxy:
         th = torch.as_tensor(theta5[None, :], dtype=torch.float32)
         rv_pred = self.decoder(th, t_norm, t_span, t_min, rv_obs, rv_std, mask)[0].numpy()
         m = curve["mask"] > 0.5
-        t_days = curve["t_norm"][m] * curve["t_span"] + curve["t_min"]
+        t_days = curve_times_days(curve, m)
         return rv_pred[m] * curve["rv_std"], t_days
 
     @torch.no_grad()
@@ -364,7 +378,8 @@ def plot_filter_histograms(real_thetas: list, accepted: list, rejected: list,
                            fig_dir: Path) -> None:
     """Per-coordinate histograms: real tabulated vs accepted vs filter-rejected
     synthetic parameters (the Assumption 2.1 truncation figure)."""
-    fig, axs = plt.subplots(1, D, figsize=(4.2 * D, 3.6))
+    n_c = len(COORDS)
+    fig, axs = plt.subplots(1, n_c, figsize=(4.2 * n_c, 3.6))
     groups = [("real tabulated", real_thetas, "k"),
               ("synthetic accepted", accepted, "tab:blue"),
               ("synthetic rejected", rejected, "tab:red")]
@@ -583,7 +598,7 @@ def export_per_system_widths(
     ones_test = 1.0
     q_norm: dict[str, dict[str, float]] = {}
     for a in alphas:
-        level = 1.0 - a / D
+        level = 1.0 - a / len(COORDS)
         q_norm[f"{a:.2f}"] = {
             c: float(weighted_quantile(cal_scores[c] / den_cal[c], w_cal, ones_test, level))
             for c in COORDS
@@ -632,7 +647,7 @@ def evaluate(cal_scores: dict, systems: list, theta_hats: list, sup: dict,
 
     out = {}
     for a in ALPHAS:
-        level = 1.0 - a / D
+        level = 1.0 - a / len(COORDS)
         per_cov = {c: [] for c in COORDS}
         per_w = {c: [] for c in COORDS}
         n_inf = 0
@@ -663,28 +678,56 @@ def evaluate(cal_scores: dict, systems: list, theta_hats: list, sup: dict,
     return out
 
 
+def _width_objective(cal_scores: dict, base_cal: dict, tune_hats: list,
+                     base_tune: dict, sup: dict, g: float, level: float) -> float:
+    """Mean over coords of the support-normalized median interval width."""
+    obj = 0.0
+    for c in COORDS:
+        q = weighted_quantile(cal_scores[c] / (g + base_cal[c]),
+                              np.ones(len(base_cal[c])), 1.0, level)
+        widths = [_interval_width(c, _true_coord(th, c),
+                                  q * (g + float(base_tune[c][i])), sup)
+                  for i, th in enumerate(tune_hats)]
+        obj += float(np.median(widths)) / (sup[c][1] - sup[c][0])
+    return obj
+
+
 def tune_gamma(cal_scores: dict, base_cal: dict, tune_hats: list,
-               base_tune: dict, sup: dict, alpha: float = 0.10) -> float:
+               base_tune: dict, sup: dict, alpha: float = 0.10,
+               return_obj: bool = False):
     """Pick gamma minimizing the mean (over coords) support-normalized median
     width on the synthetic tuning set, at the reference alpha.  base_cal /
     base_tune are per-coordinate denominator bases (v_y or v_y + v_c); the
     tuned denominator is gamma + base."""
-    level = 1.0 - alpha / D
+    level = 1.0 - alpha / len(COORDS)
     med = np.median(np.concatenate([base_cal[c] for c in COORDS]))
     grid = med * np.array([0.01, 0.03, 0.1, 0.3, 1.0, 3.0, 10.0, 30.0])
     best_g, best_obj = float(grid[0]), math.inf
     for g in grid:
-        obj = 0.0
-        for c in COORDS:
-            q = weighted_quantile(cal_scores[c] / (g + base_cal[c]),
-                                  np.ones(len(base_cal[c])), 1.0, level)
-            widths = [_interval_width(c, _true_coord(th, c),
-                                      q * (g + float(base_tune[c][i])), sup)
-                      for i, th in enumerate(tune_hats)]
-            obj += float(np.median(widths)) / (sup[c][1] - sup[c][0])
+        obj = _width_objective(cal_scores, base_cal, tune_hats, base_tune, sup,
+                               float(g), level)
         if obj < best_obj:
             best_obj, best_g = obj, float(g)
-    return best_g
+    return (best_g, best_obj) if return_obj else best_g
+
+
+def tune_papernorm_weight(cal_scores: dict, tune_hats: list, sup: dict,
+                          base_fn, alpha: float = 0.10,
+                          grid: tuple = (0.0, 0.25, 0.5, 0.75, 1.0)) -> tuple:
+    """Jointly pick the eq-(17) convex weight w and gamma on the tuning set.
+
+    w = 1 uses delta_c alone, w = 0 uses delta_y alone.  base_fn(w, key) must
+    return the per-coordinate denominator base for that weight.  Returns
+    (w, gamma, objective, per-w table)."""
+    best = (None, None, math.inf)
+    table = {}
+    for w in grid:
+        g, obj = tune_gamma(cal_scores, base_fn(w, "cal"), tune_hats,
+                            base_fn(w, "gtune"), sup, alpha, return_obj=True)
+        table[f"{w:.2f}"] = {"gamma": g, "objective": obj}
+        if obj < best[2]:
+            best = (float(w), g, obj)
+    return best[0], best[1], best[2], table
 
 
 # ---------------------------------------------------------------------------
@@ -727,7 +770,7 @@ def plot_widths(results: dict, fig_dir: Path, alpha: float = 0.10) -> None:
             labels.append(f"{strat}/{norm}")
             series.append(results[strat][norm])
     fig, axs = plt.subplots(1, len(doms), figsize=(5.2 * len(doms), 4.6))
-    x = np.arange(D)
+    x = np.arange(len(COORDS))
     w = 0.8 / len(labels)
     for ax, dom in zip(axs, doms):
         for k, (lab, res) in enumerate(zip(labels, series)):
@@ -834,6 +877,25 @@ def main() -> None:
     ap.add_argument("--real-split", default="test", choices=("all", "train", "val", "test"))
     ap.add_argument("--sigma-min", type=float, default=0.1)
     ap.add_argument("--sigma-max", type=float, default=100.0)
+    ap.add_argument("--min-nights", type=int, default=MIN_NIGHTS,
+                    help="drop real series spanning fewer distinct nights than this "
+                         "(single-night RM sequences cannot constrain a period); "
+                         "0 restores the pre-2026-07-26 behaviour")
+    ap.add_argument("--gap-beta", type=float, default=None,
+                    help="error budget spent on the surrogate-gap constant Delta_c: "
+                         "use the ceil((1-beta)(n+1))-th order statistic of the "
+                         "tuning gaps instead of their max. Omit for the max, "
+                         "which is beta = 1/(n_tune+1)")
+    ap.add_argument("--coords", choices=sorted(COORD_SETS), default="PKe",
+                    help="reported CP coordinates; PKe drops the non-identifiable "
+                         "omega (and the Bonferroni divisor 4 -> 3), PKew restores it")
+    ap.add_argument("--papernorm-weight", type=float, default=None,
+                    help="eq (17) convex weight w in the papernorm denominator "
+                         "w*delta_c + (1-w)*delta_y; omit to tune it on the "
+                         "tuning set alongside gamma (w=1 is delta_c alone)")
+    ap.add_argument("--one-per-host", action="store_true",
+                    help="keep only the best-sampled series per star, so real test "
+                         "points are independent across hosts")
     ap.add_argument("--n-estimators", type=int, default=200)
     ap.add_argument(
         "--psi",
@@ -869,6 +931,8 @@ def main() -> None:
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--device", default="cpu")
     args = ap.parse_args()
+    set_coords(COORD_SETS[args.coords])
+    print(f"reported CP coordinates: {list(COORDS)} (Bonferroni divisor {len(COORDS)})")
     args.out_dir.mkdir(parents=True, exist_ok=True)
     args.fig_dir.mkdir(parents=True, exist_ok=True)
     device = torch.device(args.device)
@@ -936,8 +1000,11 @@ def main() -> None:
     def hats(systems):
         return list(psi_predict(feat_matrix(systems)))
     print("building real systems ...")
-    test_real = make_real(args.real_split, args.sigma_min, args.sigma_max)
-    real_train = make_real("train", args.sigma_min, args.sigma_max)
+    real_kw = dict(min_nights=args.min_nights, one_per_host=args.one_per_host)
+    test_real = make_real(args.real_split, args.sigma_min, args.sigma_max, **real_kw)
+    real_train = make_real("train", args.sigma_min, args.sigma_max, **real_kw)
+    print(f"real filter: min_nights={args.min_nights} one_per_host={args.one_per_host} "
+          f"-> {len(test_real)} test series, {len({s['host'] for s in test_real})} hosts")
 
     # Assumption 2.1 bound from real TRAIN curves (eps*C_noise estimate).
     bound = None
@@ -981,7 +1048,7 @@ def main() -> None:
         if args.real_split in ("val", "all"):
             print("WARNING: --gamma-tune-on real-val overlaps --real-split "
                   f"{args.real_split} — gamma is tuned on (part of) the test systems")
-        gtune = make_real("val", args.sigma_min, args.sigma_max)
+        gtune = make_real("val", args.sigma_min, args.sigma_max, **real_kw)
         print(f"gamma tuning on real val split: {len(gtune)} systems")
         keyed_sets.append(("gtune", gtune))
 
@@ -1050,12 +1117,41 @@ def main() -> None:
 
     # Calibration scores per strategy and coordinate.  naive_adj = naive with
     # the paper's quantile adjustment (eq 41): calibration scores inflated by
-    # the per-coordinate surrogate gap Delta_c = max over the tuning set of
-    # |theta_bar_c - theta*_c| (shifting all calibration scores by Delta_c
-    # shifts every raw quantile by exactly Delta_c).
+    # the per-coordinate surrogate gap Delta_c (shifting all calibration scores
+    # by Delta_c shifts every raw quantile by exactly Delta_c).
+    #
+    # Delta_c is estimated on the tuning set, so a fresh test point can exceed
+    # it — Nicolò, 2026-07-26: "what can we say about the test sample (not used
+    # to compute the max)?".  Treat it as a conformal quantile rather than a
+    # plug-in constant: if the tuning gaps and the test gap are exchangeable,
+    # the k-th order statistic with k = ceil((1 - beta)(n + 1)) satisfies
+    #
+    #     P( |theta_bar_c - theta*_c| > Delta_c ) <= beta
+    #
+    # for a fresh draw.  The max is the k = n case, i.e. beta = 1/(n + 1) — so
+    # it *is* valid out of sample, at a cost of 1/(n+1) of the error budget
+    # (~1% at n_tune = 100).  Spending beta on the gap and alpha - beta on the
+    # main quantile gives an assumption-free finite-sample statement, with no
+    # curvature constant.  On real test data exchangeability holds only after
+    # the same likelihood-ratio reweighting as the main score.
     gap = {c: np.array([_coord_abs_err(tune[j]["theta5"], theta_star_tune[j], c)
                         for j in range(len(tune))]) for c in COORDS}
-    adj = {c: float(gap[c].max()) for c in COORDS}
+    n_gap = len(tune)
+    if args.gap_beta is None:
+        adj = {c: float(gap[c].max()) for c in COORDS}
+        gap_beta = 1.0 / (n_gap + 1)
+    else:
+        gap_beta = float(args.gap_beta)
+        k = math.ceil((1.0 - gap_beta) * (n_gap + 1))
+        if k > n_gap:
+            print(f"WARNING: gap beta={gap_beta:.3g} needs n_tune >= {k} "
+                  f"(have {n_gap}); falling back to the max")
+            adj = {c: float(gap[c].max()) for c in COORDS}
+            gap_beta = 1.0 / (n_gap + 1)
+        else:
+            adj = {c: float(np.sort(gap[c])[k - 1]) for c in COORDS}
+    print(f"surrogate-gap budget: beta={gap_beta:.4g} (n_tune={n_gap}); "
+          f"main quantile spends alpha - beta")
     naive_scores = {c: np.array([_coord_abs_err(hat["cal"][j], calib[j]["theta5"], c)
                                  for j in range(len(calib))]) for c in COORDS}
     cal_scores = {
@@ -1069,30 +1165,49 @@ def main() -> None:
 
     # Denominator bases per norm variant: vnorm = v_y, v2norm = v_y + v_c,
     # papernorm = delta_c + delta_y (eqs 20/23).
-    def base(kind: str, key: str) -> dict:
+    def base(kind: str, key: str, w: float = None) -> dict:
         if kind == "vnorm":
             return {c: v[key] for c in COORDS}
         if kind == "papernorm":
             dk, dy = delta[key]
-            return {c: dk[c] + dy for c in COORDS}
+            # eq (17) convex combination w*delta_c + (1-w)*delta_y.  The old
+            # fixed 1:1 sum is w = 0.5 up to an overall scale, which gamma
+            # absorbs; leaving w free lets the tuner say how much each term is
+            # actually worth.
+            ww = 0.5 if w is None else float(w)
+            return {c: ww * dk[c] + (1.0 - ww) * dy for c in COORDS}
         return {c: v[key] + vk[key][c] for c in COORDS}
 
     norm_kinds = [k for k in NORMS if k != "raw"]
     results, gamma_reg = {}, {}
+    pn_weight: dict[str, float] = {}
+    pn_weight_table: dict[str, dict] = {}
     for strat in STRATEGIES:
         cs = cal_scores[strat]
-        gamma_reg[strat] = {
-            kind: tune_gamma(cs, base(kind, "cal"), hat["gtune"], base(kind, "gtune"), sup)
-            for kind in norm_kinds}
+        gamma_reg[strat] = {}
+        for kind in norm_kinds:
+            if kind == "papernorm" and args.papernorm_weight is None:
+                w, g, _, tbl = tune_papernorm_weight(
+                    cs, hat["gtune"], sup,
+                    lambda ww, key: base("papernorm", key, ww))
+                pn_weight[strat], pn_weight_table[strat] = w, tbl
+                gamma_reg[strat][kind] = g
+            else:
+                if kind == "papernorm":
+                    pn_weight[strat] = float(args.papernorm_weight)
+                gamma_reg[strat][kind] = tune_gamma(
+                    cs, base(kind, "cal"), hat["gtune"], base(kind, "gtune"), sup)
         print(f"[{strat}] " + "  ".join(
-            f"gamma_{k}={gamma_reg[strat][k]:.4g}" for k in norm_kinds))
+            f"gamma_{k}={gamma_reg[strat][k]:.4g}" for k in norm_kinds)
+            + f"  w_papernorm={pn_weight.get(strat, float('nan')):.2f}")
         results[strat] = {}
         for norm in NORMS:
             if norm == "raw":
                 dens = {"cal": None, "syn": None, "real": None}
             else:
                 g = gamma_reg[strat][norm]
-                dens = {key: {c: g + base(norm, key)[c] for c in COORDS}
+                w = pn_weight.get(strat) if norm == "papernorm" else None
+                dens = {key: {c: g + base(norm, key, w)[c] for c in COORDS}
                         for key in ["cal", "syn", "real"]}
             results[strat][norm] = {
                 "synthetic_unweighted": evaluate(cs, test_syn, hat["syn"], sup,
@@ -1139,6 +1254,11 @@ def main() -> None:
             "delta_c_real": {c: float(np.median(delta["real"][0][c])) for c in COORDS},
             "delta_y_real": float(np.median(delta["real"][1])),
         },
+        "papernorm_weight": {
+            "selected": pn_weight,
+            "tuned": args.papernorm_weight is None,
+            "grid": pn_weight_table,
+        },
         "naive_adjustment": {
             c: {"used_max": adj[c],
                 "median": float(np.median(gap[c])),
@@ -1159,7 +1279,7 @@ def main() -> None:
     for strat in STRATEGIES:
         q_export[strat] = {}
         for a in ALPHAS:
-            level = 1.0 - a / D
+            level = 1.0 - a / len(COORDS)
             q_export[strat][f"{a:.2f}"] = {
                 c: float(weighted_quantile(cal_scores[strat][c], ones, 1.0, level))
                 for c in COORDS

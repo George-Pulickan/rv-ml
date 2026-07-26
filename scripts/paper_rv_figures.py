@@ -40,6 +40,7 @@ from conformal import (  # noqa: E402
     Scorer,
     _theta_to_omega,
     _true_coord,
+    curve_times_days,
     make_real,
 )
 from conformal_shift import _load_mlp_psi  # noqa: E402
@@ -134,7 +135,7 @@ def _sample_region(center5: np.ndarray, q: dict[str, float], n: int, rng: np.ran
 
 def _obs_ms(curve: dict) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     m = curve["mask"] > 0.5
-    t = curve["t_norm"][m] * curve["t_span"] + curve["t_min"]
+    t = curve_times_days(curve, m)
     rv = curve["rv_obs"][m] * curve["rv_std"]
     sig = curve["sig"][m] * curve["rv_std"]
     return t.astype(float), rv.astype(float), sig.astype(float)
