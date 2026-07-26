@@ -9,7 +9,7 @@ there and save it to the repo root before doing anything cluster-related.
 ## State as of 2026-07-26
 
 Everything Nicolò asked for in his 2026-07-26 reply is **implemented and merged
-into `main`** (tip `0701c56`). No code work is outstanding. Tests green.
+into `main`** (tip `72a7b83`). No code work is outstanding. Tests green.
 
 **The only remaining task is compute, and it has to run on the RHUL machines.**
 Nothing on this list can be done on a laptop — see the house rule in
@@ -22,7 +22,7 @@ problems that had to be cleared first, and for how to check on it.
 ## What to run
 
 ```bash
-git checkout main && git pull        # 0701c56 or later
+git checkout main && git pull        # 72a7b83 or later
 sed "s/^\([[:space:]]*\)srun /\1/" slurm/nicolo_20260726.sbatch | bash
 ```
 
@@ -99,7 +99,9 @@ one of the same name, and every existence check still passes.
 1. Fill the `[RERUN]` placeholders in `paper/end_to_end_pipeline.tex`. They are
    marked in comments specifically so they cannot be pasted into Overleaf
    early — the numbers there now are smoke-scale and not quotable.
-2. Fill the `[rerun]` markers in the reply draft (gitignored) and send it.
+2. Send Nicolò the follow-up with the real numbers. The 07-26 email already
+   covered everything except the full-scale results, and both local reply
+   drafts were deleted once it went out — compose fresh from the outputs.
 3. Regenerate `figures/paper/earthlike_top10.*` from the **new** ψ, then commit
    those artifacts. They are deliberately untracked right now.
 
