@@ -19,13 +19,16 @@ Nothing on this list can be done on a laptop — see the house rule in
 
 ```bash
 git checkout main && git pull        # 32a1b15 or later
-sed "s/^srun //" slurm/nicolo_20260726.sbatch | bash
+sed "s/^\([[:space:]]*\)srun /\1/" slurm/nicolo_20260726.sbatch | bash
 ```
 
-**The `sed` is not optional** — there is no Slurm on the machines we can reach,
-so `srun` has to be stripped. The `#SBATCH` headers are kept only so the file
-still works if a real scheduler ever appears. Read the script's header comment
-before launching; it explains each of the five steps.
+**The `sed` is not optional, and do not simplify it to `s/^srun //`** — there is
+no Slurm on the machines we can reach, so `srun` has to be stripped, and two of
+the eight calls are indented inside `for` loops. A column-0 anchor leaves those
+two, which under `set -e` kills the job at the first seed with nothing
+produced. The `#SBATCH` headers are kept only so the file still works if a real
+scheduler ever appears. Read the script's header comment before launching; it
+explains each of the five steps.
 
 Two preconditions must hold or the job fails silently. Both are written up in
 `handover.md` under *Cluster access*: a **fresh GitHub PAT** in the cluster

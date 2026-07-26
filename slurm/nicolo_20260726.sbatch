@@ -14,7 +14,12 @@
 # NOTE ON RUNNING THIS: there is no Slurm on the RHUL CIM boxes George can
 # reach.  Run it with srun stripped:
 #
-#     sed "s/^srun //" slurm/nicolo_20260726.sbatch | bash
+#     sed "s/^\([[:space:]]*\)srun /\1/" slurm/nicolo_20260726.sbatch | bash
+#
+# The leading-whitespace group is required: two of the srun calls (steps 1 and
+# 4) are indented inside for loops, and a column-0 anchor leaves them in place.
+# With no srun on the box that is exit 127, which set -e turns into a dead job
+# at the first seed.
 #
 # The #SBATCH headers are kept so the file still works if a real scheduler
 # ever appears.
@@ -132,6 +137,7 @@ git add -f \
     synthetic_generation/regression/pke_20260726 \
     synthetic_generation/regression/pkew_20260726 \
     synthetic_generation/figures/synthetic_regression_10000/pke_20260726 \
+    synthetic_generation/figures/synthetic_regression_10000/pkew_20260726 \
     figures/paper/assumption32 \
     figures/regression_synthetic \
     slurm/logs || true
