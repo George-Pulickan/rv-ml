@@ -10,10 +10,14 @@ Fourier bins — the 64-bin sum-normalized spectrum loses the period peak):
   (i)  naive      s_c = | psi(y)_c - theta_bar_c |   with theta_bar the ground-
        truth data-generating parameter (known for every synthetic curve);
   (ii) surrogate  s_c = | psi(y)_c - theta*_c |      with theta* the numerical
-       solution of argmin_t mean_i | y_i - kepler(t)_i |  (batched Adam gradient
-       descent through the differentiable KeplerDecoder, initialized at the
-       data-generating / tabulated values — Nicolò's 2026-07 spec) — computable
-       on real curves too (tabulated init), hence usable under shift.
+       solution of argmin_theta mean_i (y_i - kepler(theta)_i)^2  (batched Adam
+       gradient descent through the differentiable KeplerDecoder, initialized
+       at the data-generating / tabulated values — Nicolò's 2026-07 spec;
+       squared error per the paper's ell(theta) = ||y - h(theta)||^2, eq (2) —
+       matches the Hessian used for the Assumption 3.2 non-degeneracy /
+       kappa(H) constants below, which is also squared-error)
+       — computable on real curves too (tabulated init), hence usable under
+       shift.
 
 Calibration uses ONLY synthetic (fake) curves drawn from the empirical priors H
 (which are themselves fit on the real TRAIN split only); real val/test systems
@@ -36,7 +40,11 @@ is what he meant), three variants:
 
     vnorm     s'_c = s_c / (gamma + v_y)
     v2norm    s'_c = s_c / (gamma + v_y + v_c)   (his two-factor version)
-    papernorm s'_c = s_c / (gamma + delta_c + delta_y)   (Overleaf eqs 18-24)
+    papernorm s'_c = s_c / (gamma0 + mix*delta_c + (1-mix)*delta_y)   (eq 15,
+              vk(y) = gamma0 + mix*delta_c(y) + (1-mix)*delta_y(y), eq 17 —
+              mix in [0,1] is grid-searched alongside gamma0, since the two
+              deltas are on different natural scales and a fixed 1:1 weighting
+              is not, in general, the width-minimizing choice)
 
 with v_y = RMS predictive std of the trained SVGP residual noise model
 evaluated on (kepler(psi(y)), psi(y), t), in units of the curve's rv_std
@@ -51,33 +59,46 @@ tuning set by default or on the real val split with --gamma-tune-on real-val
 papernorm follows the paper draft's "Profiled uncertainty estimation" section:
 delta_c(y) is the re-encoding residual |psi_c(h(psi(y))) - psi_c(y)| (the
 noiseless reconstruction is re-encoded with the observation's time grid and
-measurement sigmas, then passed through psi again — eq 18) and delta_y(y) is
+measurement sigmas, then passed through psi again — eq 13) and delta_y(y) is
 the mean-absolute reconstruction error mean_t |y_t - h(psi(y), t)| in rv_std
-units (eq 19).  Since h and psi are deterministic both are computed pointwise
-per curve — no separate model is trained (Nicolò 2026-07-14).
+units (eq 14).  Since h and psi are deterministic both are computed pointwise
+per curve — no separate model is trained (Nicolò 2026-07-14).  The two combine
+per eq (17), vk(y) = gamma0 + mix*delta_c(y) + (1-mix)*delta_y(y) — mix in
+[0,1] is grid-searched alongside gamma0 (tune_gamma_papernorm), not fixed at
+an implicit 1:1 weighting, since delta_c and delta_y live on different
+natural scales.
 
 Paper-spec additions (Overleaf Theory section):
   * naive_adj — the naive strategy with the surrogate-gap quantile adjustment
-    q_alpha = q~_alpha + Delta_c (eq 41): the naive calibration scores are
-    inflated by Delta_c = max over the tuning set of |theta_bar_c - theta*_c|
-    (the empirical stand-in for eps*C_noise*C_H*C_Delta; the distribution of
-    the gap is reported so the max/p90/median choice can be revisited).
-  * Assumption 2.1 (bounded noise) filter — synthetic draws whose max_t
-    |y_t - kepler(theta_bar, t)| (rv_std units) exceeds the bound estimated
-    on real TRAIN curves via max_y max_t |y_t - kepler(psi(y), t)| are
-    discarded at generation time (--no-noise-filter to disable); the bound
+    (Lemma 3.4, eq 24-26): the naive calibration scores are inflated by
+    Delta_c = max over the tuning set of |theta_bar_c - theta*_c| (the
+    empirical stand-in for the theoretical sqrt(C_H)*epsilon correction; the
+    distribution of the gap is reported so the max/p90/median choice can be
+    revisited).
+  * Assumption 3.1 (generating function / bounded noise) filter — synthetic
+    draws whose max_t |y_t - kepler(theta_bar, t)| (rv_std units) exceeds the
+    bound estimated on real TRAIN curves via max_y max_t |y_t - kepler(psi(y), t)|
+    are discarded at generation time (--no-noise-filter to disable); the bound
     and rejection rate are reported.
-  * Assumption 2.3 constants — kappa(H) (finite-difference Hessian of the L2
-    reconstruction loss, 5-dim decoder parameterization) and ||grad h||
-    (autograd Jacobian spectral norm) are estimated on --n-constants prior
-    draws and reported (eps*C_noise from the real-train bound above).
+  * Assumption 3.2 (non-degenerate labels) constants — lambda_min(H*) and
+    C_H = 1/lambda_min, with H* the finite-difference Hessian of the summed
+    squared reconstruction loss (eq 2, the same objective the GD surrogate
+    label minimizes) taken **at theta*** and in the **d = 4 physical
+    coordinates**.  Both of those matter: theta_bar is not a stationary point
+    of ell (empirically a saddle, mixed-sign eigenvalues), and omega enters the
+    decoder only via atan2(theta5[4], theta5[3]), so the 5-vector Hessian has an
+    exact null direction along the (cos,sin) radius and is singular by
+    construction.  Also reported: the fraction of draws with H* positive
+    definite (the direct test of the assumption), kappa(H*), ||grad h||
+    (autograd Jacobian spectral norm), and — given the Assumption 3.1 eps — the
+    implied Lemma 3.4 correction sqrt(C_H * eps).
   * --psi-labels star — ablation (Nicolò 2026-07-14): train psi on the GD
     surrogate labels theta* of the training CSV rows (replayed and fit with
-    the same L1 gradient descent, init at theta_bar; cached to an .npz next
-    to the CSV) instead of the data-generating theta_bar.
+    the same squared-error gradient descent, init at theta_bar; cached to an
+    .npz next to the CSV) instead of the data-generating theta_bar.
   * figures/filter_param_histograms.png — per-coordinate histograms of real
     tabulated parameters vs accepted vs filter-rejected synthetic draws (for
-    the paper's figure-caption discussion of the Assumption 2.1 truncation).
+    the paper's figure-caption discussion of the Assumption 3.1 truncation).
 
 Usage
 -----
@@ -152,6 +173,10 @@ def _load_mlp_psi(checkpoint: Path, device: torch.device):
 ALPHAS = [0.05, 0.10, 0.15, 0.20, 0.30, 0.40]
 STRATEGIES = ["naive", "naive_adj", "surrogate"]
 NORMS = ["raw", "vnorm", "v2norm", "papernorm"]
+# papernorm's convex-combination weight (paper eq 17's "mix", i.e. gamma), grid-
+# searched alongside gamma0 since delta_c and delta_y are not, in general, on
+# comparable scales.
+MIX_GRID = tuple(np.linspace(0.0, 1.0, 11))
 
 
 # ---------------------------------------------------------------------------
@@ -173,9 +198,14 @@ def _coord_abs_err(theta_a5: np.ndarray, theta_b5: np.ndarray, coord: str) -> fl
 
 def _gd_batch(decoder, init5s: np.ndarray, curves: list, steps: int,
               lr: float) -> np.ndarray:
-    """Batched Adam minimisation of the masked mean-absolute reconstruction
-    error (Nicolò's E_t |y_t - kepler(theta', t)|, in rv_std units) over a set
-    of curves sharing one padded length.  t_peri / gamma are refit analytically
+    """Batched Adam minimisation of the masked mean-squared reconstruction
+    error (paper eq (2), theta* = argmin ||y - h(theta)||^2, in rv_std units)
+    over a set of curves sharing one padded length.  Squared (not absolute)
+    error so theta* is the minimiser of the same objective whose Hessian
+    defines the Assumption 3.2 non-degeneracy condition and its kappa(H)
+    constant in estimate_constants() below — an L1 objective has no
+    well-defined non-degenerate Hessian at its minimum, so Lemma 3.4's Taylor
+    argument would not apply to it.  t_peri / gamma are refit analytically
     inside the decoder every step (their refit is detached — envelope-style;
     gradients flow through the RV evaluation).  The best iterate per curve is
     kept, so the fit can only improve on the initialization."""
@@ -190,7 +220,7 @@ def _gd_batch(decoder, init5s: np.ndarray, curves: list, steps: int,
 
     def losses(theta: torch.Tensor) -> torch.Tensor:
         rv_pred = decoder(theta, t_norm, t_span, t_min, rv_obs, rv_std, mask)
-        return ((rv_obs - rv_pred).abs() * mask).sum(dim=1) / n            # (B,)
+        return (((rv_obs - rv_pred) ** 2) * mask).sum(dim=1) / n           # (B,)
 
     th.requires_grad_(True)
     opt = torch.optim.Adam([th], lr=lr)
@@ -264,7 +294,15 @@ class NoiseProxy:
         th = torch.as_tensor(theta5[None, :], dtype=torch.float32)
         rv_pred = self.decoder(th, t_norm, t_span, t_min, rv_obs, rv_std, mask)[0].numpy()
         m = curve["mask"] > 0.5
-        t_days = curve["t_norm"][m] * curve["t_span"] + curve["t_min"]
+        # float64 is required here, not cosmetic: t_norm is float32 and the JD
+        # offset is ~2.45e6, where float32 spacing is 0.25 d.  Evaluating this
+        # in float32 quantises the time axis to a quarter of a day, which
+        # collapses distinct epochs onto each other — measured on the real test
+        # split, 20 of 57 systems lose timestamps (51 Peg: 256 -> 110 unique;
+        # short-baseline Rossiter-McLaughlin sequences collapse to a single
+        # epoch, which makes the downstream Lomb-Scargle periodogram all-NaN).
+        t_days = (curve["t_norm"][m].astype(np.float64) * float(curve["t_span"])
+                  + float(curve["t_min"]))
         return rv_pred[m] * curve["rv_std"], t_days
 
     @torch.no_grad()
@@ -298,8 +336,8 @@ class NoiseProxy:
 
 
 # ---------------------------------------------------------------------------
-# Paper-spec conditional residuals delta_c / delta_y (Overleaf eqs 18-19),
-# the Assumption 2.1 noise-bound filter, and Assumption 2.3 constants
+# Paper-spec conditional residuals delta_c / delta_y (eqs 13-14),
+# the Assumption 3.1 noise-bound filter, and Assumption 3.2 constants
 # ---------------------------------------------------------------------------
 
 
@@ -312,7 +350,7 @@ def recon_residual_norm(proxy: "NoiseProxy", theta5: np.ndarray, curve: dict) ->
 
 def reencode_features(proxy: "NoiseProxy", theta5: np.ndarray, curve: dict) -> tuple[dict, np.ndarray]:
     """feat_row + LSP of the noiseless reconstruction h(psi(y)) so it can be
-    passed through psi again (eq 18).  The reconstruction keeps the
+    passed through psi again (eq 13).  The reconstruction keeps the
     observation's time grid and per-obs measurement sigmas (sigma belongs to
     the instrument, not the noise realization) and is normalized by its own
     std, exactly as a fresh observed curve would be."""
@@ -327,16 +365,28 @@ def reencode_features(proxy: "NoiseProxy", theta5: np.ndarray, curve: dict) -> t
         np.ones(int(m.sum()), dtype=np.float32),
     ])
     info = {"rv_std_ms": std, "t_span_days": curve["t_span"], "n_obs": int(m.sum())}
-    lsp = compute_lsp(t_days, rv_ms, sig_ms)
-    return _summary_row(xm, info, lsp), np.asarray(lsp, dtype=float)
+    lsp = np.asarray(compute_lsp(t_days, rv_ms, sig_ms), dtype=float)
+    # A degenerate reconstruction (flat curve, or a cadence with no usable time
+    # baseline) makes the periodogram undefined and astropy returns all-NaN.
+    # Zero power is the correct stand-in — "no periodic signal detected" — and
+    # it keeps psi's input finite.  Silent NaN here propagates into delta_c and
+    # then into the papernorm denominator, where it poisons that system's
+    # interval instead of failing loudly.
+    if not np.all(np.isfinite(lsp)):
+        lsp = np.nan_to_num(lsp, nan=0.0, posinf=0.0, neginf=0.0)
+    row = _summary_row(xm, info, lsp)
+    row = {k: (0.0 if isinstance(val, float) and not np.isfinite(val) else val)
+           for k, val in row.items()} if isinstance(row, dict) else row
+    return row, lsp
 
 
 def psi_star_labels(n_rows: int, csv_seed: int, decoder, gd_steps: int, gd_lr: float,
                     cache_path: Path, limit: int = 0) -> np.ndarray:
     """GD surrogate labels theta* for the training CSV rows (--psi-labels star):
-    replay each row's curve, run the same L1 gradient descent initialized at
-    the data-generating theta_bar.  Cached to an .npz keyed by (seed, n, steps).
-    limit > 0 caps the rows (smoke only — shrinks psi's training set)."""
+    replay each row's curve, run the same squared-error gradient descent
+    initialized at the data-generating theta_bar.  Cached to an .npz keyed by
+    (seed, n, steps).  limit > 0 caps the rows (smoke only — shrinks psi's
+    training set)."""
     n_use = min(n_rows, limit) if limit > 0 else n_rows
     if cache_path.exists():
         z = np.load(cache_path)
@@ -363,7 +413,7 @@ def psi_star_labels(n_rows: int, csv_seed: int, decoder, gd_steps: int, gd_lr: f
 def plot_filter_histograms(real_thetas: list, accepted: list, rejected: list,
                            fig_dir: Path) -> None:
     """Per-coordinate histograms: real tabulated vs accepted vs filter-rejected
-    synthetic parameters (the Assumption 2.1 truncation figure)."""
+    synthetic parameters (the Assumption 3.1 truncation figure)."""
     fig, axs = plt.subplots(1, D, figsize=(4.2 * D, 3.6))
     groups = [("real tabulated", real_thetas, "k"),
               ("synthetic accepted", accepted, "tab:blue"),
@@ -378,34 +428,58 @@ def plot_filter_histograms(real_thetas: list, accepted: list, rejected: list,
         ax.set_title(c)
         ax.grid(alpha=0.2)
     axs[0].legend(fontsize=7)
-    fig.suptitle("Assumption 2.1 noise filter: parameter distributions", fontsize=12)
+    fig.suptitle("Assumption 3.1 noise filter: parameter distributions", fontsize=12)
     fig.tight_layout(rect=(0, 0, 1, 0.92))
     fig.savefig(fig_dir / "filter_param_histograms.png", dpi=180)
     plt.close(fig)
 
 
-def noise_bound_from_real(proxy: "NoiseProxy", systems: list, theta_hats: list) -> float:
-    """Assumption 2.1 bound (eps*C_noise estimate): max over real curves of
-    max_t |y_t - kepler(psi(y), t)| in rv_std units.  |y - h(psi(y))| upper-
-    bounds |y - h(theta)| per the paper's Theory section."""
-    return float(max(np.abs(recon_residual_norm(proxy, th, s["curve"])).max()
-                     for s, th in zip(systems, theta_hats)))
+def noise_bounds_from_real(proxy: "NoiseProxy", systems: list,
+                           theta_hats: list) -> dict:
+    """Assumption 3.1 bounds from the real curves, both in rv_std units and both
+    computed in a single pass.  |y - h(psi(y))| upper-bounds |y - h(theta)| per
+    the paper's Theory section.
+
+    ``sup``  = max_y max_t |y_t - h(psi(y))_t| — the sup-norm bound, and the one
+               the Assumption 3.1 discard rule uses (make_synthetic_filtered).
+    ``loss`` = max_y sum_t (y_t - h(psi(y))_t)^2 — the *same* discrepancy on the
+               scale of ell(theta) = ||y - h(theta)||^2 (eq 2).  This is the eps
+               that pairs with C_H = 1/lambda_min(H*) in Lemma 3.4's
+               sqrt(C_H * eps): pairing the sup-norm bound with a Hessian of the
+               summed loss would be dimensionally inconsistent.
+    """
+    sup, loss = 0.0, 0.0
+    for s, th in zip(systems, theta_hats):
+        r = recon_residual_norm(proxy, th, s["curve"])
+        sup = max(sup, float(np.abs(r).max()))
+        loss = max(loss, float(np.sum(r ** 2)))
+    return {"sup": sup, "loss": loss}
 
 
 def make_synthetic_filtered(n: int, seed: int, bound: float | None,
                             proxy: "NoiseProxy",
-                            max_tries: int = 6) -> tuple[list, int, list]:
-    """make_synthetic + the Assumption 2.1 discard rule: reject draws whose
+                            max_tries: int = 6,
+                            f_multi: float = 0.0,
+                            noise_frac: float = 0.0,
+                            noise_tau_days: float = 30.0) -> tuple[list, int, list]:
+    """make_synthetic + the Assumption 3.1 discard rule: reject draws whose
     max_t |y_t - kepler(theta_bar, t)| (rv_std units) exceeds the real-data
     noise bound.  Returns (accepted systems, number generated, rejected theta5s
-    — for the truncation histogram figure)."""
+    — for the truncation histogram figure).
+
+    ``f_multi`` is forwarded to make_synthetic.  Note that filtering and
+    ``f_multi`` > 0 work against each other: companion planets are exactly the
+    kind of unmodelled structure the bound rejects, so a misspecification study
+    must pass ``bound=None`` for the set it is perturbing (see
+    ``--test-f-multi``)."""
+    kw = dict(f_multi=f_multi, noise_frac=noise_frac, noise_tau_days=noise_tau_days)
     if bound is None:
-        return make_synthetic(n, seed), n, []
+        return make_synthetic(n, seed, **kw), n, []
     out: list = []
     rejected: list = []
     n_gen = 0
     for k in range(max_tries):
-        batch = make_synthetic(n, seed + 131 * k)
+        batch = make_synthetic(n, seed + 131 * k, **kw)
         n_gen += len(batch)
         for s in batch:
             stat = float(np.abs(recon_residual_norm(proxy, s["theta5"], s["curve"])).max())
@@ -419,36 +493,90 @@ def make_synthetic_filtered(n: int, seed: int, bound: float | None,
                        f"accepted after {n_gen} draws (bound={bound:.3g})")
 
 
-def estimate_constants(proxy: "NoiseProxy", n: int, seed: int) -> dict:
-    """Empirical Assumption 2.3 constants on prior draws, in the 5-dim decoder
-    parameterization: kappa(H) with H the finite-difference Hessian of the L2
-    reconstruction loss at theta_bar, and ||grad h|| the spectral norm of the
-    autograd Jacobian of the masked reconstruction."""
+def _physical4_to_theta5(p4: np.ndarray) -> np.ndarray:
+    """(log10_P, log10_K, e, omega) -> the decoder's 5-vector, with omega on the
+    unit circle.  Inverse of _theta5_to_physical4 up to the (cos,sin) radius,
+    which the decoder ignores (omega = atan2(theta5[4], theta5[3]))."""
+    return np.array([p4[0], p4[1], p4[2], np.cos(p4[3]), np.sin(p4[3])],
+                    dtype=np.float64)
+
+
+def _theta5_to_physical4(theta5: np.ndarray) -> np.ndarray:
+    """Decoder 5-vector -> the d = 4 physical coordinates CP operates on."""
+    return np.array([float(theta5[0]), float(theta5[1]), float(theta5[2]),
+                     _theta_to_omega(theta5)], dtype=np.float64)
+
+
+def estimate_constants(proxy: "NoiseProxy", n: int, seed: int,
+                       noise_bound: float | None = None,
+                       gd_steps: int = 200, gd_lr: float = 0.02) -> dict:
+    """Empirical Assumption 3.2 constants on prior draws.
+
+    Three things matter for this to mean what the paper says it means:
+
+    * **Evaluated at theta\\*, not theta_bar.**  The paper defines
+      H\\* = grad^2 ell(theta)|_{theta=theta\\*} at the *minimiser*, where
+      grad ell = 0 and H\\* is therefore PSD.  theta_bar is not a stationary
+      point of ell — measured empirically it is typically a saddle (mixed-sign
+      eigenvalues), so a Hessian taken there says nothing about non-degeneracy.
+      We run the same GD as the surrogate labels to reach theta\\* first.
+    * **In the d = 4 physical coordinates**, not the decoder's 5-vector.  omega
+      enters the decoder only through atan2(theta5[4], theta5[3]), so scaling
+      (cos_omega, sin_omega) by any lambda > 0 leaves ell exactly unchanged:
+      the 5-dim Hessian has an *exact* null direction along that radius and is
+      singular by construction (this, not any property of the physics, is what
+      drives the large condition numbers seen in the 5-dim version).  CP itself
+      works in the 4 physical coordinates, and so does the paper's d.
+    * **ell is the summed squared residual** ||y - h(theta)||^2 of eq (2), not a
+      per-observation mean.  The two differ by a factor T, which cancels in the
+      condition number but *not* in C_H = 1/lambda_min.
+
+    Reports lambda_min(H\\*) and C_H = 1/lambda_min — the quantity Assumption 3.2
+    actually constrains and the one entering the sqrt(C_H * eps) validity gap of
+    Lemma 3.4 — alongside the condition number, the fraction of draws whose H\\*
+    is positive definite (a direct empirical test of the assumption), and, when
+    ``noise_bound`` is supplied, the implied correction term itself.
+    ``noise_bound`` must be the **loss-scale** eps (``noise_bounds_from_real``'s
+    ``loss``, i.e. max ||y - h||^2), not the sup-norm bound the discard rule
+    uses — C_H comes from a Hessian of the summed loss, so pairing it with a
+    pointwise max would be dimensionally inconsistent.  ||grad h|| is the
+    spectral norm of the autograd Jacobian of the masked reconstruction, in the
+    same 4 coordinates.
+    """
     systems = make_synthetic(n, seed)
-    kappas, grad_norms = [], []
+    # theta*: same GD objective and initialisation as the surrogate labels.
+    theta_stars = surrogate_fit_gd(proxy.decoder, [s["theta5"] for s in systems],
+                                   systems, gd_steps, gd_lr)
+
+    kappas, grad_norms, lam_mins, psd_flags = [], [], [], []
     eps = 1e-3
-    for s in systems:
+    for s, th_star in zip(systems, theta_stars):
         curve = s["curve"]
-        th0 = np.asarray(s["theta5"], dtype=np.float64)
+        p0 = _theta5_to_physical4(np.asarray(th_star, dtype=np.float64))
 
-        def loss(th: np.ndarray) -> float:
-            r = recon_residual_norm(proxy, th.astype(np.float64), curve)
-            return float(np.mean(r ** 2))
+        def loss(p4: np.ndarray) -> float:
+            r = recon_residual_norm(proxy, _physical4_to_theta5(p4), curve)
+            return float(np.sum(r ** 2))
 
-        H = np.zeros((5, 5))
-        f0 = loss(th0)
-        for i in range(5):
-            for j in range(i, 5):
-                ei, ej = np.eye(5)[i] * eps, np.eye(5)[j] * eps
+        H = np.zeros((4, 4))
+        f0 = loss(p0)
+        for i in range(4):
+            for j in range(i, 4):
+                ei, ej = np.eye(4)[i] * eps, np.eye(4)[j] * eps
                 if i == j:
-                    H[i, i] = (loss(th0 + ei) - 2 * f0 + loss(th0 - ei)) / eps ** 2
+                    H[i, i] = (loss(p0 + ei) - 2 * f0 + loss(p0 - ei)) / eps ** 2
                 else:
                     H[i, j] = H[j, i] = (
-                        loss(th0 + ei + ej) - loss(th0 + ei - ej)
-                        - loss(th0 - ei + ej) + loss(th0 - ei - ej)
+                        loss(p0 + ei + ej) - loss(p0 + ei - ej)
+                        - loss(p0 - ei + ej) + loss(p0 - ei - ej)
                     ) / (4 * eps ** 2)
-        sv = np.linalg.svd(H, compute_uv=False)
-        kappas.append(float(sv.max() / max(sv.min(), 1e-12)))
+        # Symmetric -> eigh gives *signed* eigenvalues.  svd would return their
+        # magnitudes and so silently confuse a flat direction with a saddle.
+        evals = np.linalg.eigvalsh(H)
+        lam_min, lam_max = float(evals.min()), float(np.abs(evals).max())
+        lam_mins.append(lam_min)
+        psd_flags.append(bool(lam_min > 0.0))
+        kappas.append(float(lam_max / max(abs(lam_min), 1e-12)))
 
         m = torch.from_numpy(curve["mask"]).unsqueeze(0)
         t_norm = torch.from_numpy(curve["t_norm"]).unsqueeze(0)
@@ -457,12 +585,15 @@ def estimate_constants(proxy: "NoiseProxy", n: int, seed: int) -> dict:
         t_min = torch.tensor([curve["t_min"]], dtype=torch.float32)
         rv_std = torch.tensor([curve["rv_std"]], dtype=torch.float32)
 
-        def h_fn(th: torch.Tensor) -> torch.Tensor:
-            rv = proxy.decoder(th.unsqueeze(0), t_norm, t_span, t_min, rv_obs, rv_std, m)
+        def h_fn(p4: torch.Tensor) -> torch.Tensor:
+            # Same 4 -> 5 lift as the Hessian above, so ||grad h|| is measured in
+            # the physical coordinates rather than the redundant 5-vector.
+            th5 = torch.cat([p4[:3], torch.cos(p4[3:4]), torch.sin(p4[3:4])])
+            rv = proxy.decoder(th5.unsqueeze(0), t_norm, t_span, t_min, rv_obs, rv_std, m)
             return (rv * m)[0]
 
         J = torch.autograd.functional.jacobian(
-            h_fn, torch.as_tensor(th0, dtype=torch.float32))
+            h_fn, torch.as_tensor(p0, dtype=torch.float32))
         grad_norms.append(float(torch.linalg.matrix_norm(J, ord=2)))
 
     def _pct(v: list) -> dict:
@@ -470,7 +601,33 @@ def estimate_constants(proxy: "NoiseProxy", n: int, seed: int) -> dict:
         return {"median": float(np.median(a)), "p90": float(np.percentile(a, 90)),
                 "max": float(a.max())}
 
-    return {"n_draws": n, "kappa_H": _pct(kappas), "grad_h_spectral_norm": _pct(grad_norms)}
+    lam = np.asarray(lam_mins)
+    frac_psd = float(np.mean(psd_flags))
+    # C_H = 1/lambda_min is defined only where H* is positive definite; report it
+    # over that subset and say how large the subset is.
+    pos = lam[lam > 0.0]
+    c_h = ({"median": float(np.median(1.0 / pos)),
+            "p90": float(np.percentile(1.0 / pos, 90)),
+            "max": float((1.0 / pos).max())} if pos.size else None)
+    out = {
+        "n_draws": n,
+        "evaluated_at": "theta_star",
+        "coords": COORDS,
+        "loss": "sum_t (y_t - h(theta)_t)^2 in rv_std units (paper eq 2)",
+        "lambda_min_H": {"median": float(np.median(lam)),
+                         "p10": float(np.percentile(lam, 10)),
+                         "min": float(lam.min())},
+        "frac_positive_definite": frac_psd,
+        "C_H": c_h,
+        "kappa_H": _pct(kappas),
+        "grad_h_spectral_norm": _pct(grad_norms),
+    }
+    # Lemma 3.4's correction sqrt(C_H * eps), with eps the Assumption 3.1 bound.
+    if noise_bound is not None and c_h is not None:
+        out["noise_bound_eps"] = float(noise_bound)
+        out["validity_gap_sqrt_CH_eps"] = {
+            k: float(np.sqrt(v * noise_bound)) for k, v in c_h.items()}
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -573,6 +730,7 @@ def export_per_system_widths(
     *,
     alphas: tuple[float, ...] = (0.10, 0.40),
     w_cal: np.ndarray | None = None,
+    mix: float = 1.0,
 ) -> dict:
     """Per-system papernorm half-widths for paper figures / Earth-like table.
 
@@ -608,6 +766,7 @@ def export_per_system_widths(
         "strategy": "surrogate",
         "norm": "papernorm",
         "gamma": float(gamma),
+        "mix": float(mix),
         "alphas": [f"{a:.2f}" for a in alphas],
         "q_normalized": q_norm,
         "n_systems": len(rows),
@@ -663,28 +822,67 @@ def evaluate(cal_scores: dict, systems: list, theta_hats: list, sup: dict,
     return out
 
 
+def _gamma_width_objective(cal_scores: dict, base_cal: dict, tune_hats: list,
+                           base_tune: dict, sup: dict, alpha: float, g: float) -> float:
+    """Mean (over coords) support-normalized median width on the tuning set,
+    at gamma=g and the given per-coordinate denominator bases (denominator is
+    g + base).  Shared by tune_gamma (1-D) and tune_gamma_papernorm (2-D)."""
+    level = 1.0 - alpha / D
+    obj = 0.0
+    for c in COORDS:
+        q = weighted_quantile(cal_scores[c] / (g + base_cal[c]),
+                              np.ones(len(base_cal[c])), 1.0, level)
+        widths = [_interval_width(c, _true_coord(th, c),
+                                  q * (g + float(base_tune[c][i])), sup)
+                  for i, th in enumerate(tune_hats)]
+        obj += float(np.median(widths)) / (sup[c][1] - sup[c][0])
+    return obj
+
+
 def tune_gamma(cal_scores: dict, base_cal: dict, tune_hats: list,
                base_tune: dict, sup: dict, alpha: float = 0.10) -> float:
     """Pick gamma minimizing the mean (over coords) support-normalized median
     width on the synthetic tuning set, at the reference alpha.  base_cal /
     base_tune are per-coordinate denominator bases (v_y or v_y + v_c); the
     tuned denominator is gamma + base."""
-    level = 1.0 - alpha / D
     med = np.median(np.concatenate([base_cal[c] for c in COORDS]))
     grid = med * np.array([0.01, 0.03, 0.1, 0.3, 1.0, 3.0, 10.0, 30.0])
     best_g, best_obj = float(grid[0]), math.inf
     for g in grid:
-        obj = 0.0
-        for c in COORDS:
-            q = weighted_quantile(cal_scores[c] / (g + base_cal[c]),
-                                  np.ones(len(base_cal[c])), 1.0, level)
-            widths = [_interval_width(c, _true_coord(th, c),
-                                      q * (g + float(base_tune[c][i])), sup)
-                      for i, th in enumerate(tune_hats)]
-            obj += float(np.median(widths)) / (sup[c][1] - sup[c][0])
+        obj = _gamma_width_objective(cal_scores, base_cal, tune_hats, base_tune, sup, alpha, g)
         if obj < best_obj:
             best_obj, best_g = obj, float(g)
     return best_g
+
+
+def tune_gamma_papernorm(cal_scores: dict, delta_cal: tuple, tune_hats: list,
+                         delta_tune: tuple, sup: dict, alpha: float = 0.10,
+                         mix_grid: tuple = MIX_GRID) -> tuple[float, float]:
+    """Paper eq (17): vk(y) = gamma0 + mix*delta_c(y) + (1-mix)*delta_y(y).
+    Grid-searches mix in [0, 1] (the convex-combination weight between the two
+    conditional-residual models) on top of tune_gamma's 1-D gamma0 search at
+    each candidate mix, picking the (mix, gamma0) pair minimizing the same
+    normalized-median-width objective.  Returns (mix, gamma0)."""
+    dk_cal, dy_cal = delta_cal
+    dk_tune, dy_tune = delta_tune
+    best_mix, best_gamma0, best_obj = 1.0, 0.0, math.inf
+    for mix in mix_grid:
+        mix = float(mix)
+        base_cal = {c: mix * dk_cal[c] + (1.0 - mix) * dy_cal for c in COORDS}
+        base_tune = {c: mix * dk_tune[c] + (1.0 - mix) * dy_tune for c in COORDS}
+        g0 = tune_gamma(cal_scores, base_cal, tune_hats, base_tune, sup, alpha)
+        obj = _gamma_width_objective(cal_scores, base_cal, tune_hats, base_tune, sup, alpha, g0)
+        if obj < best_obj:
+            best_obj, best_mix, best_gamma0 = obj, mix, g0
+    return best_mix, best_gamma0
+
+
+def _fmt_gamma(v) -> str:
+    """Format a gamma_reg entry for print/report output: a plain float for
+    vnorm/v2norm, or the (gamma0, mix) pair for papernorm."""
+    if isinstance(v, dict):
+        return f"(gamma0={v['gamma0']:.4g}, mix={v['mix']:.3g})"
+    return f"{float(v):.4g}"
 
 
 # ---------------------------------------------------------------------------
@@ -761,7 +959,7 @@ def write_report(report: dict, path: Path) -> None:
                  f"{c}={report['vk_median']['cal'][c]:.3g}" for c in COORDS)]
     nf = report.get("noise_filter", {})
     if nf.get("enabled"):
-        lines.append(f"noise filter (Assumption 2.1): bound={nf['bound_rv_std']:.3g} "
+        lines.append(f"noise filter (Assumption 3.1): bound={nf['bound_rv_std']:.3g} "
                      f"rv_std units, rejected {nf['rejection_rate']:.1%} of "
                      f"{nf['n_generated']} draws")
     if report.get("naive_adjustment"):
@@ -769,16 +967,27 @@ def write_report(report: dict, path: Path) -> None:
             f"{c}={report['naive_adjustment'][c]['used_max']:.3g}" for c in COORDS))
     ac = report.get("assumption_constants")
     if ac:
-        lines.append(f"Assumption 2.3 constants ({ac['n_draws']} draws): "
-                     f"kappa(H) med={ac['kappa_H']['median']:.3g} "
-                     f"max={ac['kappa_H']['max']:.3g}; ||grad h|| "
-                     f"med={ac['grad_h_spectral_norm']['median']:.3g} "
+        lines.append(f"Assumption 3.2 ({ac['n_draws']} draws, H* at theta* in the "
+                     f"{len(ac.get('coords', COORDS))} physical coords):")
+        lines.append(f"  lambda_min(H*) med={ac['lambda_min_H']['median']:.3g} "
+                     f"p10={ac['lambda_min_H']['p10']:.3g} "
+                     f"min={ac['lambda_min_H']['min']:.3g}; "
+                     f"positive-definite on {ac['frac_positive_definite']:.0%} of draws")
+        if ac.get("C_H"):
+            lines.append(f"  C_H = 1/lambda_min med={ac['C_H']['median']:.3g} "
+                         f"p90={ac['C_H']['p90']:.3g}; "
+                         f"kappa(H*) med={ac['kappa_H']['median']:.3g}")
+        if ac.get("validity_gap_sqrt_CH_eps"):
+            g = ac["validity_gap_sqrt_CH_eps"]
+            lines.append(f"  Lemma 3.4 correction sqrt(C_H*eps) med={g['median']:.3g} "
+                         f"p90={g['p90']:.3g}  (eps={ac['noise_bound_eps']:.3g})")
+        lines.append(f"  ||grad h|| med={ac['grad_h_spectral_norm']['median']:.3g} "
                      f"max={ac['grad_h_spectral_norm']['max']:.3g}")
     lines.append("")
     for strat in STRATEGIES:
         gr = report["gamma_reg"][strat]
         lines.append(f"##### STRATEGY: {strat} ("
-                     + ", ".join(f"gamma_{k}={gr[k]:.4g}" for k in gr) + ") #####")
+                     + ", ".join(f"gamma_{k}={_fmt_gamma(gr[k])}" for k in gr) + ") #####")
         med = report["cal_score_median"][strat]
         lines.append("calibration score median per coord: "
                      + "  ".join(f"{c}={med[c]:.3g}" for c in COORDS))
@@ -861,10 +1070,34 @@ def main() -> None:
                          "the real val split (the paper's D_val; tuning needs no "
                          "labels — only interval widths)")
     ap.add_argument("--no-noise-filter", action="store_true",
-                    help="disable the Assumption 2.1 bounded-noise discard rule "
+                    help="disable the Assumption 3.1 bounded-noise discard rule "
                          "on synthetic draws")
+    ap.add_argument("--test-f-multi", type=float, default=None,
+                    help="controlled simulator-misspecification study: draw the "
+                         "SYNTHETIC TEST set with this companion-planet fraction "
+                         "(calibration/tuning stay at 0, i.e. the ideal "
+                         "simulator).  A single-Keplerian h cannot represent a "
+                         "multi-planet curve, so raising this should degrade the "
+                         "naive strategy (calibrated on theta_bar) faster than "
+                         "the surrogate one (theta* fits the observed curve). "
+                         "Implies an unfiltered test set; pass 0 for the control. "
+                         "NOTE this perturbs the MEAN structure, which the "
+                         "paper does not claim robustness to; prefer "
+                         "--test-noise-frac.")
+    ap.add_argument("--test-noise-frac", type=float, default=None,
+                    help="controlled NOISE-model misspecification: add a "
+                         "correlated (squared-exponential) component at this "
+                         "fraction of the curve's rv_std to the synthetic TEST "
+                         "set only, standing for stellar activity.  h(theta_bar) "
+                         "remains the exact mean structure, so this tests the "
+                         "paper's actual claim -- that the noise process is "
+                         "bounded but otherwise unconstrained.  Implies an "
+                         "unfiltered test set; pass 0 for the control.")
+    ap.add_argument("--test-noise-tau", type=float, default=30.0,
+                    help="correlation timescale in days for --test-noise-frac "
+                         "(default 30 d, a typical stellar rotation period)")
     ap.add_argument("--n-constants", type=int, default=25,
-                    help="prior draws for the Assumption 2.3 constants "
+                    help="prior draws for the Assumption 3.2 constants "
                          "(kappa(H), ||grad h||); 0 skips")
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--device", default="cpu")
@@ -939,11 +1172,17 @@ def main() -> None:
     test_real = make_real(args.real_split, args.sigma_min, args.sigma_max)
     real_train = make_real("train", args.sigma_min, args.sigma_max)
 
-    # Assumption 2.1 bound from real TRAIN curves (eps*C_noise estimate).
+    # Assumption 3.1 bounds from real TRAIN curves (eps*C_noise estimate).  The
+    # sup-norm bound drives the discard rule; the loss-scale bound is the eps
+    # that pairs with C_H in Lemma 3.4's correction (see noise_bounds_from_real).
     bound = None
+    eps_loss = None
     if not args.no_noise_filter:
-        bound = noise_bound_from_real(proxy, real_train, hats(real_train))
-        print(f"noise bound (max |y - h(psi(y))| on real train, rv_std units): {bound:.3g}")
+        nb = noise_bounds_from_real(proxy, real_train, hats(real_train))
+        bound, eps_loss = nb["sup"], nb["loss"]
+        print(f"noise bounds on real train (rv_std units): "
+              f"sup |y - h(psi(y))| = {bound:.3g}, "
+              f"max ||y - h(psi(y))||^2 = {eps_loss:.3g}")
 
     print("building synthetic systems ...")
     n_gen_total = 0
@@ -954,7 +1193,31 @@ def main() -> None:
     tune, g, rj = make_synthetic_filtered(args.n_tune, args.seed + 11, bound, proxy)
     n_gen_total += g
     rejected_thetas += rj
-    test_syn, g, rj = make_synthetic_filtered(args.n_test, args.seed + 2, bound, proxy)
+    if args.test_noise_frac is not None:
+        # Noise-model misspecification: h(theta_bar) is still exactly the mean
+        # structure, so theta_bar remains the right target and theta* has no
+        # reason to drift — only the noise process differs from calibration.
+        # Unfiltered for the same reason as below: the Assumption 3.1 bound
+        # would preferentially reject the perturbed curves.
+        test_syn, g, rj = make_synthetic_filtered(
+            args.n_test, args.seed + 2, None, proxy,
+            noise_frac=args.test_noise_frac, noise_tau_days=args.test_noise_tau)
+        print(f"misspecification study: synthetic test set drawn UNFILTERED with "
+              f"correlated noise frac={args.test_noise_frac} "
+              f"tau={args.test_noise_tau}d ({len(test_syn)} systems)")
+    elif args.test_f_multi is None:
+        test_syn, g, rj = make_synthetic_filtered(args.n_test, args.seed + 2, bound, proxy)
+    else:
+        # Misspecification study: the synthetic test set stands in for reality,
+        # so it is drawn UNFILTERED (bound=None).  Real curves are not screened
+        # against Assumption 3.1 either, and the filter would otherwise reject
+        # precisely the companion-injected curves the study is about.  Pass
+        # --test-f-multi 0 for the matched control, so the only thing varying
+        # across the sweep is f_multi.
+        test_syn, g, rj = make_synthetic_filtered(
+            args.n_test, args.seed + 2, None, proxy, f_multi=args.test_f_multi)
+        print(f"misspecification study: synthetic test set drawn UNFILTERED with "
+              f"f_multi={args.test_f_multi} ({len(test_syn)} systems)")
     n_gen_total += g
     rejected_thetas += rj
     wsynth, g, rj = make_synthetic_filtered(args.n_weight_synth, args.seed + 21, bound, proxy)
@@ -1006,8 +1269,9 @@ def main() -> None:
     frac_clipped = float(np.mean((w_cal_raw < 1 / clip) | (w_cal_raw > clip)))
     print(f"weights: ESS={ess:.1f}/{len(w_cal)}  clipped={frac_clipped:.1%}")
 
-    # Surrogate labels theta* by gradient descent (L1 objective, initialized at
-    # the data-generating theta_bar — Nicolò 2026-07): on the calibration set
+    # Surrogate labels theta* by gradient descent (squared-error objective,
+    # matching eq (2) — initialized at the data-generating theta_bar, Nicolò
+    # 2026-07): on the calibration set
     # (for the surrogate scores) and on the tuning set (to fit the v_c model).
     print("fitting surrogate labels by gradient descent ...")
     t0 = time.perf_counter()
@@ -1026,7 +1290,7 @@ def main() -> None:
     print("v_c median (cal): " + "  ".join(
         f"{c}={float(np.median(vk['cal'][c])):.3g}" for c in COORDS))
 
-    # Paper-spec conditional residuals delta_c / delta_y (eqs 18-19), computed
+    # Paper-spec conditional residuals delta_c / delta_y (eqs 13-14), computed
     # pointwise per curve — h and psi are deterministic, so the conditional
     # expectations are trivial and no model is trained (Nicolò 2026-07-14).
     print("computing paper-norm deltas (re-encode + reconstruction residuals) ...")
@@ -1049,10 +1313,10 @@ def main() -> None:
         + f"  delta_y={float(np.median(delta['cal'][1])):.3g}")
 
     # Calibration scores per strategy and coordinate.  naive_adj = naive with
-    # the paper's quantile adjustment (eq 41): calibration scores inflated by
-    # the per-coordinate surrogate gap Delta_c = max over the tuning set of
-    # |theta_bar_c - theta*_c| (shifting all calibration scores by Delta_c
-    # shifts every raw quantile by exactly Delta_c).
+    # the paper's quantile adjustment (Lemma 3.4, eq 24-26): calibration
+    # scores inflated by the per-coordinate surrogate gap Delta_c = max over
+    # the tuning set of |theta_bar_c - theta*_c| (shifting all calibration
+    # scores by Delta_c shifts every raw quantile by exactly Delta_c).
     gap = {c: np.array([_coord_abs_err(tune[j]["theta5"], theta_star_tune[j], c)
                         for j in range(len(tune))]) for c in COORDS}
     adj = {c: float(gap[c].max()) for c in COORDS}
@@ -1068,31 +1332,47 @@ def main() -> None:
         f"{c}={adj[c]:.3g}" for c in COORDS))
 
     # Denominator bases per norm variant: vnorm = v_y, v2norm = v_y + v_c,
-    # papernorm = delta_c + delta_y (eqs 20/23).
-    def base(kind: str, key: str) -> dict:
+    # papernorm = mix*delta_c + (1-mix)*delta_y (eq 17; mix defaults to 1.0,
+    # i.e. delta_c alone, when called without a tuned mix — v2norm/vnorm never
+    # pass mix and are unaffected).
+    def base(kind: str, key: str, mix: float = 1.0) -> dict:
         if kind == "vnorm":
             return {c: v[key] for c in COORDS}
         if kind == "papernorm":
             dk, dy = delta[key]
-            return {c: dk[c] + dy for c in COORDS}
+            return {c: mix * dk[c] + (1.0 - mix) * dy for c in COORDS}
         return {c: v[key] + vk[key][c] for c in COORDS}
+
+    def denominator(kind: str, key: str, gamma_entry) -> dict:
+        """Full eq (15)/(17) denominator gamma0 + base, for any norm variant.
+        Single source of truth so the per-system width export cannot drift from
+        what `evaluate` was actually calibrated with."""
+        if kind == "papernorm":
+            g0, mix = gamma_entry["gamma0"], gamma_entry["mix"]
+            return {c: g0 + base(kind, key, mix=mix)[c] for c in COORDS}
+        g = float(gamma_entry)
+        return {c: g + base(kind, key)[c] for c in COORDS}
 
     norm_kinds = [k for k in NORMS if k != "raw"]
     results, gamma_reg = {}, {}
     for strat in STRATEGIES:
         cs = cal_scores[strat]
-        gamma_reg[strat] = {
-            kind: tune_gamma(cs, base(kind, "cal"), hat["gtune"], base(kind, "gtune"), sup)
-            for kind in norm_kinds}
+        gamma_reg[strat] = {}
+        for kind in norm_kinds:
+            if kind == "papernorm":
+                mix, g0 = tune_gamma_papernorm(cs, delta["cal"], hat["gtune"], delta["gtune"], sup)
+                gamma_reg[strat][kind] = {"gamma0": g0, "mix": mix}
+            else:
+                gamma_reg[strat][kind] = tune_gamma(
+                    cs, base(kind, "cal"), hat["gtune"], base(kind, "gtune"), sup)
         print(f"[{strat}] " + "  ".join(
-            f"gamma_{k}={gamma_reg[strat][k]:.4g}" for k in norm_kinds))
+            f"gamma_{k}={_fmt_gamma(gamma_reg[strat][k])}" for k in norm_kinds))
         results[strat] = {}
         for norm in NORMS:
             if norm == "raw":
                 dens = {"cal": None, "syn": None, "real": None}
             else:
-                g = gamma_reg[strat][norm]
-                dens = {key: {c: g + base(norm, key)[c] for c in COORDS}
+                dens = {key: denominator(norm, key, gamma_reg[strat][norm])
                         for key in ["cal", "syn", "real"]}
             results[strat][norm] = {
                 "synthetic_unweighted": evaluate(cs, test_syn, hat["syn"], sup,
@@ -1110,11 +1390,19 @@ def main() -> None:
 
     constants = None
     if args.n_constants > 0:
-        print(f"estimating Assumption 2.3 constants on {args.n_constants} prior draws ...")
-        constants = estimate_constants(proxy, args.n_constants, args.seed + 41)
-        print(f"  kappa(H) median={constants['kappa_H']['median']:.3g} "
-              f"max={constants['kappa_H']['max']:.3g}  "
-              f"||grad h|| median={constants['grad_h_spectral_norm']['median']:.3g}")
+        print(f"estimating Assumption 3.2 constants on {args.n_constants} prior draws ...")
+        constants = estimate_constants(proxy, args.n_constants, args.seed + 41,
+                                       noise_bound=eps_loss,
+                                       gd_steps=args.gd_steps, gd_lr=args.gd_lr)
+        print(f"  lambda_min(H*) median={constants['lambda_min_H']['median']:.3g} "
+              f"min={constants['lambda_min_H']['min']:.3g}  "
+              f"PD fraction={constants['frac_positive_definite']:.0%}")
+        if constants.get("C_H"):
+            print(f"  C_H=1/lambda_min median={constants['C_H']['median']:.3g}  "
+                  f"kappa(H*) median={constants['kappa_H']['median']:.3g}")
+        if constants.get("validity_gap_sqrt_CH_eps"):
+            print("  Lemma 3.4 gap sqrt(C_H*eps) median="
+                  f"{constants['validity_gap_sqrt_CH_eps']['median']:.3g}")
 
     report = {
         "n_cal": len(calib), "n_tune": len(tune),
@@ -1143,9 +1431,16 @@ def main() -> None:
             c: {"used_max": adj[c],
                 "median": float(np.median(gap[c])),
                 "p90": float(np.percentile(gap[c], 90))} for c in COORDS},
+        "test_f_multi": args.test_f_multi,
+        "test_noise_frac": args.test_noise_frac,
+        "test_noise_tau_days": args.test_noise_tau if args.test_noise_frac is not None else None,
+        "test_set_filtered": (args.test_f_multi is None
+                              and args.test_noise_frac is None
+                              and bound is not None),
         "noise_filter": {
             "enabled": bound is not None,
-            "bound_rv_std": bound,
+            "bound_rv_std": bound,               # sup-norm eps; drives the filter
+            "eps_loss_rv_std": eps_loss,         # ||.||^2-scale eps; pairs with C_H
             "n_generated": n_gen_total,
             "n_kept": n_kept,
             "rejection_rate": rejection_rate if bound is not None else 0.0,
@@ -1168,11 +1463,11 @@ def main() -> None:
 
     # Per-system papernorm half-widths on real test (for Earth-like table / Fig 1).
     try:
-        g_paper = float(gamma_reg["surrogate"]["papernorm"])
-        dk_cal, dy_cal = delta["cal"]
+        entry = gamma_reg["surrogate"]["papernorm"]
+        g_paper, mix_paper = float(entry["gamma0"]), float(entry["mix"])
         dk_real, dy_real = delta["real"]
-        den_cal_paper = {c: g_paper + dk_cal[c] + dy_cal for c in COORDS}
-        den_real_paper = {c: g_paper + dk_real[c] + dy_real for c in COORDS}
+        den_cal_paper = denominator("papernorm", "cal", entry)
+        den_real_paper = denominator("papernorm", "real", entry)
         paper_widths = export_per_system_widths(
             cal_scores["surrogate"],
             test_real,
@@ -1183,9 +1478,11 @@ def main() -> None:
             dk_real,
             dy_real,
             w_cal=w_cal,
+            mix=mix_paper,
         )
         report["paper_widths_real_papernorm"] = {
             "gamma": paper_widths["gamma"],
+            "mix": paper_widths["mix"],
             "q_normalized": paper_widths["q_normalized"],
             "n_systems": paper_widths["n_systems"],
             "median_halfwidth_0.10": {

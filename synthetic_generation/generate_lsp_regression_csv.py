@@ -36,19 +36,19 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from preprocess import LSP_N, LSP_PERIODS
+from preprocess import LSP_N
 from synthetic_dataset import _sample_orbital_params, generate_one
 from feature_columns import (
     SPECTRAL_COLUMNS,
-    SPECTRAL_DIM,
-    SPECTRAL_GRID_SIZE,
     SUMMARY_COLUMNS,
     TARGET_COLUMNS,
 )
-from time_series_features import spectral_features
 
+# The targets/summary/coarse-spectral block is defined once, next to the 74-D
+# generator, so both datasets are guaranteed to describe the same systems the
+# same way — that identity is what makes the 64-bin vs 512-bin comparison valid.
 from generate_synthetic_regression_csv import (
-    _masked_observations,
+    base_summary_row,
 )
 
 LSP_COLUMNS = [f"lsp_power_{i + 1:03d}" for i in range(LSP_N)]
@@ -65,32 +65,7 @@ def generate_rows(n_samples: int, seed: int, f_multi: float) -> list[dict[str, f
         sample_rng = np.random.default_rng(seed + 10_000 + i)
         x, lsp, theta, info = generate_one(p, sample_rng, f_multi=f_multi)
 
-        xm = _masked_observations(x)
-        rv_std = float(info["rv_std_ms"])
-        sigma = xm[2] * rv_std
-        rv_ms = xm[1] * rv_std
-        t_days = xm[0] * float(info["t_span_days"])
-        gaps = np.diff(np.sort(t_days))
-        spectral = spectral_features(xm[0], xm[1], d=SPECTRAL_DIM, grid_size=SPECTRAL_GRID_SIZE)
-
-        row = {
-            "log10_P": float(theta[0]),
-            "log10_K": float(theta[1]),
-            "e": float(theta[2]),
-            "cos_omega": float(theta[3]),
-            "sin_omega": float(theta[4]),
-            "n_obs": int(info["n_obs"]),
-            "baseline_d": float(info["baseline_d"]),
-            "rv_std_ms": rv_std,
-            "rv_iqr_ms": float(np.subtract(*np.percentile(rv_ms, [75, 25]))),
-            "median_sigma_ms": float(np.median(sigma)),
-            "sigma_iqr_ms": float(np.subtract(*np.percentile(sigma, [75, 25]))),
-            "lsp_peak_period_d": float(LSP_PERIODS[int(np.argmax(lsp))]),
-            "lsp_peak_power": float(np.max(lsp)),
-            "median_gap_d": float(np.median(gaps)) if len(gaps) else np.nan,
-            "p90_gap_d": float(np.percentile(gaps, 90)) if len(gaps) else np.nan,
-        }
-        row.update({name: float(v) for name, v in zip(SPECTRAL_COLUMNS, spectral)})
+        row, _, _, _ = base_summary_row(x, lsp, theta, info)
         row.update({name: float(v) for name, v in zip(LSP_COLUMNS, np.asarray(lsp, dtype=float))})
         rows.append(row)
 

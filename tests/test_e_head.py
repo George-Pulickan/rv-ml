@@ -17,29 +17,7 @@ if str(ROOT) not in sys.path:
 
 from regression import DatasetBundle, load_checkpoint_and_predict_val, train_model  # noqa: E402
 from theta_loss import e_balance_weights  # noqa: E402
-
-
-def _toy_bundle(n: int = 400, in_dim: int = 8, seed: int = 0) -> DatasetBundle:
-    rng = np.random.default_rng(seed)
-    X = rng.normal(size=(n, in_dim))
-    e = np.where(rng.random(n) < 0.3, 0.0, rng.beta(0.867, 3.03, size=n))
-    omega = rng.uniform(0, 2 * np.pi, size=n)
-    y = np.column_stack([
-        rng.normal(1.5, 0.8, size=n),
-        rng.normal(1.2, 0.5, size=n),
-        e,
-        np.cos(omega),
-        np.sin(omega),
-    ])
-    return DatasetBundle(
-        X,
-        y,
-        row_idx=np.arange(n),
-        e=e,
-        has_t_peri=np.ones(n),
-        has_ecc=np.ones(n, dtype=bool),
-        df=pd.DataFrame(),
-    )
+from tests._bundles import toy_bundle as _toy_bundle  # noqa: E402
 
 
 class TestEBalanceWeights(unittest.TestCase):

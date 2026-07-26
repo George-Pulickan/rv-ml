@@ -116,13 +116,91 @@ def _curve_from_x(x: np.ndarray, info: dict) -> dict:
     }
 
 
-def make_synthetic(n: int, seed: int) -> list[dict]:
+def _inject_correlated_noise(x: np.ndarray, lsp: np.ndarray, info: dict,
+                             frac: float, tau_days: float,
+                             rng: np.random.Generator) -> tuple[np.ndarray, np.ndarray, dict]:
+    """Add a correlated (squared-exponential) component to a synthetic curve.
+
+    This is *noise-model* misspecification, which is what the paper actually
+    claims robustness to: the generative assumption y ~ h(theta) + noise(theta)
+    still holds exactly, h(theta_bar) remains the correct mean structure, and
+    theta_bar remains the right target — only the noise *process* differs from
+    the one the calibration set was drawn with.  Physically this stands for
+    stellar activity (spots, rotation, magnetic cycles), which is the dominant
+    unmodelled systematic in real radial-velocity data.
+
+    Contrast with companion injection (``f_multi``), which corrupts the mean
+    structure instead: there theta* = argmin ||h(theta) - y||^2 drifts toward a
+    blend of the planets while coverage is still scored against the dominant
+    one, so the surrogate strategy is penalised by construction.
+
+    ``frac`` is the correlated amplitude as a fraction of the curve's RV
+    standard deviation; ``tau_days`` the correlation timescale.  The curve is
+    re-normalised and its periodogram recomputed afterwards, exactly as the
+    pipeline would do for a freshly observed curve.
+    """
+    from preprocess import compute_lsp
+
+    m = x[3] == 1
+    if frac <= 0.0 or m.sum() < 2:
+        return x, lsp, info
+
+    rv_std0 = float(info["rv_std_ms"])
+    t_days = x[0][m].astype(np.float64) * float(info["t_span_days"]) + float(info["t_min_days"])
+    rv_ms = x[1][m].astype(np.float64) * rv_std0
+    sig_ms = x[2][m].astype(np.float64) * rv_std0
+
+    dt = t_days[:, None] - t_days[None, :]
+    K = (frac * rv_std0) ** 2 * np.exp(-0.5 * (dt / max(tau_days, 1e-6)) ** 2)
+    K[np.diag_indices_from(K)] += 1e-8 * max((frac * rv_std0) ** 2, 1e-12)
+    try:
+        L = np.linalg.cholesky(K)
+    except np.linalg.LinAlgError:                     # numerically singular grid
+        w, V = np.linalg.eigh(K)
+        L = V @ np.diag(np.sqrt(np.clip(w, 0.0, None)))
+    rv_ms = rv_ms + L @ rng.standard_normal(len(t_days))
+
+    med = float(np.median(rv_ms))
+    std = max(float(np.std(rv_ms)), 1e-6)
+    x = x.copy()
+    x[1][m] = ((rv_ms - med) / std).astype(x.dtype)
+    x[2][m] = (sig_ms / std).astype(x.dtype)
+    info = dict(info)
+    info["rv_std_ms"] = std
+    info["rv_med_ms"] = med
+    info["noise_mode"] = f"{info.get('noise_mode', '?')}+correlated{frac:g}"
+    return x, np.asarray(compute_lsp(t_days, rv_ms, sig_ms), dtype=float), info
+
+
+def make_synthetic(n: int, seed: int, f_multi: float = 0.0,
+                   noise_frac: float = 0.0, noise_tau_days: float = 30.0) -> list[dict]:
+    """Draw ``n`` synthetic systems from the empirical priors.
+
+    ``f_multi`` > 0 injects companion planets (see synthetic_dataset): with
+    probability f_multi the curve contains one or two additional planets, while
+    ``theta5`` still labels the dominant one (highest K).  A single-Keplerian
+    decoder h cannot represent such a curve, so this is a controlled knob for
+    *mean-structure* misspecification — note this breaks the generative
+    assumption itself, so theta_bar stops being the parameter that best
+    describes the curve.
+
+    ``noise_frac`` > 0 instead adds a correlated component at that fraction of
+    the curve's RV standard deviation (see _inject_correlated_noise): the mean
+    structure stays exactly h(theta_bar) and only the *noise process* is
+    misspecified, which is the condition the paper's robustness claim is
+    actually stated for.
+    """
     rng = np.random.default_rng(seed)
     params = _sample_orbital_params(rng, n)
     systems = []
     for i in range(n):
         p = {k: float(v[i]) for k, v in params.items()}
-        x, lsp, theta, info = generate_one(p, np.random.default_rng(seed + 7_000 + i), f_multi=0.0)
+        x, lsp, theta, info = generate_one(p, np.random.default_rng(seed + 7_000 + i),
+                                           f_multi=f_multi)
+        if noise_frac > 0.0:
+            x, lsp, info = _inject_correlated_noise(
+                x, lsp, info, noise_frac, noise_tau_days,
+                np.random.default_rng(seed + 900_000 + i))
         xm = _masked_observations(x)
         feats = _summary_row(xm, info, lsp)
         systems.append({

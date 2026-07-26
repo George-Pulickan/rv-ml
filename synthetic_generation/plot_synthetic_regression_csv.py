@@ -24,21 +24,18 @@ from feature_columns import (
     CSV_COLUMNS,
     CSV_COLUMNS_PHASEFOLD,
     PHASE_FOLD_COLUMNS,
-    PHASE_FOLD_N_BINS,
     SPECTRAL_COLUMNS,
     SUMMARY_COLUMNS,
     TARGET_COLUMNS,
 )
 from time_series_features import spectral_features
+# Shared with conformal.py, regression.py and eval_omega_nn_vs_rf.py, which all
+# import it from the same place — this module used to keep a private copy.
+from generate_synthetic_regression_csv import _masked_observations
 
 
 KEPLER_COLUMNS = TARGET_COLUMNS
 COMPARISON_COLUMNS = [*TARGET_COLUMNS, *SUMMARY_COLUMNS]
-
-
-def _masked_observations(x: np.ndarray) -> np.ndarray:
-    mask = x[3] == 1
-    return x[:, mask]
 
 
 def collect_real_summary(
