@@ -9,7 +9,7 @@ there and save it to the repo root before doing anything cluster-related.
 ## State as of 2026-07-26
 
 Everything Nicolò asked for in his 2026-07-26 reply is **implemented and merged
-into `main`** (tip `f997191`). No code work is outstanding. Tests green.
+into `main`** (tip `0701c56`). No code work is outstanding. Tests green.
 
 **The only remaining task is compute, and it has to run on the RHUL machines.**
 Nothing on this list can be done on a laptop — see the house rule in
@@ -22,7 +22,7 @@ problems that had to be cleared first, and for how to check on it.
 ## What to run
 
 ```bash
-git checkout main && git pull        # f997191 or later
+git checkout main && git pull        # 0701c56 or later
 sed "s/^\([[:space:]]*\)srun /\1/" slurm/nicolo_20260726.sbatch | bash
 ```
 
@@ -53,13 +53,20 @@ Measured on the CIM ts-nodes 2026-07-26, and extrapolated from the 07-25 run:
 | Step | Time |
 |---|---|
 | 1 — ψ retrain, 6 seeds | **~65 s/seed, ~7 min total** (measured) |
-| 2 — six CP runs at n_cal = 400 | ~1 h each, **~6 h** (extrapolated: 07-25 ran two in ~2 h) |
+| 2 — six CP runs at n_cal = 400 | first run passed **45 min without finishing** (measured); ≥4–6 h for six |
 | 3 — PKew control | included in the six above |
 | 4 — Hessian sweep, both coord sets | ~1.5–2 h; the 4000-step draws dominate |
 
-**Budget 8–10 h.** Steps 2–4 are extrapolations, not measurements — trust the
-log over this table. Every earlier timing estimate in these docs ran ~4–5×
-optimistic, so treat any unsourced number here with suspicion.
+**Budget 8–10 h.** Only step 1 and the step-2 lower bound are measured; the
+rest is extrapolation — trust the log over this table. Every earlier timing
+estimate in these docs ran ~4–5× optimistic, so treat any unsourced number here
+with suspicion.
+
+**A quiet log does not mean a dead job.** `conformal_shift.py` emits nothing
+during calibration — gaps of 10–20 min are normal. Check accumulated CPU time
+(`ps -o etime,time,pcpu -p <pid>`), not log mtime, during step 2. The one run
+above sat at 8 h of CPU time across 45 min of wall clock, i.e. ~1000% on 16
+threads, while writing nothing.
 
 ## What it produces, and the bar each output must clear
 
@@ -73,9 +80,19 @@ optimistic, so treat any unsourced number here with suspicion.
 | `figures/paper/assumption32/hessian_{PKe,PKew}.json` | PD fraction should rise ≈ 0.64 → 0.76 at 200 steps |
 | `papernorm_weight` in the metrics JSON | smoke picks w = 1.00 — **confirming this at n_cal = 400 is what Nicolò is waiting on** |
 
-Check **mtimes, not existence**. Several older helper scripts have
-precondition checks that pass happily on stale artifacts, so a dead job can
-look like a successful one.
+⚠️ **Schema warning on that last row.** The 07-26 results in
+`regression/paper_20260726-0946/` were produced by a superseded implementation
+that records `{"gamma0": …, "mix": 1.0}` and has **no `papernorm_weight` key at
+all**. `main` records `papernorm_weight` with `w`. Same quantity, different
+name — a script looking for `papernorm_weight` in the older files finds nothing
+and may report a default rather than failing. Do not compare the two runs
+key-by-key without accounting for this.
+
+Check **mtimes, not existence** — and for step 2, CPU time rather than either.
+Several older helper scripts have precondition checks that pass happily on
+stale artifacts, so a dead job can look like a successful one. The subtler
+version: a `git` operation can replace a correct file with a stale committed
+one of the same name, and every existence check still passes.
 
 ## Only after the results land
 
