@@ -8,9 +8,8 @@ there and save it to the repo root before doing anything cluster-related.
 
 ## State as of 2026-07-26
 
-Everything Nicolò asked for in his 2026-07-26 reply is **implemented and
-committed** on branch `nicolo-20260726`. No code work is outstanding.
-51/51 tests green.
+Everything Nicolò asked for in his 2026-07-26 reply is **implemented and merged
+into `main`** (tip `32a1b15`). No code work is outstanding. 51/51 tests green.
 
 **The only remaining task is compute, and it has to run on the RHUL machines.**
 Nothing on this list can be done on a laptop — see the house rule in
@@ -19,7 +18,7 @@ Nothing on this list can be done on a laptop — see the house rule in
 ## What to run
 
 ```bash
-git checkout nicolo-20260726
+git checkout main && git pull        # 32a1b15 or later
 sed "s/^srun //" slurm/nicolo_20260726.sbatch | bash
 ```
 
