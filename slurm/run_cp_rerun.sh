@@ -7,7 +7,10 @@
 # retrain the SVGP. If the original runner (or a previous rerun) is still
 # active it WAITS for it, so it can be launched and left unattended:
 #
-#   ssh VPAC005@linux.cim.rhul.ac.uk 'cd ~/rv-ml && git pull --no-edit && \
+#   (account and hostname are in handover.md under "Cluster access" — they are
+#   deliberately not in this public repo)
+#
+#   ssh <cluster-user>@<cluster-host> 'cd ~/rv-ml && git pull --no-edit && \
 #       nohup ./slurm/run_cp_rerun.sh > slurm/logs/cp-rerun-nohup.log 2>&1 & \
 #       echo started'
 #

@@ -3,7 +3,10 @@
 # updated to >= 357632c (the launcher one-liner below handles waiting for the
 # original runner and merging origin/main first — see handover.md):
 #
-#   ssh VPAC005@linux.cim.rhul.ac.uk 'cd ~/rv-ml && git fetch origin && \
+#   (account and hostname are in handover.md under "Cluster access" — they are
+#   deliberately not in this public repo)
+#
+#   ssh <cluster-user>@<cluster-host> 'cd ~/rv-ml && git fetch origin && \
 #     nohup bash -c "while pgrep -f run_jobs_direct.sh >/dev/null; do sleep 600; done; \
 #       git merge --no-edit -X ours origin/main && ./slurm/run_campus_followup.sh" \
 #     > slurm/logs/followup-nohup.log 2>&1 & echo started'
