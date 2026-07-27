@@ -1146,6 +1146,11 @@ def main() -> None:
     ap.add_argument("--n-box-samples", type=int, default=12,
                    help="parameter vectors drawn from the CP box and overlaid on "
                         "each trajectory panel (Nicolo 2026-07-26)")
+    ap.add_argument("--box-alpha", default="0.40", choices=("0.10","0.40"),
+                   help="level the trajectory box samples are drawn from. The "
+                        "0.10 region spans ~1.8 dex in log10 P, i.e. a factor 60 "
+                        "in period, so samples from it render as a solid band; "
+                        "0.40 is legible")
     ap.add_argument("--no-box-samples", action="store_true",
                    help="draw only h(theta_tab) and h(psi(y)), no box samples")
     ap.add_argument("--no-surrogate-floor", action="store_true",
@@ -1212,7 +1217,7 @@ def main() -> None:
         figure_trajectories(psi_predict, feature_cols, OUT_DIR / "rv_trajectories.png",
                             real_split=args.real_split, n_systems=args.n_trajectories,
                             n_cycles=args.traj_cycles,
-                            q_box=None if args.no_box_samples else q01,
+                            q_box=None if args.no_box_samples else (q04 if args.box_alpha == "0.40" else q01),
                             n_box_samples=args.n_box_samples)
     if want in ("all", "table"):
         earthlike_table(psi_predict, feature_cols, q_table,
