@@ -914,8 +914,12 @@ def main() -> None:
     ap.add_argument(
         "--checkpoint",
         type=Path,
-        default=ROOT / "checkpoints" / "regression_mlp_74.pt",
-        help="MLP checkpoint when --psi mlp (must match --csv feature dim)",
+        default=None,
+        help="MLP checkpoint; REQUIRED with --psi mlp (must match --csv feature "
+             "dim). No default: this used to point at "
+             "checkpoints/regression_mlp_74.pt, and on any checkout carrying "
+             "that file a run without --checkpoint silently calibrated a "
+             "near-mean predictor and exited 0.",
     )
     ap.add_argument("--psi-labels", choices=("bar", "star"), default="bar",
                     help="train psi on data-generating theta_bar (default) or on "
@@ -967,6 +971,12 @@ def main() -> None:
     print(f"noise proxy source: {proxy.source}")
 
     if args.psi == "mlp":
+        if args.checkpoint is None:
+            ap.error(
+                "--psi mlp requires --checkpoint. There is deliberately no "
+                "default: see figures/paper/psi_checkpoint_provenance.txt for "
+                "the checkpoint behind the paper's numbers and its sha256."
+            )
         if not args.checkpoint.exists():
             raise FileNotFoundError(f"MLP checkpoint not found: {args.checkpoint}")
         psi_predict, mlp_stats = _load_mlp_psi(args.checkpoint, device)
