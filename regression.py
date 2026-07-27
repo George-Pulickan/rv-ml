@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 import matplotlib
@@ -904,6 +905,17 @@ def _fit_mlp_loop(
     return model
 
 
+def _train_config_stamp(**hyper) -> dict:
+    """How this model was trained: full CLI, hyperparams, torch version, time."""
+    stamp = {
+        "argv": " ".join(sys.argv),
+        "torch_version": torch.__version__,
+        "saved_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+    }
+    stamp.update({k: v for k, v in hyper.items() if v is not None})
+    return stamp
+
+
 def _target_norm_stats(y: np.ndarray, *, target_norm: bool) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Return (y_mean, y_std, y_fit) for a specialist subset."""
     if target_norm:
@@ -1207,6 +1219,19 @@ def train_dual_e_models(
         "gate_threshold": float(chosen_threshold),
         "e_zero_classifier": clf,
     }
+
+    norm_stats["train_config"] = _train_config_stamp(
+        seed=seed,
+        epochs=epochs,
+        batch_size=batch_size,
+        lr=lr,
+        val_frac=val_frac,
+        patience=patience,
+        targets=targets,
+        e_head="dual",
+        feature_set=feature_set,
+        n_train=int(len(train_idx)),
+    )
 
     if checkpoint_path is not None:
         checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1523,6 +1548,19 @@ def train_model(
     else:
         pred_zero = val_pred[:, 2] <= 1e-3
         metrics["e_zero_classifier"] = _zero_class_metrics(true_zero, pred_zero, has_ecc_val)
+
+    norm_stats["train_config"] = _train_config_stamp(
+        seed=seed,
+        epochs=epochs,
+        batch_size=batch_size,
+        lr=lr,
+        val_frac=val_frac,
+        patience=patience,
+        targets=targets,
+        e_head=e_head,
+        feature_set=feature_set,
+        n_train=int(len(train_idx)),
+    )
 
     if checkpoint_path is not None:
         checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
