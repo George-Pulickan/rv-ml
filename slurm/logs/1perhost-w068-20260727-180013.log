@@ -1,0 +1,15 @@
+=== waiting on /home/cim/misc/vpac005/rv-ml/slurm/logs/cponly-20260727-155842.log ===
+=== main job finished ===
+=== exit=0 end Mon 27 Jul 21:22:04 BST 2026 ===
+=== start Mon 27 Jul 21:22:14 BST 2026 on cim-ts-node-03 ===
+commit:  8dccbe5 paper figures: drop the d=4 assumption that broke the Earth-like table
+gp ckpt: 1081541 bytes (want 1081541)
+backed up prior output to synthetic_generation/regression/pke_20260726/gamma_real_val_1perhost_pre068
+/home/cim/misc/vpac005/rv-ml/.venv/lib/python3.12/site-packages/linear_operator/utils/cholesky.py:41: NumericalWarning: A not p.d., added jitter of 1.0e-06 to the diagonal
+  warnings.warn(
+/home/cim/misc/vpac005/rv-ml/.venv/lib/python3.12/site-packages/linear_operator/utils/cholesky.py:41: NumericalWarning: A not p.d., added jitter of 1.0e-05 to the diagonal
+  warnings.warn(
+/home/cim/misc/vpac005/rv-ml/.venv/lib/python3.12/site-packages/linear_operator/utils/cholesky.py:41: NumericalWarning: A not p.d., added jitter of 1.0e-04 to the diagonal
+  warnings.warn(
+/home/cim/misc/vpac005/rv-ml/.venv/lib/python3.12/site-packages/linear_operator/operators/_linear_operator.py:2180: NumericalWarning: Runtime Error when computing Cholesky decomposition: Matrix not positive definite after repeatedly adding jitter up to 1.0e-04.. Using symeig method.
+  warnings.warn(

@@ -1,0 +1,244 @@
+=== start Mon 27 Jul 11:21:21 BST 2026 on cim-ts-node-03 ===
+0405f8f sbatch: allow skipping the Hessian sweep on a psi-only rerun
+=== inputs ===
+-rw-r--r-- 1 vpac005 misc  1081541 2026-07-27 models/gp_residual_svgp.pt
+-rw-r--r-- 1 vpac005 misc 16511266 2026-07-25 synthetic_generation/datasets/synthetic_regression_10000.csv
+0405f8f sbatch: allow skipping the Hessian sweep on a psi-only rerun
+loading CSV from synthetic_generation/datasets/synthetic_regression_10000.csv (feature-set=74) ...
+dataset: 10,000 samples, 74 features -> 5 targets
+  epoch    1  val_mse=0.70717
+  epoch   50  val_mse=0.55612
+  epoch  100  val_mse=0.53829
+  early stop at epoch 136 (patience=30)
+saved checkpoint -> checkpoints/psi_20260726/mlp74_s0.pt
+saved plot -> figures/regression_synthetic/seed_0/pred_vs_true.png
+saved plot -> figures/regression_synthetic/seed_0/pred_vs_true_log10_P.png
+saved plot -> figures/regression_synthetic/seed_0/pred_vs_true_log10_K.png
+saved plot -> figures/regression_synthetic/seed_0/pred_vs_true_e.png
+saved plot -> figures/regression_synthetic/seed_0/pred_vs_true_cos_omega.png
+saved plot -> figures/regression_synthetic/seed_0/pred_vs_true_sin_omega.png
+saved plot -> figures/regression_synthetic/seed_0/pred_vs_true_omega_circle.png
+saved plot -> figures/regression_synthetic/seed_0/pred_vs_true_omega_deg.png
+collecting real reference systems (split=test) ...
+rejected 1 real systems with median sigma outside [0.1, 100.0] m/s
+real reference: 57 systems
+saved plot -> figures/regression_synthetic/seed_0/combined_scatter_log10_K.png
+saved metrics -> figures/regression_synthetic/seed_0/metrics.json
+validation MSE: 0.52068
+  log10_P       R2=0.757  MSE=0.27142
+  log10_K       R2=0.832  MSE=0.04922
+  e             R2=0.312  MSE=0.04506
+  cos_omega     R2=-1.527  MSE=1.41131
+  sin_omega     R2=-1.552  MSE=0.82636
+e headline: R2_all=0.312  R2_e>0=0.286 (n=1529)  R2_e>0.1=-0.045  MAE_e>0=0.1619
+e=0 gate: acc=0.761  recall=0.008  precision=0.286  f1=0.016
+omega headline (e>0.1, n=1006): angular MAE=90.4 deg  cos R2=-0.976  sin R2=-1.052
+omega by e-band:
+  e_0.1_0.3     n= 481  MAE=92.7 deg  cos R2=-1.203  sin R2=-0.973
+  e_0.3_0.5     n= 143  MAE=86.9 deg  cos R2=-0.663  sin R2=-1.243
+  e_gt_0.5      n= 382  MAE=88.9 deg  cos R2=-0.838  sin R2=-1.093
+omega by SNR tertile (e>0.1):
+  low           n= 335  MAE=89.5 deg
+  mid           n= 335  MAE=90.6 deg
+  high          n= 336  MAE=91.3 deg
+real transfer (log10_K): R2=0.843  MSE=0.04080
+loading CSV from synthetic_generation/datasets/synthetic_regression_10000.csv (feature-set=74) ...
+dataset: 10,000 samples, 74 features -> 5 targets
+  epoch    1  val_mse=0.73748
+  epoch   50  val_mse=0.54261
+  early stop at epoch 82 (patience=30)
+saved checkpoint -> checkpoints/psi_20260726/mlp74_s1.pt
+saved plot -> figures/regression_synthetic/seed_1/pred_vs_true.png
+saved plot -> figures/regression_synthetic/seed_1/pred_vs_true_log10_P.png
+saved plot -> figures/regression_synthetic/seed_1/pred_vs_true_log10_K.png
+saved plot -> figures/regression_synthetic/seed_1/pred_vs_true_e.png
+saved plot -> figures/regression_synthetic/seed_1/pred_vs_true_cos_omega.png
+saved plot -> figures/regression_synthetic/seed_1/pred_vs_true_sin_omega.png
+saved plot -> figures/regression_synthetic/seed_1/pred_vs_true_omega_circle.png
+saved plot -> figures/regression_synthetic/seed_1/pred_vs_true_omega_deg.png
+collecting real reference systems (split=test) ...
+rejected 1 real systems with median sigma outside [0.1, 100.0] m/s
+real reference: 57 systems
+saved plot -> figures/regression_synthetic/seed_1/combined_scatter_log10_K.png
+saved metrics -> figures/regression_synthetic/seed_1/metrics.json
+validation MSE: 0.55287
+  log10_P       R2=0.736  MSE=0.29796
+  log10_K       R2=0.832  MSE=0.04977
+  e             R2=0.341  MSE=0.04514
+  cos_omega     R2=-1.934  MSE=1.65534
+  sin_omega     R2=-1.228  MSE=0.71616
+e headline: R2_all=0.341  R2_e>0=0.316 (n=1535)  R2_e>0.1=-0.004  MAE_e>0=0.1615
+e=0 gate: acc=0.770  recall=0.056  precision=0.553  f1=0.102
+omega headline (e>0.1, n=1014): angular MAE=87.8 deg  cos R2=-1.092  sin R2=-0.803
+omega by e-band:
+  e_0.1_0.3     n= 478  MAE=88.9 deg  cos R2=-1.149  sin R2=-0.826
+  e_0.3_0.5     n= 134  MAE=91.4 deg  cos R2=-1.209  sin R2=-0.903
+  e_gt_0.5      n= 402  MAE=85.2 deg  cos R2=-1.010  sin R2=-0.746
+omega by SNR tertile (e>0.1):
+  low           n= 338  MAE=83.7 deg
+  mid           n= 338  MAE=89.4 deg
+  high          n= 338  MAE=90.2 deg
+real transfer (log10_K): R2=0.802  MSE=0.05157
+loading CSV from synthetic_generation/datasets/synthetic_regression_10000.csv (feature-set=74) ...
+dataset: 10,000 samples, 74 features -> 5 targets
+  epoch    1  val_mse=0.69317
+  epoch   50  val_mse=0.56574
+  epoch  100  val_mse=0.51032
+  early stop at epoch 134 (patience=30)
+saved checkpoint -> checkpoints/psi_20260726/mlp74_s2.pt
+saved plot -> figures/regression_synthetic/seed_2/pred_vs_true.png
+saved plot -> figures/regression_synthetic/seed_2/pred_vs_true_log10_P.png
+saved plot -> figures/regression_synthetic/seed_2/pred_vs_true_log10_K.png
+saved plot -> figures/regression_synthetic/seed_2/pred_vs_true_e.png
+saved plot -> figures/regression_synthetic/seed_2/pred_vs_true_cos_omega.png
+saved plot -> figures/regression_synthetic/seed_2/pred_vs_true_sin_omega.png
+saved plot -> figures/regression_synthetic/seed_2/pred_vs_true_omega_circle.png
+saved plot -> figures/regression_synthetic/seed_2/pred_vs_true_omega_deg.png
+collecting real reference systems (split=test) ...
+rejected 1 real systems with median sigma outside [0.1, 100.0] m/s
+real reference: 57 systems
+saved plot -> figures/regression_synthetic/seed_2/combined_scatter_log10_K.png
+saved metrics -> figures/regression_synthetic/seed_2/metrics.json
+validation MSE: 0.50343
+  log10_P       R2=0.759  MSE=0.27078
+  log10_K       R2=0.822  MSE=0.04865
+  e             R2=0.347  MSE=0.04107
+  cos_omega     R2=-1.693  MSE=1.47552
+  sin_omega     R2=-1.123  MSE=0.68113
+e headline: R2_all=0.347  R2_e>0=0.319 (n=1524)  R2_e>0.1=0.023  MAE_e>0=0.1525
+e=0 gate: acc=0.761  recall=0.065  precision=0.492  f1=0.115
+omega headline (e>0.1, n=1006): angular MAE=87.4 deg  cos R2=-1.231  sin R2=-0.629
+omega by e-band:
+  e_0.1_0.3     n= 520  MAE=86.1 deg  cos R2=-1.234  sin R2=-0.581
+  e_0.3_0.5     n= 131  MAE=87.0 deg  cos R2=-1.430  sin R2=-0.432
+  e_gt_0.5      n= 355  MAE=89.3 deg  cos R2=-1.162  sin R2=-0.783
+omega by SNR tertile (e>0.1):
+  low           n= 335  MAE=87.3 deg
+  mid           n= 335  MAE=87.6 deg
+  high          n= 336  MAE=87.2 deg
+real transfer (log10_K): R2=0.817  MSE=0.04772
+loading CSV from synthetic_generation/datasets/synthetic_regression_10000.csv (feature-set=74) ...
+dataset: 10,000 samples, 74 features -> 5 targets
+  epoch    1  val_mse=0.71425
+  epoch   50  val_mse=0.54773
+  epoch  100  val_mse=0.52763
+  epoch  150  val_mse=0.51523
+  epoch  200  val_mse=0.50948
+saved checkpoint -> checkpoints/psi_20260726/mlp74_s7.pt
+saved plot -> figures/regression_synthetic/seed_7/pred_vs_true.png
+saved plot -> figures/regression_synthetic/seed_7/pred_vs_true_log10_P.png
+saved plot -> figures/regression_synthetic/seed_7/pred_vs_true_log10_K.png
+saved plot -> figures/regression_synthetic/seed_7/pred_vs_true_e.png
+saved plot -> figures/regression_synthetic/seed_7/pred_vs_true_cos_omega.png
+saved plot -> figures/regression_synthetic/seed_7/pred_vs_true_sin_omega.png
+saved plot -> figures/regression_synthetic/seed_7/pred_vs_true_omega_circle.png
+saved plot -> figures/regression_synthetic/seed_7/pred_vs_true_omega_deg.png
+collecting real reference systems (split=test) ...
+rejected 1 real systems with median sigma outside [0.1, 100.0] m/s
+real reference: 57 systems
+saved plot -> figures/regression_synthetic/seed_7/combined_scatter_log10_K.png
+saved metrics -> figures/regression_synthetic/seed_7/metrics.json
+validation MSE: 0.48623
+  log10_P       R2=0.762  MSE=0.26850
+  log10_K       R2=0.848  MSE=0.04398
+  e             R2=0.329  MSE=0.04345
+  cos_omega     R2=-1.573  MSE=1.41871
+  sin_omega     R2=-0.997  MSE=0.65650
+e headline: R2_all=0.329  R2_e>0=0.325 (n=1546)  R2_e>0.1=0.098  MAE_e>0=0.1555
+e=0 gate: acc=0.771  recall=0.024  precision=0.423  f1=0.046
+omega headline (e>0.1, n=1018): angular MAE=86.3 deg  cos R2=-1.262  sin R2=-0.553
+omega by e-band:
+  e_0.1_0.3     n= 521  MAE=86.1 deg  cos R2=-1.291  sin R2=-0.552
+  e_0.3_0.5     n= 129  MAE=90.2 deg  cos R2=-1.232  sin R2=-0.772
+  e_gt_0.5      n= 368  MAE=85.4 deg  cos R2=-1.248  sin R2=-0.491
+omega by SNR tertile (e>0.1):
+  low           n= 339  MAE=85.7 deg
+  mid           n= 339  MAE=87.2 deg
+  high          n= 340  MAE=86.1 deg
+real transfer (log10_K): R2=0.822  MSE=0.04625
+loading CSV from synthetic_generation/datasets/synthetic_regression_10000.csv (feature-set=74) ...
+dataset: 10,000 samples, 74 features -> 5 targets
+  epoch    1  val_mse=0.72033
+  epoch   50  val_mse=0.54232
+  epoch  100  val_mse=0.55584
+  early stop at epoch 114 (patience=30)
+saved checkpoint -> checkpoints/psi_20260726/mlp74_s42.pt
+saved plot -> figures/regression_synthetic/seed_42/pred_vs_true.png
+saved plot -> figures/regression_synthetic/seed_42/pred_vs_true_log10_P.png
+saved plot -> figures/regression_synthetic/seed_42/pred_vs_true_log10_K.png
+saved plot -> figures/regression_synthetic/seed_42/pred_vs_true_e.png
+saved plot -> figures/regression_synthetic/seed_42/pred_vs_true_cos_omega.png
+saved plot -> figures/regression_synthetic/seed_42/pred_vs_true_sin_omega.png
+saved plot -> figures/regression_synthetic/seed_42/pred_vs_true_omega_circle.png
+saved plot -> figures/regression_synthetic/seed_42/pred_vs_true_omega_deg.png
+collecting real reference systems (split=test) ...
+rejected 1 real systems with median sigma outside [0.1, 100.0] m/s
+real reference: 57 systems
+saved plot -> figures/regression_synthetic/seed_42/combined_scatter_log10_K.png
+saved metrics -> figures/regression_synthetic/seed_42/metrics.json
+validation MSE: 0.48845
+  log10_P       R2=0.755  MSE=0.27653
+  log10_K       R2=0.813  MSE=0.05242
+  e             R2=0.354  MSE=0.04388
+  cos_omega     R2=-1.538  MSE=1.40551
+  sin_omega     R2=-1.048  MSE=0.66391
+e headline: R2_all=0.354  R2_e>0=0.314 (n=1521)  R2_e>0.1=-0.015  MAE_e>0=0.1611
+e=0 gate: acc=0.757  recall=0.048  precision=0.434  f1=0.086
+omega headline (e>0.1, n=1001): angular MAE=88.4 deg  cos R2=-1.274  sin R2=-0.642
+omega by e-band:
+  e_0.1_0.3     n= 488  MAE=87.7 deg  cos R2=-1.357  sin R2=-0.567
+  e_0.3_0.5     n= 120  MAE=86.1 deg  cos R2=-0.952  sin R2=-0.814
+  e_gt_0.5      n= 393  MAE=89.8 deg  cos R2=-1.274  sin R2=-0.697
+omega by SNR tertile (e>0.1):
+  low           n= 334  MAE=88.2 deg
+  mid           n= 333  MAE=87.0 deg
+  high          n= 334  MAE=89.9 deg
+real transfer (log10_K): R2=0.842  MSE=0.04121
+loading CSV from synthetic_generation/datasets/synthetic_regression_10000.csv (feature-set=74) ...
+dataset: 10,000 samples, 74 features -> 5 targets
+  epoch    1  val_mse=0.70589
+  epoch   50  val_mse=0.54885
+  epoch  100  val_mse=0.53087
+  epoch  150  val_mse=0.51219
+  early stop at epoch 195 (patience=30)
+saved checkpoint -> checkpoints/psi_20260726/mlp74_s123.pt
+saved plot -> figures/regression_synthetic/seed_123/pred_vs_true.png
+saved plot -> figures/regression_synthetic/seed_123/pred_vs_true_log10_P.png
+saved plot -> figures/regression_synthetic/seed_123/pred_vs_true_log10_K.png
+saved plot -> figures/regression_synthetic/seed_123/pred_vs_true_e.png
+saved plot -> figures/regression_synthetic/seed_123/pred_vs_true_cos_omega.png
+saved plot -> figures/regression_synthetic/seed_123/pred_vs_true_sin_omega.png
+saved plot -> figures/regression_synthetic/seed_123/pred_vs_true_omega_circle.png
+saved plot -> figures/regression_synthetic/seed_123/pred_vs_true_omega_deg.png
+collecting real reference systems (split=test) ...
+rejected 1 real systems with median sigma outside [0.1, 100.0] m/s
+real reference: 57 systems
+saved plot -> figures/regression_synthetic/seed_123/combined_scatter_log10_K.png
+saved metrics -> figures/regression_synthetic/seed_123/metrics.json
+validation MSE: 0.46383
+  log10_P       R2=0.766  MSE=0.25961
+  log10_K       R2=0.819  MSE=0.04920
+  e             R2=0.348  MSE=0.04210
+  cos_omega     R2=-1.181  MSE=1.22977
+  sin_omega     R2=-1.370  MSE=0.73847
+e headline: R2_all=0.348  R2_e>0=0.312 (n=1530)  R2_e>0.1=-0.018  MAE_e>0=0.1534
+e=0 gate: acc=0.756  recall=0.023  precision=0.275  f1=0.043
+omega headline (e>0.1, n=1014): angular MAE=90.0 deg  cos R2=-1.085  sin R2=-0.896
+omega by e-band:
+  e_0.1_0.3     n= 499  MAE=91.7 deg  cos R2=-1.127  sin R2=-0.947
+  e_0.3_0.5     n= 117  MAE=88.4 deg  cos R2=-1.044  sin R2=-0.939
+  e_gt_0.5      n= 398  MAE=88.3 deg  cos R2=-1.053  sin R2=-0.832
+omega by SNR tertile (e>0.1):
+  low           n= 338  MAE=90.4 deg
+  mid           n= 338  MAE=90.8 deg
+  high          n= 338  MAE=88.9 deg
+real transfer (log10_K): R2=0.820  MSE=0.04696
+reported CP coordinates: ['log10_P', 'log10_K', 'e'] (Bonferroni divisor 3)
+noise proxy source: gp_residual_svgp
+Traceback (most recent call last):
+  File "/home/cim/misc/vpac005/rv-ml/conformal_shift.py", line 1336, in <module>
+    main()
+  File "/home/cim/misc/vpac005/rv-ml/conformal_shift.py", line 967, in main
+    raise ValueError(
+ValueError: MLP in_dim=74 but --csv has 586 feature columns; pass a matching CSV (e.g. synthetic_regression_10000.csv for the 74-D checkpoint)
+=== exit=1 end Mon 27 Jul 11:28:50 BST 2026 ===

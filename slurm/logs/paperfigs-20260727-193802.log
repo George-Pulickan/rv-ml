@@ -1,0 +1,24 @@
+=== start Mon 27 Jul 19:38:02 BST 2026 on cim-ts-node-03 ===
+8dccbe5 paper figures: drop the d=4 assumption that broke the Earth-like table
+psi     : checkpoints/psi_20260726/mlp74_s42.pt (77485 bytes)
+metrics : synthetic_generation/regression/pke_20260726/gamma_real_val/conformal_shift_metrics.json (2026-07-27 17:45)
+--- 1/3 Earth-like table at nominal 0.68 vs catalogue 1-sigma ---
+loaded per-system widths (51 systems) from synthetic_generation/regression/pke_20260726/gamma_real_val/per_system_widths_papernorm.json
+Earth-like table -> /home/cim/misc/vpac005/rv-ml/figures/paper/earthlike_top10.csv , /home/cim/misc/vpac005/rv-ml/figures/paper/earthlike_top10.tex
+  exit=0
+--- 2/3 2-D region boxes (needs the table csv above) ---
+Region-box figure -> /home/cim/misc/vpac005/rv-ml/figures/paper/rv_region_boxes.png
+Region-box figure -> /home/cim/misc/vpac005/rv-ml/figures/paper/rv_region_boxes_physical.png
+  exit=0
+--- 3/3 trajectories with CP-box samples + MSE in legend ---
+loaded per-system widths (51 systems) from synthetic_generation/regression/pke_20260726/gamma_real_val/per_system_widths_papernorm.json
+Trajectory figure -> /home/cim/misc/vpac005/rv-ml/figures/paper/rv_trajectories.png
+  exit=0
+=== resulting artifacts ===
+-rw-r--r-- 1 vpac005 misc    4395 2026-07-27_19:38 figures/paper/earthlike_top10.csv
+-rw-r--r-- 1 vpac005 misc    2116 2026-07-27_19:38 figures/paper/earthlike_top10.tex
+-rw-r--r-- 1 vpac005 misc   83737 2026-07-27_16:39 figures/paper/rv_mse_scatter.png
+-rw-r--r-- 1 vpac005 misc  142268 2026-07-27_19:38 figures/paper/rv_region_boxes_physical.png
+-rw-r--r-- 1 vpac005 misc  108597 2026-07-27_19:38 figures/paper/rv_region_boxes.png
+-rw-r--r-- 1 vpac005 misc 1006237 2026-07-27_19:38 figures/paper/rv_trajectories.png
+=== end Mon 27 Jul 19:38:28 BST 2026 ===
