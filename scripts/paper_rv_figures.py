@@ -739,7 +739,7 @@ def figure_trajectories(
     sigma_min: float = 0.1,
     sigma_max: float = 100.0,
     q_box: dict | None = None,
-    n_box_samples: int = 12,
+    n_box_samples: int = 5,
 ) -> None:
     """RV trajectories in time — no projection onto a single period.
 
@@ -1143,7 +1143,7 @@ def main() -> None:
                    help="alpha whose quantiles fill the Earth-like table; use "
                         "0.32 (nominal 0.68) with --sigma-scale 1.0 to compare "
                         "against catalogue 1-sigma intervals")
-    ap.add_argument("--n-box-samples", type=int, default=12,
+    ap.add_argument("--n-box-samples", type=int, default=5,
                    help="parameter vectors drawn from the CP box and overlaid on "
                         "each trajectory panel (Nicolo 2026-07-26)")
     ap.add_argument("--box-alpha", default="0.40", choices=("0.10","0.40"),
