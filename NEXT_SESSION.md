@@ -65,18 +65,20 @@ measure: median λ_min 29.7 vs 5.9, κ_median 7.4k vs 31.3k.
 | 1000 | 0.84 | 30.943 | 0.444 |
 | 4000 | 0.88 | 32.227 | 0.435 |
 
-with ε = 6.111 (`noise_filter.bound_rv_std`). **The previously quoted
-√(C_H·ε) = 6.71 — "larger than the support of e, so Theorem 3.6 is vacuous" —
-no longer holds.** At 0.45 the bound constrains e to under half its range, which
-is meaningful.
+where the √(C_H·ε) column uses ε = 6.111 (`noise_filter.bound_rv_std`).
 
-The real limitation is different: **the assumption fails outright on 12% of
-draws** (λ_min goes negative, min −0.18 at 200 steps). State it that way, not as
-vacuity.
+🚨 **That column is computed on the WRONG ε and must not be quoted.**
+`bound_rv_std` is a pointwise **sup-norm** in rv_std units. Theorem 3.6 needs ε
+on the **loss scale**, ℓ(θ) = ‖y−h(θ)‖² ≤ ε, which measured 504.2 on the 07-26
+run. On that scale the bound is √(504.2/29.7) ≈ **4.1** — still far beyond the
+support of e, so **Theorem 3.6 remains vacuous at the measured constants**, as
+already stated to Nicolò. No output records the loss-scale ε; it must be
+recomputed. See Trap 8 in `handover.md`.
 
-⚠️ **√(C_H·ε) is a derived quantity — no pipeline output reports it.** It was
-computed as `sqrt(eps / lambda_min_median)` across two files. Re-derive before
-quoting it in the paper.
+⚠️ **These PD fractions also contradict the numbers already sent to Nicolò**
+(0.64 with ω / 0.76 without at 200 steps, degrading to 0.50 by 4000). This is
+*not* the RF/MLP problem — `assumption_hessian.py` never touches ψ. Resolve the
+discrepancy before quoting either set.
 
 ## What to do next
 
