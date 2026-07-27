@@ -81,14 +81,26 @@ mkdir -p "$CKPT_DIR"
 # ---- 1. psi retrain across seeds -----------------------------------------
 # ~65 s each on a CIM ts-node (measured 2026-07-26; the "~15 s" quoted here
 # before was wrong).  The spread is what we report, not any single seed.
-for SEED in 0 1 2 7 42 123; do
-    srun python regression.py --feature-set 74 --epochs 200 --seed "$SEED" \
-        --real-split test \
-        --out "figures/regression_synthetic/seed_${SEED}" \
-        --checkpoint "${CKPT_DIR}/mlp74_s${SEED}.pt"
-done
+#
+# RVML_SKIP_PSI=1 reuses existing checkpoints instead of retraining. Use it when
+# only the CP steps need redoing -- regression.py is deterministic per seed, so
+# a retrain at the same commit reproduces the same file. It also dodges an
+# intermittent SIGILL ("Illegal instruction", exit 132) seen in this loop on
+# 2026-07-27: the nodes are QEMU VMs advertising a minimal feature set, and the
+# crash did not recur at the same seed, so it is not reproducible on demand.
+if [[ "${RVML_SKIP_PSI:-0}" == "1" ]]; then
+    echo "=== step 1 skipped (RVML_SKIP_PSI=1); reusing existing checkpoints ==="
+else
+    for SEED in 0 1 2 7 42 123; do
+        srun python regression.py --feature-set 74 --epochs 200 --seed "$SEED" \
+            --real-split test \
+            --out "figures/regression_synthetic/seed_${SEED}" \
+            --checkpoint "${CKPT_DIR}/mlp74_s${SEED}.pt"
+    done
+fi
 PSI="${CKPT_DIR}/mlp74_s42.pt"
-test -f "$PSI" || { echo "psi retrain produced no checkpoint"; exit 1; }
+test -f "$PSI" || { echo "psi checkpoint missing: $PSI"; exit 1; }
+echo "psi: $PSI ($(stat -c %s "$PSI") bytes, $(stat -c %y "$PSI" | cut -c1-16))"
 
 # ---- 2. Full-scale CP, omega dropped (PKe) --------------------------------
 # --papernorm-weight omitted on purpose: the eq-(17) weight is tuned on the
