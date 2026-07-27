@@ -104,10 +104,19 @@ def _match_system_widths(
             best_d, best = d, row
     if best is None or best_d > 1.0:  # loose match guard
         return None
+    # Iterate the coordinates the run actually exported, not a fixed 4-tuple.
+    # omega was dropped as a reported coordinate on 2026-07-26, so a PKe run's
+    # halfwidths have no "omega" key and the old hardcoded list raised KeyError.
+    hw_at_alpha = best["halfwidths"].get(alpha)
+    if hw_at_alpha is None:
+        raise KeyError(
+            f"per-system widths have no alpha {alpha!r}; available: "
+            f"{sorted(best['halfwidths'])}. Re-run conformal_shift with that "
+            "alpha in export_per_system_widths.")
     out = {}
-    for c in ("log10_P", "log10_K", "e", "omega"):
-        v = float(best["halfwidths"][alpha][c])
-        if not math.isfinite(v) and fallback is not None:
+    for c in hw_at_alpha:
+        v = float(hw_at_alpha[c])
+        if not math.isfinite(v) and fallback is not None and c in fallback:
             v = float(fallback[c])
         out[c] = v
     return out
@@ -922,6 +931,7 @@ def earthlike_table(
     out_tex: Path,
     top_k: int = 10,
     widths_blob: dict | None = None,
+    alpha: str = "0.10",
 ) -> None:
     labels = pd.read_csv(ROOT / "data" / "labels.csv")
     splits = pd.read_csv(ROOT / "data" / "splits.csv")
@@ -973,7 +983,7 @@ def earthlike_table(
         X = _feat_row_for_system(s, feature_cols)[None, :]
         pred = psi_predict(X)[0]
         tab = s["theta5"]
-        hw = _match_system_widths(pred, widths_blob, fallback=q01, alpha="0.10")
+        hw = _match_system_widths(pred, widths_blob, fallback=q01, alpha=alpha)
         source = "papernorm_per_system" if hw is not None else "global_raw"
         if hw is None:
             hw = q01
@@ -1024,7 +1034,7 @@ def earthlike_table(
             "halfwidth_log10_P_a01": float(hw["log10_P"]),
             "halfwidth_log10_K_a01": float(hw["log10_K"]),
             "halfwidth_e_a01": float(hw["e"]),
-            "halfwidth_omega_a01": float(hw["omega"]),
+            "halfwidth_omega_a01": float(hw.get("omega", float("nan"))),  # absent for PKe runs
             "P_cp_lo_d": P_cp_lo,
             "P_cp_hi_d": P_cp_hi,
             "K_cp_lo_ms": K_cp_lo,
@@ -1208,7 +1218,7 @@ def main() -> None:
         earthlike_table(psi_predict, feature_cols, q_table,
                         OUT_DIR / "earthlike_top10.csv",
                         OUT_DIR / "earthlike_top10.tex",
-                        widths_blob=widths_blob)
+                        widths_blob=widths_blob, alpha=args.table_alpha)
     if want == "all":
         for sp in ("relative", "physical"):
             suffix = "" if sp == "relative" else "_physical"
