@@ -588,7 +588,13 @@ def export_per_system_widths(
     delta_c: dict,
     delta_y: np.ndarray,
     *,
-    alphas: tuple[float, ...] = (0.10, 0.40),
+    # 0.32 (nominal 0.68) added 2026-07-27: Nicolo asked for the prediction
+    # windows at the 1-sigma level, to sit beside the catalogue's 1-sigma
+    # credible intervals. These half-widths cannot be recovered post hoc --
+    # they need q_norm computed on the calibration scores under the papernorm
+    # denominator, which is not persisted -- so the alpha must be present here
+    # at run time.
+    alphas: tuple[float, ...] = (0.10, 0.32, 0.40),
     w_cal: np.ndarray | None = None,
 ) -> dict:
     """Per-system papernorm half-widths for paper figures / Earth-like table.
@@ -1310,13 +1316,13 @@ def main() -> None:
             "gamma": paper_widths["gamma"],
             "q_normalized": paper_widths["q_normalized"],
             "n_systems": paper_widths["n_systems"],
-            "median_halfwidth_0.10": {
-                c: float(np.nanmedian([row["halfwidths"]["0.10"][c] for row in paper_widths["systems"]]))
-                for c in COORDS
-            },
-            "median_halfwidth_0.40": {
-                c: float(np.nanmedian([row["halfwidths"]["0.40"][c] for row in paper_widths["systems"]]))
-                for c in COORDS
+            **{
+                f"median_halfwidth_{a}": {
+                    c: float(np.nanmedian(
+                        [row["halfwidths"][a][c] for row in paper_widths["systems"]]))
+                    for c in COORDS
+                }
+                for a in paper_widths["alphas"]
             },
         }
         widths_path = args.out_dir / "per_system_widths_papernorm.json"
