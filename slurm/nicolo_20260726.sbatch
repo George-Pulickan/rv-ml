@@ -93,42 +93,71 @@ test -f "$PSI" || { echo "psi retrain produced no checkpoint"; exit 1; }
 # ---- 2. Full-scale CP, omega dropped (PKe) --------------------------------
 # --papernorm-weight omitted on purpose: the eq-(17) weight is tuned on the
 # tuning set and reported, which is what Nicolò asked for.
+#
+# **--psi mlp is mandatory on every call.**  conformal_shift.py defaults --psi
+# to "rf", and --checkpoint is READ ONLY when --psi mlp -- argparse accepts it
+# either way and the code silently discards it otherwise.  The 2026-07-26 run
+# omitted it and spent 9 hours calibrating a RandomForest: exit 0, no warning,
+# plausible-looking numbers, wrong predictor.  assert_mlp below checks what each
+# run actually RECORDED, so a repeat fails loudly instead of silently.
 CP_BASE=synthetic_generation/regression/pke_20260726
 FIG_BASE=synthetic_generation/figures/synthetic_regression_10000/pke_20260726
 
-srun python conformal_shift.py --checkpoint "$PSI" --coords PKe \
-    --out-dir "${CP_BASE}/gamma_syn" --fig-dir "${FIG_BASE}/gamma_syn"
+# Fail the job if a completed run did not use the MLP psi.
+assert_mlp() {
+    local out_dir="$1"
+    local m="${out_dir}/conformal_shift_metrics.json"
+    test -f "$m" || { echo "FATAL: no metrics written to ${out_dir}"; exit 1; }
+    python - "$m" <<'PYEOF'
+import json, sys
+m = json.load(open(sys.argv[1]))
+psi, ckpt = m.get("psi"), m.get("checkpoint")
+if psi != "mlp" or not ckpt:
+    sys.exit(f"FATAL: {sys.argv[1]} recorded psi={psi!r} checkpoint={ckpt!r}; "
+             "expected the MLP. Add --psi mlp to this call.")
+print(f"  ok: psi={psi} checkpoint={ckpt}")
+PYEOF
+}
 
-srun python conformal_shift.py --checkpoint "$PSI" --coords PKe \
+srun python conformal_shift.py --psi mlp --checkpoint "$PSI" --coords PKe \
+    --out-dir "${CP_BASE}/gamma_syn" --fig-dir "${FIG_BASE}/gamma_syn"
+assert_mlp "${CP_BASE}/gamma_syn"
+
+srun python conformal_shift.py --psi mlp --checkpoint "$PSI" --coords PKe \
     --gamma-tune-on real-val \
     --out-dir "${CP_BASE}/gamma_real_val" --fig-dir "${FIG_BASE}/gamma_real_val"
+assert_mlp "${CP_BASE}/gamma_real_val"
 
 # One series per star: the corpus stores one row per RV file, so 51 filtered
 # test series are only 34 distinct stars (HD 179949 contributes 4).  This
 # variant makes the real test points independent across hosts.
-srun python conformal_shift.py --checkpoint "$PSI" --coords PKe \
+srun python conformal_shift.py --psi mlp --checkpoint "$PSI" --coords PKe \
     --gamma-tune-on real-val --one-per-host \
     --out-dir "${CP_BASE}/gamma_real_val_1perhost" \
     --fig-dir "${FIG_BASE}/gamma_real_val_1perhost"
+assert_mlp "${CP_BASE}/gamma_real_val_1perhost"
 
 # No min-nights filter, to quantify what the filter changed.
-srun python conformal_shift.py --checkpoint "$PSI" --coords PKe \
+srun python conformal_shift.py --psi mlp --checkpoint "$PSI" --coords PKe \
     --gamma-tune-on real-val --min-nights 0 \
     --out-dir "${CP_BASE}/gamma_real_val_nofilter" \
     --fig-dir "${FIG_BASE}/gamma_real_val_nofilter"
+assert_mlp "${CP_BASE}/gamma_real_val_nofilter"
 
 # Surrogate-gap constant as an explicit conformal quantile rather than the max,
 # so Delta_c carries a stated out-of-sample budget (Theorem 3.6 discussion).
-srun python conformal_shift.py --checkpoint "$PSI" --coords PKe \
+srun python conformal_shift.py --psi mlp --checkpoint "$PSI" --coords PKe \
     --gamma-tune-on real-val --gap-beta 0.02 \
     --out-dir "${CP_BASE}/gamma_real_val_gapbeta02" \
     --fig-dir "${FIG_BASE}/gamma_real_val_gapbeta02"
+assert_mlp "${CP_BASE}/gamma_real_val_gapbeta02"
 
 # ---- 3. PKew control ------------------------------------------------------
-srun python conformal_shift.py --checkpoint "$PSI" --coords PKew \
+srun python conformal_shift.py --psi mlp --checkpoint "$PSI" --coords PKew \
     --gamma-tune-on real-val \
     --out-dir "synthetic_generation/regression/pkew_20260726" \
     --fig-dir "synthetic_generation/figures/synthetic_regression_10000/pkew_20260726"
+assert_mlp "synthetic_generation/regression/pkew_20260726"
 
 # ---- 4. Assumption 3.2 Hessian convergence sweep --------------------------
 mkdir -p figures/paper/assumption32
