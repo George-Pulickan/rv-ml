@@ -43,10 +43,28 @@ Other checkpoints named like this one
 checkpoints/regression_mlp_74.pt exists on the laptop-sync branch (a transport
 branch that deliberately carries gitignored payload to a second machine; it is
 not on main and not part of the code release). Its sha256 is ca6a4b6e..., which
-matches none of the files above -- it is a fourth 74-D MLP of the same
-architecture whose training we have not identified. Do not assume it is
-interchangeable with the paper checkpoint, and do not assume it is the 15-epoch
-smoke artifact either; as of 2026-07-27 neither has been established.
+matches none of the files above.
+
+Measured on all 10,000 synthetic rows (2026-07-27), it is a degenerate
+near-mean predictor and must never be used for anything reported:
+
+                    ca6a4b6e (laptop-sync)      43c8cce4 (paper, s42)
+  R2 log10_P              +0.055                     +0.790
+  R2 log10_K              +0.112                     +0.849
+  R2 e                    +0.002                     +0.436
+  pred_sd / true_sd    0.055 - 0.29               0.65 - 1.15
+  overall MSE             0.536                      0.459
+  (predict-the-mean baseline MSE = 0.467)
+
+Its predictions vary at 5-29% of the spread of the truth, and its overall MSE is
+*worse* than simply predicting the training mean. This is the signature of a
+badly under-trained model.
+
+The hazard is concrete: conformal_shift.py's --checkpoint argument DEFAULTS to
+checkpoints/regression_mlp_74.pt. On main that path does not exist, so the run
+raises FileNotFoundError and stops. On any checkout where it does exist, a
+`--psi mlp` run without an explicit --checkpoint silently calibrates against
+this near-mean model and still exits 0.
 
 The safe rule is the same in every case: identify a checkpoint by sha256, and
 pass --checkpoint explicitly, as slurm/nicolo_20260726.sbatch does. Every CP run
