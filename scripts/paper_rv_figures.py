@@ -558,7 +558,10 @@ def figure_mse_scatter(
 
 
 # Parameter pairs for the 2-D prediction-region figure (Nicolo's ask: K/T, T/e, omega/K).
-BOX_PAIRS = [("P", "K"), ("P", "e"), ("K", "omega")]
+# omega was dropped as a reported coordinate on 2026-07-26 (d = 4 -> 3), so a
+# (K, omega) panel would plot a region that spans the whole circle and means
+# nothing. The three pairs below are the reported coordinates taken two at a time.
+BOX_PAIRS = [("P", "K"), ("P", "e"), ("K", "e")]
 
 _BOX_AXES = {
     # key: (csv predicted col, csv tabulated col, label, log-scale?)
