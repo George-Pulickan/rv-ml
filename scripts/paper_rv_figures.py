@@ -1129,6 +1129,10 @@ def main() -> None:
     ap.add_argument("--traj-cycles", type=float, default=10.0,
                    help="orbits shown per trajectory panel; the densest window of "
                         "this length is chosen (full baseline if shorter)")
+    ap.add_argument("--table-alpha", default="0.10",
+                   help="alpha whose quantiles fill the Earth-like table; use "
+                        "0.32 (nominal 0.68) with --sigma-scale 1.0 to compare "
+                        "against catalogue 1-sigma intervals")
     ap.add_argument("--n-box-samples", type=int, default=12,
                    help="parameter vectors drawn from the CP box and overlaid on "
                         "each trajectory panel (Nicolo 2026-07-26)")
@@ -1161,6 +1165,14 @@ def main() -> None:
     q_blob = load_quantiles(args.quantiles, args.metrics)
     q01 = q_blob["quantiles"]["0.10"]
     q04 = q_blob["quantiles"]["0.40"]
+    # Nicolo 2026-07-26 wants the Earth-like table at nominal 0.68 so the CP
+    # regions sit beside the catalogue's 1-sigma credible intervals. Pair it
+    # with --sigma-scale 1.0, or you compare a 68% region against a 90% one.
+    if args.table_alpha not in q_blob["quantiles"]:
+        raise ValueError(
+            f"--table-alpha {args.table_alpha} not in the metrics; available: "
+            f"{sorted(q_blob['quantiles'])}")
+    q_table = q_blob["quantiles"][args.table_alpha]
     widths_blob = None
     if args.widths.exists():
         widths_blob = json.loads(args.widths.read_text())
@@ -1193,7 +1205,7 @@ def main() -> None:
                             q_box=None if args.no_box_samples else q01,
                             n_box_samples=args.n_box_samples)
     if want in ("all", "table"):
-        earthlike_table(psi_predict, feature_cols, q01,
+        earthlike_table(psi_predict, feature_cols, q_table,
                         OUT_DIR / "earthlike_top10.csv",
                         OUT_DIR / "earthlike_top10.tex",
                         widths_blob=widths_blob)
