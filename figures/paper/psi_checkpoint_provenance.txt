@@ -1,0 +1,22 @@
+psi checkpoint pinned for the AAAI paper
+========================================
+file        : regression_mlp_74_paper_20260726-0946.pt
+sha256      : 4c09059aa44167197172adeb87b6ed7f060e2d98a940ffb303e901f363fba394
+created     : 2026-07-26T09:50:18+01:00
+host        : cim-ts-node-03
+git commit  : 515a264d7ed43d17a40a1a68681faa0891a22afe
+command     : python regression.py --two-step --device cpu
+run from    : /home/cim/misc/vpac005/rv-ml
+versions    : python 3.12.3 | torch 2.12.0+cu130 | numpy 2.4.4
+source CSV  : synthetic_generation/datasets/synthetic_regression_10000.csv
+            : sha256 913a9859ff1758fe3df06c5b74a98180ca7c308e655fdf1c6d0c9cbf478f80ab
+phasefold   : synthetic_generation/datasets/synthetic_regression_10000_phasefold.csv
+            : sha256 93b8467e1c5fc5e8598cb81c461fb9ed5d2f04e1df7e85b733b904ce3f6b709e
+notes       : regression.py --two-step trains the 74-D model via train_model(...,
+              checkpoint_path=CHECKPOINT_74) with argparse defaults for
+              epochs/seed/lr/batch/val_frac/patience.  Re-running the command
+              above at this commit reproduces the checkpoint.
+              Supersedes the 2026-07-25 19:57 checkpoint, which was trained
+              while the cluster was at be9df5a (46 commits behind, regression.py
+              differing by 1852 lines) and is therefore NOT reproducible from
+              main.

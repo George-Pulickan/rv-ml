@@ -20,6 +20,9 @@ meeting_*.md
 checkpoints/
 *.pt
 *.pdf
+# The paper draft and its extracted text. main is public and this is an
+# anonymised submission under review -- deliberately kept out (2026-07-27).
+Exoplanets.txt
 
 # Large regenerable experiment dataset (512-bin LSP regression, ~130 MB)
 synthetic_generation/datasets/synthetic_lsp_regression_10000.csv
