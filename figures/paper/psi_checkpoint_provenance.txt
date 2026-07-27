@@ -38,12 +38,19 @@ presented as the model. All six are committed.
 regression.py is deterministic per seed, so retraining at commit d323631 with
 the CSV above reproduces these files.
 
-Checkpoints that must NOT be used
----------------------------------
-checkpoints/regression_mlp_74.pt (present on the laptop-sync branch, renamed
-there on 2026-07-27 to make the hazard obvious) is a 15-epoch smoke artifact
-that predicts near the training mean. It is not on main. Passing --checkpoint
-explicitly, as the sbatch script does, avoids it.
+Other checkpoints named like this one
+------------------------------------
+checkpoints/regression_mlp_74.pt exists on the laptop-sync branch (a transport
+branch that deliberately carries gitignored payload to a second machine; it is
+not on main and not part of the code release). Its sha256 is ca6a4b6e..., which
+matches none of the files above -- it is a fourth 74-D MLP of the same
+architecture whose training we have not identified. Do not assume it is
+interchangeable with the paper checkpoint, and do not assume it is the 15-epoch
+smoke artifact either; as of 2026-07-27 neither has been established.
+
+The safe rule is the same in every case: identify a checkpoint by sha256, and
+pass --checkpoint explicitly, as slurm/nicolo_20260726.sbatch does. Every CP run
+records the path it used in conformal_shift_metrics.json.
 
 Superseded pins
 ---------------
