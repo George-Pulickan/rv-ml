@@ -1,0 +1,686 @@
+=== start Sun 26 Jul 21:42:08 BST 2026 on cim-ts-node-01 ===
+f997191 fix launch command: sed must strip indented srun calls
+=== inputs ===
+-rw-r--r-- 1 vpac005 misc  1081541 2026-07-26 models/gp_residual_svgp.pt
+-rw-r--r-- 1 vpac005 misc 16511266 2026-07-25 synthetic_generation/datasets/synthetic_regression_10000.csv
+f997191 fix launch command: sed must strip indented srun calls
+loading CSV from synthetic_generation/datasets/synthetic_regression_10000.csv (feature-set=74) ...
+dataset: 10,000 samples, 74 features -> 5 targets
+  epoch    1  val_mse=0.72545
+  epoch   50  val_mse=0.53538
+  epoch  100  val_mse=0.54395
+  early stop at epoch 117 (patience=30)
+saved checkpoint -> checkpoints/psi_20260726/mlp74_s0.pt
+saved plot -> figures/regression_synthetic/seed_0/pred_vs_true.png
+saved plot -> figures/regression_synthetic/seed_0/pred_vs_true_log10_P.png
+saved plot -> figures/regression_synthetic/seed_0/pred_vs_true_log10_K.png
+saved plot -> figures/regression_synthetic/seed_0/pred_vs_true_e.png
+saved plot -> figures/regression_synthetic/seed_0/pred_vs_true_cos_omega.png
+saved plot -> figures/regression_synthetic/seed_0/pred_vs_true_sin_omega.png
+saved plot -> figures/regression_synthetic/seed_0/pred_vs_true_omega_circle.png
+saved plot -> figures/regression_synthetic/seed_0/pred_vs_true_omega_deg.png
+collecting real reference systems (split=test) ...
+rejected 1 real systems with median sigma outside [0.1, 100.0] m/s
+real reference: 57 systems
+saved plot -> figures/regression_synthetic/seed_0/combined_scatter_log10_K.png
+saved metrics -> figures/regression_synthetic/seed_0/metrics.json
+validation MSE: 0.49389
+  log10_P       R2=0.740  MSE=0.28992
+  log10_K       R2=0.827  MSE=0.05076
+  e             R2=0.308  MSE=0.04539
+  cos_omega     R2=-1.606  MSE=1.45523
+  sin_omega     R2=-0.940  MSE=0.62815
+e headline: R2_all=0.308  R2_e>0=0.281 (n=1529)  R2_e>0.1=-0.038  MAE_e>0=0.1642
+e=0 gate: acc=0.762  recall=0.013  precision=0.353  f1=0.025
+omega headline (e>0.1, n=1006): angular MAE=86.9 deg  cos R2=-1.303  sin R2=-0.525
+omega by e-band:
+  e_0.1_0.3     n= 481  MAE=87.7 deg  cos R2=-1.298  sin R2=-0.587
+  e_0.3_0.5     n= 143  MAE=85.6 deg  cos R2=-1.175  sin R2=-0.632
+  e_gt_0.5      n= 382  MAE=86.2 deg  cos R2=-1.371  sin R2=-0.408
+omega by SNR tertile (e>0.1):
+  low           n= 335  MAE=90.4 deg
+  mid           n= 335  MAE=83.8 deg
+  high          n= 336  MAE=86.3 deg
+real transfer (log10_K): R2=0.810  MSE=0.04951
+loading CSV from synthetic_generation/datasets/synthetic_regression_10000.csv (feature-set=74) ...
+dataset: 10,000 samples, 74 features -> 5 targets
+  epoch    1  val_mse=0.74076
+  epoch   50  val_mse=0.55016
+  epoch  100  val_mse=0.53056
+  early stop at epoch 139 (patience=30)
+saved checkpoint -> checkpoints/psi_20260726/mlp74_s1.pt
+saved plot -> figures/regression_synthetic/seed_1/pred_vs_true.png
+saved plot -> figures/regression_synthetic/seed_1/pred_vs_true_log10_P.png
+saved plot -> figures/regression_synthetic/seed_1/pred_vs_true_log10_K.png
+saved plot -> figures/regression_synthetic/seed_1/pred_vs_true_e.png
+saved plot -> figures/regression_synthetic/seed_1/pred_vs_true_cos_omega.png
+saved plot -> figures/regression_synthetic/seed_1/pred_vs_true_sin_omega.png
+saved plot -> figures/regression_synthetic/seed_1/pred_vs_true_omega_circle.png
+saved plot -> figures/regression_synthetic/seed_1/pred_vs_true_omega_deg.png
+collecting real reference systems (split=test) ...
+rejected 1 real systems with median sigma outside [0.1, 100.0] m/s
+real reference: 57 systems
+saved plot -> figures/regression_synthetic/seed_1/combined_scatter_log10_K.png
+saved metrics -> figures/regression_synthetic/seed_1/metrics.json
+validation MSE: 0.53133
+  log10_P       R2=0.746  MSE=0.28587
+  log10_K       R2=0.832  MSE=0.04980
+  e             R2=0.365  MSE=0.04350
+  cos_omega     R2=-1.768  MSE=1.56132
+  sin_omega     R2=-1.228  MSE=0.71618
+e headline: R2_all=0.365  R2_e>0=0.360 (n=1535)  R2_e>0.1=0.082  MAE_e>0=0.1548
+e=0 gate: acc=0.766  recall=0.015  precision=0.438  f1=0.029
+omega headline (e>0.1, n=1014): angular MAE=85.9 deg  cos R2=-0.989  sin R2=-0.798
+omega by e-band:
+  e_0.1_0.3     n= 478  MAE=90.0 deg  cos R2=-1.050  sin R2=-0.956
+  e_0.3_0.5     n= 134  MAE=83.0 deg  cos R2=-1.000  sin R2=-0.664
+  e_gt_0.5      n= 402  MAE=81.9 deg  cos R2=-0.932  sin R2=-0.657
+omega by SNR tertile (e>0.1):
+  low           n= 338  MAE=81.9 deg
+  mid           n= 338  MAE=86.7 deg
+  high          n= 338  MAE=89.0 deg
+real transfer (log10_K): R2=0.837  MSE=0.04231
+loading CSV from synthetic_generation/datasets/synthetic_regression_10000.csv (feature-set=74) ...
+dataset: 10,000 samples, 74 features -> 5 targets
+  epoch    1  val_mse=0.69632
+  epoch   50  val_mse=0.52596
+  epoch  100  val_mse=0.51150
+  early stop at epoch 123 (patience=30)
+saved checkpoint -> checkpoints/psi_20260726/mlp74_s2.pt
+saved plot -> figures/regression_synthetic/seed_2/pred_vs_true.png
+saved plot -> figures/regression_synthetic/seed_2/pred_vs_true_log10_P.png
+saved plot -> figures/regression_synthetic/seed_2/pred_vs_true_log10_K.png
+saved plot -> figures/regression_synthetic/seed_2/pred_vs_true_e.png
+saved plot -> figures/regression_synthetic/seed_2/pred_vs_true_cos_omega.png
+saved plot -> figures/regression_synthetic/seed_2/pred_vs_true_sin_omega.png
+saved plot -> figures/regression_synthetic/seed_2/pred_vs_true_omega_circle.png
+saved plot -> figures/regression_synthetic/seed_2/pred_vs_true_omega_deg.png
+collecting real reference systems (split=test) ...
+rejected 1 real systems with median sigma outside [0.1, 100.0] m/s
+real reference: 57 systems
+saved plot -> figures/regression_synthetic/seed_2/combined_scatter_log10_K.png
+saved metrics -> figures/regression_synthetic/seed_2/metrics.json
+validation MSE: 0.53508
+  log10_P       R2=0.743  MSE=0.28832
+  log10_K       R2=0.818  MSE=0.04991
+  e             R2=0.335  MSE=0.04183
+  cos_omega     R2=-2.136  MSE=1.71852
+  sin_omega     R2=-0.798  MSE=0.57684
+e headline: R2_all=0.335  R2_e>0=0.323 (n=1524)  R2_e>0.1=0.053  MAE_e>0=0.1533
+e=0 gate: acc=0.763  recall=0.038  precision=0.545  f1=0.071
+omega headline (e>0.1, n=1006): angular MAE=87.1 deg  cos R2=-1.398  sin R2=-0.464
+omega by e-band:
+  e_0.1_0.3     n= 520  MAE=86.6 deg  cos R2=-1.476  sin R2=-0.380
+  e_0.3_0.5     n= 131  MAE=83.6 deg  cos R2=-1.396  sin R2=-0.314
+  e_gt_0.5      n= 355  MAE=89.0 deg  cos R2=-1.299  sin R2=-0.657
+omega by SNR tertile (e>0.1):
+  low           n= 335  MAE=83.9 deg
+  mid           n= 335  MAE=86.6 deg
+  high          n= 336  MAE=90.7 deg
+real transfer (log10_K): R2=0.810  MSE=0.04935
+loading CSV from synthetic_generation/datasets/synthetic_regression_10000.csv (feature-set=74) ...
+dataset: 10,000 samples, 74 features -> 5 targets
+  epoch    1  val_mse=0.70407
+  epoch   50  val_mse=0.54485
+  early stop at epoch 90 (patience=30)
+saved checkpoint -> checkpoints/psi_20260726/mlp74_s7.pt
+saved plot -> figures/regression_synthetic/seed_7/pred_vs_true.png
+saved plot -> figures/regression_synthetic/seed_7/pred_vs_true_log10_P.png
+saved plot -> figures/regression_synthetic/seed_7/pred_vs_true_log10_K.png
+saved plot -> figures/regression_synthetic/seed_7/pred_vs_true_e.png
+saved plot -> figures/regression_synthetic/seed_7/pred_vs_true_cos_omega.png
+saved plot -> figures/regression_synthetic/seed_7/pred_vs_true_sin_omega.png
+saved plot -> figures/regression_synthetic/seed_7/pred_vs_true_omega_circle.png
+saved plot -> figures/regression_synthetic/seed_7/pred_vs_true_omega_deg.png
+collecting real reference systems (split=test) ...
+rejected 1 real systems with median sigma outside [0.1, 100.0] m/s
+real reference: 57 systems
+saved plot -> figures/regression_synthetic/seed_7/combined_scatter_log10_K.png
+saved metrics -> figures/regression_synthetic/seed_7/metrics.json
+validation MSE: 0.46783
+  log10_P       R2=0.735  MSE=0.29845
+  log10_K       R2=0.842  MSE=0.04577
+  e             R2=0.303  MSE=0.04513
+  cos_omega     R2=-1.200  MSE=1.21310
+  sin_omega     R2=-1.241  MSE=0.73669
+e headline: R2_all=0.303  R2_e>0=0.290 (n=1546)  R2_e>0.1=0.008  MAE_e>0=0.1595
+e=0 gate: acc=0.770  recall=0.046  precision=0.447  f1=0.084
+omega headline (e>0.1, n=1018): angular MAE=87.6 deg  cos R2=-1.177  sin R2=-0.704
+omega by e-band:
+  e_0.1_0.3     n= 521  MAE=84.4 deg  cos R2=-1.099  sin R2=-0.628
+  e_0.3_0.5     n= 129  MAE=94.1 deg  cos R2=-1.292  sin R2=-0.988
+  e_gt_0.5      n= 368  MAE=89.8 deg  cos R2=-1.259  sin R2=-0.729
+omega by SNR tertile (e>0.1):
+  low           n= 339  MAE=84.6 deg
+  mid           n= 339  MAE=87.1 deg
+  high          n= 340  MAE=91.1 deg
+real transfer (log10_K): R2=0.828  MSE=0.04486
+loading CSV from synthetic_generation/datasets/synthetic_regression_10000.csv (feature-set=74) ...
+dataset: 10,000 samples, 74 features -> 5 targets
+  epoch    1  val_mse=0.72181
+  epoch   50  val_mse=0.55267
+  epoch  100  val_mse=0.55032
+  early stop at epoch 110 (patience=30)
+saved checkpoint -> checkpoints/psi_20260726/mlp74_s42.pt
+saved plot -> figures/regression_synthetic/seed_42/pred_vs_true.png
+saved plot -> figures/regression_synthetic/seed_42/pred_vs_true_log10_P.png
+saved plot -> figures/regression_synthetic/seed_42/pred_vs_true_log10_K.png
+saved plot -> figures/regression_synthetic/seed_42/pred_vs_true_e.png
+saved plot -> figures/regression_synthetic/seed_42/pred_vs_true_cos_omega.png
+saved plot -> figures/regression_synthetic/seed_42/pred_vs_true_sin_omega.png
+saved plot -> figures/regression_synthetic/seed_42/pred_vs_true_omega_circle.png
+saved plot -> figures/regression_synthetic/seed_42/pred_vs_true_omega_deg.png
+collecting real reference systems (split=test) ...
+rejected 1 real systems with median sigma outside [0.1, 100.0] m/s
+real reference: 57 systems
+saved plot -> figures/regression_synthetic/seed_42/combined_scatter_log10_K.png
+saved metrics -> figures/regression_synthetic/seed_42/metrics.json
+validation MSE: 0.52257
+  log10_P       R2=0.748  MSE=0.28530
+  log10_K       R2=0.810  MSE=0.05320
+  e             R2=0.328  MSE=0.04564
+  cos_omega     R2=-1.368  MSE=1.31149
+  sin_omega     R2=-1.830  MSE=0.91725
+e headline: R2_all=0.328  R2_e>0=0.323 (n=1521)  R2_e>0.1=0.044  MAE_e>0=0.1626
+e=0 gate: acc=0.765  recall=0.033  precision=0.696  f1=0.064
+omega headline (e>0.1, n=1001): angular MAE=87.5 deg  cos R2=-0.779  sin R2=-1.075
+omega by e-band:
+  e_0.1_0.3     n= 488  MAE=87.8 deg  cos R2=-0.762  sin R2=-1.109
+  e_0.3_0.5     n= 120  MAE=89.0 deg  cos R2=-0.655  sin R2=-1.282
+  e_gt_0.5      n= 393  MAE=86.8 deg  cos R2=-0.837  sin R2=-0.974
+omega by SNR tertile (e>0.1):
+  low           n= 334  MAE=88.1 deg
+  mid           n= 333  MAE=90.9 deg
+  high          n= 334  MAE=83.7 deg
+real transfer (log10_K): R2=0.811  MSE=0.04919
+loading CSV from synthetic_generation/datasets/synthetic_regression_10000.csv (feature-set=74) ...
+dataset: 10,000 samples, 74 features -> 5 targets
+  epoch    1  val_mse=0.69461
+  epoch   50  val_mse=0.53235
+  epoch  100  val_mse=0.51798
+  early stop at epoch 126 (patience=30)
+saved checkpoint -> checkpoints/psi_20260726/mlp74_s123.pt
+saved plot -> figures/regression_synthetic/seed_123/pred_vs_true.png
+saved plot -> figures/regression_synthetic/seed_123/pred_vs_true_log10_P.png
+saved plot -> figures/regression_synthetic/seed_123/pred_vs_true_log10_K.png
+saved plot -> figures/regression_synthetic/seed_123/pred_vs_true_e.png
+saved plot -> figures/regression_synthetic/seed_123/pred_vs_true_cos_omega.png
+saved plot -> figures/regression_synthetic/seed_123/pred_vs_true_sin_omega.png
+saved plot -> figures/regression_synthetic/seed_123/pred_vs_true_omega_circle.png
+saved plot -> figures/regression_synthetic/seed_123/pred_vs_true_omega_deg.png
+collecting real reference systems (split=test) ...
+rejected 1 real systems with median sigma outside [0.1, 100.0] m/s
+real reference: 57 systems
+saved plot -> figures/regression_synthetic/seed_123/combined_scatter_log10_K.png
+saved metrics -> figures/regression_synthetic/seed_123/metrics.json
+validation MSE: 0.51473
+  log10_P       R2=0.754  MSE=0.27334
+  log10_K       R2=0.814  MSE=0.05060
+  e             R2=0.345  MSE=0.04228
+  cos_omega     R2=-1.682  MSE=1.51223
+  sin_omega     R2=-1.231  MSE=0.69521
+e headline: R2_all=0.345  R2_e>0=0.338 (n=1530)  R2_e>0.1=0.069  MAE_e>0=0.1537
+e=0 gate: acc=0.754  recall=0.006  precision=0.111  f1=0.012
+omega headline (e>0.1, n=1014): angular MAE=89.8 deg  cos R2=-1.164  sin R2=-0.813
+omega by e-band:
+  e_0.1_0.3     n= 499  MAE=89.6 deg  cos R2=-1.195  sin R2=-0.777
+  e_0.3_0.5     n= 117  MAE=88.7 deg  cos R2=-0.994  sin R2=-0.918
+  e_gt_0.5      n= 398  MAE=90.3 deg  cos R2=-1.184  sin R2=-0.838
+omega by SNR tertile (e>0.1):
+  low           n= 338  MAE=84.8 deg
+  mid           n= 338  MAE=91.5 deg
+  high          n= 338  MAE=93.0 deg
+real transfer (log10_K): R2=0.784  MSE=0.05617
+/home/cim/misc/vpac005/rv-ml/.venv/lib/python3.12/site-packages/linear_operator/utils/cholesky.py:41: NumericalWarning: A not p.d., added jitter of 1.0e-06 to the diagonal
+  warnings.warn(
+/home/cim/misc/vpac005/rv-ml/.venv/lib/python3.12/site-packages/linear_operator/utils/cholesky.py:41: NumericalWarning: A not p.d., added jitter of 1.0e-05 to the diagonal
+  warnings.warn(
+/home/cim/misc/vpac005/rv-ml/.venv/lib/python3.12/site-packages/linear_operator/utils/cholesky.py:41: NumericalWarning: A not p.d., added jitter of 1.0e-04 to the diagonal
+  warnings.warn(
+/home/cim/misc/vpac005/rv-ml/.venv/lib/python3.12/site-packages/linear_operator/operators/_linear_operator.py:2180: NumericalWarning: Runtime Error when computing Cholesky decomposition: Matrix not positive definite after repeatedly adding jitter up to 1.0e-04.. Using symeig method.
+  warnings.warn(
+reported CP coordinates: ['log10_P', 'log10_K', 'e'] (Bonferroni divisor 3)
+noise proxy source: gp_residual_svgp
+trained RF psi on 10000 synthetic rows, 586 features (labels: bar)
+building real systems ...
+real filter: min_nights=5 one_per_host=False -> 51 test series, 34 hosts
+noise bound (max |y - h(psi(y))| on real train, rv_std units): 6.11
+building synthetic systems ...
+[synthetic_dataset] loaded 242 real observation profiles from training split
+noise filter: kept 1300/2500 draws (rejection rate 48.0%)
+n_cal=400 n_tune=100 n_test_syn=400 n_test_real=51 (weight fit: 400 synth vs 236 real-train)
+weights: ESS=288.3/400  clipped=0.0%
+fitting surrogate labels by gradient descent ...
+  done in 1415s
+v_c median (cal): log10_P=0.0409  log10_K=0.0494  e=0.0822
+computing paper-norm deltas (re-encode + reconstruction residuals) ...
+delta_c median (cal): log10_P=0.0864  log10_K=0.0712  e=0.048  delta_y=0.75
+surrogate-gap budget: beta=0.009901 (n_tune=100); main quantile spends alpha - beta
+naive_adj Delta_c (max gap on tune): log10_P=0.538  log10_K=1.26  e=0.867
+[naive] gamma_vnorm=0.613  gamma_v2norm=0.7797  gamma_papernorm=0.1903  w_papernorm=1.00
+  [naive/raw/synthetic_unweighted] joint@0.90=0.938 inf=0.00
+  [naive/raw/real_unweighted] joint@0.90=0.961 inf=0.00
+  [naive/raw/real_weighted] joint@0.90=0.941 inf=0.00
+  [naive/vnorm/synthetic_unweighted] joint@0.90=0.945 inf=0.00
+  [naive/vnorm/real_unweighted] joint@0.90=0.941 inf=0.00
+  [naive/vnorm/real_weighted] joint@0.90=0.902 inf=0.00
+  [naive/v2norm/synthetic_unweighted] joint@0.90=0.935 inf=0.00
+  [naive/v2norm/real_unweighted] joint@0.90=0.941 inf=0.00
+  [naive/v2norm/real_weighted] joint@0.90=0.922 inf=0.00
+  [naive/papernorm/synthetic_unweighted] joint@0.90=0.935 inf=0.00
+  [naive/papernorm/real_unweighted] joint@0.90=0.902 inf=0.00
+  [naive/papernorm/real_weighted] joint@0.90=0.902 inf=0.00
+[naive_adj] gamma_vnorm=0.613  gamma_v2norm=0.7797  gamma_papernorm=1.903  w_papernorm=1.00
+  [naive_adj/raw/synthetic_unweighted] joint@0.90=0.998 inf=0.00
+  [naive_adj/raw/real_unweighted] joint@0.90=1.000 inf=0.00
+  [naive_adj/raw/real_weighted] joint@0.90=1.000 inf=0.00
+  [naive_adj/vnorm/synthetic_unweighted] joint@0.90=0.993 inf=0.00
+  [naive_adj/vnorm/real_unweighted] joint@0.90=0.980 inf=0.00
+  [naive_adj/vnorm/real_weighted] joint@0.90=0.980 inf=0.00
+  [naive_adj/v2norm/synthetic_unweighted] joint@0.90=0.993 inf=0.00
+  [naive_adj/v2norm/real_unweighted] joint@0.90=0.980 inf=0.00
+  [naive_adj/v2norm/real_weighted] joint@0.90=0.980 inf=0.00
+  [naive_adj/papernorm/synthetic_unweighted] joint@0.90=0.995 inf=0.00
+  [naive_adj/papernorm/real_unweighted] joint@0.90=1.000 inf=0.00
+  [naive_adj/papernorm/real_weighted] joint@0.90=0.980 inf=0.00
+[surrogate] gamma_vnorm=0.613  gamma_v2norm=0.2599  gamma_papernorm=0.6345  w_papernorm=1.00
+  [surrogate/raw/synthetic_unweighted] joint@0.90=0.960 inf=0.00
+  [surrogate/raw/real_unweighted] joint@0.90=0.980 inf=0.00
+  [surrogate/raw/real_weighted] joint@0.90=0.980 inf=0.00
+  [surrogate/vnorm/synthetic_unweighted] joint@0.90=0.953 inf=0.00
+  [surrogate/vnorm/real_unweighted] joint@0.90=0.941 inf=0.00
+  [surrogate/vnorm/real_weighted] joint@0.90=0.922 inf=0.00
+  [surrogate/v2norm/synthetic_unweighted] joint@0.90=0.935 inf=0.00
+  [surrogate/v2norm/real_unweighted] joint@0.90=0.922 inf=0.00
+  [surrogate/v2norm/real_weighted] joint@0.90=0.922 inf=0.00
+  [surrogate/papernorm/synthetic_unweighted] joint@0.90=0.945 inf=0.00
+  [surrogate/papernorm/real_unweighted] joint@0.90=0.980 inf=0.00
+  [surrogate/papernorm/real_weighted] joint@0.90=0.980 inf=0.00
+estimating Assumption 2.3 constants on 25 prior draws ...
+  kappa(H) median=2e+04 max=8.8e+07  ||grad h|| median=172
+wrote per-system papernorm widths -> synthetic_generation/regression/pke_20260726/gamma_syn/per_system_widths_papernorm.json
+
+total 3415s — wrote metrics/report to synthetic_generation/regression/pke_20260726/gamma_syn, figures to synthetic_generation/figures/synthetic_regression_10000/pke_20260726/gamma_syn
+/home/cim/misc/vpac005/rv-ml/.venv/lib/python3.12/site-packages/linear_operator/utils/cholesky.py:41: NumericalWarning: A not p.d., added jitter of 1.0e-06 to the diagonal
+  warnings.warn(
+/home/cim/misc/vpac005/rv-ml/.venv/lib/python3.12/site-packages/linear_operator/utils/cholesky.py:41: NumericalWarning: A not p.d., added jitter of 1.0e-05 to the diagonal
+  warnings.warn(
+/home/cim/misc/vpac005/rv-ml/.venv/lib/python3.12/site-packages/linear_operator/utils/cholesky.py:41: NumericalWarning: A not p.d., added jitter of 1.0e-04 to the diagonal
+  warnings.warn(
+/home/cim/misc/vpac005/rv-ml/.venv/lib/python3.12/site-packages/linear_operator/operators/_linear_operator.py:2180: NumericalWarning: Runtime Error when computing Cholesky decomposition: Matrix not positive definite after repeatedly adding jitter up to 1.0e-04.. Using symeig method.
+  warnings.warn(
+reported CP coordinates: ['log10_P', 'log10_K', 'e'] (Bonferroni divisor 3)
+noise proxy source: gp_residual_svgp
+trained RF psi on 10000 synthetic rows, 586 features (labels: bar)
+building real systems ...
+real filter: min_nights=5 one_per_host=False -> 51 test series, 34 hosts
+noise bound (max |y - h(psi(y))| on real train, rv_std units): 6.11
+building synthetic systems ...
+[synthetic_dataset] loaded 242 real observation profiles from training split
+noise filter: kept 1300/2500 draws (rejection rate 48.0%)
+n_cal=400 n_tune=100 n_test_syn=400 n_test_real=51 (weight fit: 400 synth vs 236 real-train)
+gamma tuning on real val split: 56 systems
+weights: ESS=288.3/400  clipped=0.0%
+fitting surrogate labels by gradient descent ...
+  done in 1428s
+v_c median (cal): log10_P=0.0409  log10_K=0.0494  e=0.0822
+computing paper-norm deltas (re-encode + reconstruction residuals) ...
+delta_c median (cal): log10_P=0.0864  log10_K=0.0712  e=0.048  delta_y=0.75
+surrogate-gap budget: beta=0.009901 (n_tune=100); main quantile spends alpha - beta
+naive_adj Delta_c (max gap on tune): log10_P=0.538  log10_K=1.26  e=0.867
+[naive] gamma_vnorm=0.613  gamma_v2norm=0.7797  gamma_papernorm=0.1903  w_papernorm=1.00
+  [naive/raw/synthetic_unweighted] joint@0.90=0.938 inf=0.00
+  [naive/raw/real_unweighted] joint@0.90=0.961 inf=0.00
+  [naive/raw/real_weighted] joint@0.90=0.941 inf=0.00
+  [naive/vnorm/synthetic_unweighted] joint@0.90=0.945 inf=0.00
+  [naive/vnorm/real_unweighted] joint@0.90=0.941 inf=0.00
+  [naive/vnorm/real_weighted] joint@0.90=0.902 inf=0.00
+  [naive/v2norm/synthetic_unweighted] joint@0.90=0.935 inf=0.00
+  [naive/v2norm/real_unweighted] joint@0.90=0.941 inf=0.00
+  [naive/v2norm/real_weighted] joint@0.90=0.922 inf=0.00
+  [naive/papernorm/synthetic_unweighted] joint@0.90=0.935 inf=0.00
+  [naive/papernorm/real_unweighted] joint@0.90=0.902 inf=0.00
+  [naive/papernorm/real_weighted] joint@0.90=0.902 inf=0.00
+[naive_adj] gamma_vnorm=0.613  gamma_v2norm=0.7797  gamma_papernorm=0.06345  w_papernorm=1.00
+  [naive_adj/raw/synthetic_unweighted] joint@0.90=0.998 inf=0.00
+  [naive_adj/raw/real_unweighted] joint@0.90=1.000 inf=0.00
+  [naive_adj/raw/real_weighted] joint@0.90=1.000 inf=0.00
+  [naive_adj/vnorm/synthetic_unweighted] joint@0.90=0.993 inf=0.00
+  [naive_adj/vnorm/real_unweighted] joint@0.90=0.980 inf=0.00
+  [naive_adj/vnorm/real_weighted] joint@0.90=0.980 inf=0.00
+  [naive_adj/v2norm/synthetic_unweighted] joint@0.90=0.993 inf=0.00
+  [naive_adj/v2norm/real_unweighted] joint@0.90=0.980 inf=0.00
+  [naive_adj/v2norm/real_weighted] joint@0.90=0.980 inf=0.00
+  [naive_adj/papernorm/synthetic_unweighted] joint@0.90=0.988 inf=0.00
+  [naive_adj/papernorm/real_unweighted] joint@0.90=0.980 inf=0.00
+  [naive_adj/papernorm/real_weighted] joint@0.90=0.980 inf=0.00
+[surrogate] gamma_vnorm=0.613  gamma_v2norm=0.2599  gamma_papernorm=0.06345  w_papernorm=1.00
+  [surrogate/raw/synthetic_unweighted] joint@0.90=0.960 inf=0.00
+  [surrogate/raw/real_unweighted] joint@0.90=0.980 inf=0.00
+  [surrogate/raw/real_weighted] joint@0.90=0.980 inf=0.00
+  [surrogate/vnorm/synthetic_unweighted] joint@0.90=0.953 inf=0.00
+  [surrogate/vnorm/real_unweighted] joint@0.90=0.941 inf=0.00
+  [surrogate/vnorm/real_weighted] joint@0.90=0.922 inf=0.00
+  [surrogate/v2norm/synthetic_unweighted] joint@0.90=0.935 inf=0.00
+  [surrogate/v2norm/real_unweighted] joint@0.90=0.922 inf=0.00
+  [surrogate/v2norm/real_weighted] joint@0.90=0.922 inf=0.00
+  [surrogate/papernorm/synthetic_unweighted] joint@0.90=0.940 inf=0.00
+  [surrogate/papernorm/real_unweighted] joint@0.90=0.922 inf=0.00
+  [surrogate/papernorm/real_weighted] joint@0.90=0.922 inf=0.00
+estimating Assumption 2.3 constants on 25 prior draws ...
+  kappa(H) median=2e+04 max=8.8e+07  ||grad h|| median=172
+wrote per-system papernorm widths -> synthetic_generation/regression/pke_20260726/gamma_real_val/per_system_widths_papernorm.json
+
+total 3579s — wrote metrics/report to synthetic_generation/regression/pke_20260726/gamma_real_val, figures to synthetic_generation/figures/synthetic_regression_10000/pke_20260726/gamma_real_val
+/home/cim/misc/vpac005/rv-ml/.venv/lib/python3.12/site-packages/linear_operator/utils/cholesky.py:41: NumericalWarning: A not p.d., added jitter of 1.0e-06 to the diagonal
+  warnings.warn(
+/home/cim/misc/vpac005/rv-ml/.venv/lib/python3.12/site-packages/linear_operator/utils/cholesky.py:41: NumericalWarning: A not p.d., added jitter of 1.0e-05 to the diagonal
+  warnings.warn(
+/home/cim/misc/vpac005/rv-ml/.venv/lib/python3.12/site-packages/linear_operator/utils/cholesky.py:41: NumericalWarning: A not p.d., added jitter of 1.0e-04 to the diagonal
+  warnings.warn(
+/home/cim/misc/vpac005/rv-ml/.venv/lib/python3.12/site-packages/linear_operator/operators/_linear_operator.py:2180: NumericalWarning: Runtime Error when computing Cholesky decomposition: Matrix not positive definite after repeatedly adding jitter up to 1.0e-04.. Using symeig method.
+  warnings.warn(
+reported CP coordinates: ['log10_P', 'log10_K', 'e'] (Bonferroni divisor 3)
+noise proxy source: gp_residual_svgp
+trained RF psi on 10000 synthetic rows, 586 features (labels: bar)
+building real systems ...
+real filter: min_nights=5 one_per_host=True -> 34 test series, 34 hosts
+noise bound (max |y - h(psi(y))| on real train, rv_std units): 6.11
+building synthetic systems ...
+[synthetic_dataset] loaded 242 real observation profiles from training split
+noise filter: kept 1300/2500 draws (rejection rate 48.0%)
+n_cal=400 n_tune=100 n_test_syn=400 n_test_real=34 (weight fit: 400 synth vs 155 real-train)
+gamma tuning on real val split: 33 systems
+weights: ESS=261.9/400  clipped=0.0%
+fitting surrogate labels by gradient descent ...
+  done in 1477s
+v_c median (cal): log10_P=0.0409  log10_K=0.0494  e=0.0822
+computing paper-norm deltas (re-encode + reconstruction residuals) ...
+delta_c median (cal): log10_P=0.0864  log10_K=0.0712  e=0.048  delta_y=0.75
+surrogate-gap budget: beta=0.009901 (n_tune=100); main quantile spends alpha - beta
+naive_adj Delta_c (max gap on tune): log10_P=0.538  log10_K=1.26  e=0.867
+[naive] gamma_vnorm=0.613  gamma_v2norm=0.7797  gamma_papernorm=0.07583  w_papernorm=0.75
+  [naive/raw/synthetic_unweighted] joint@0.90=0.938 inf=0.00
+  [naive/raw/real_unweighted] joint@0.90=0.971 inf=0.00
+  [naive/raw/real_weighted] joint@0.90=0.971 inf=0.00
+  [naive/vnorm/synthetic_unweighted] joint@0.90=0.945 inf=0.00
+  [naive/vnorm/real_unweighted] joint@0.90=0.971 inf=0.00
+  [naive/vnorm/real_weighted] joint@0.90=0.941 inf=0.00
+  [naive/v2norm/synthetic_unweighted] joint@0.90=0.935 inf=0.00
+  [naive/v2norm/real_unweighted] joint@0.90=0.971 inf=0.00
+  [naive/v2norm/real_weighted] joint@0.90=0.971 inf=0.00
+  [naive/papernorm/synthetic_unweighted] joint@0.90=0.927 inf=0.00
+  [naive/papernorm/real_unweighted] joint@0.90=0.971 inf=0.00
+  [naive/papernorm/real_weighted] joint@0.90=0.941 inf=0.00
+[naive_adj] gamma_vnorm=0.613  gamma_v2norm=0.7797  gamma_papernorm=0.06345  w_papernorm=1.00
+  [naive_adj/raw/synthetic_unweighted] joint@0.90=0.998 inf=0.00
+  [naive_adj/raw/real_unweighted] joint@0.90=1.000 inf=0.00
+  [naive_adj/raw/real_weighted] joint@0.90=1.000 inf=0.00
+  [naive_adj/vnorm/synthetic_unweighted] joint@0.90=0.993 inf=0.00
+  [naive_adj/vnorm/real_unweighted] joint@0.90=0.971 inf=0.00
+  [naive_adj/vnorm/real_weighted] joint@0.90=0.971 inf=0.00
+  [naive_adj/v2norm/synthetic_unweighted] joint@0.90=0.993 inf=0.00
+  [naive_adj/v2norm/real_unweighted] joint@0.90=0.971 inf=0.00
+  [naive_adj/v2norm/real_weighted] joint@0.90=0.971 inf=0.00
+  [naive_adj/papernorm/synthetic_unweighted] joint@0.90=0.988 inf=0.00
+  [naive_adj/papernorm/real_unweighted] joint@0.90=0.971 inf=0.00
+  [naive_adj/papernorm/real_weighted] joint@0.90=0.971 inf=0.00
+[surrogate] gamma_vnorm=0.613  gamma_v2norm=0.2599  gamma_papernorm=0.06345  w_papernorm=1.00
+  [surrogate/raw/synthetic_unweighted] joint@0.90=0.960 inf=0.00
+  [surrogate/raw/real_unweighted] joint@0.90=0.971 inf=0.00
+  [surrogate/raw/real_weighted] joint@0.90=0.971 inf=0.00
+  [surrogate/vnorm/synthetic_unweighted] joint@0.90=0.953 inf=0.00
+  [surrogate/vnorm/real_unweighted] joint@0.90=0.971 inf=0.00
+  [surrogate/vnorm/real_weighted] joint@0.90=0.941 inf=0.00
+  [surrogate/v2norm/synthetic_unweighted] joint@0.90=0.935 inf=0.00
+  [surrogate/v2norm/real_unweighted] joint@0.90=0.971 inf=0.00
+  [surrogate/v2norm/real_weighted] joint@0.90=0.971 inf=0.00
+  [surrogate/papernorm/synthetic_unweighted] joint@0.90=0.940 inf=0.00
+  [surrogate/papernorm/real_unweighted] joint@0.90=0.971 inf=0.00
+  [surrogate/papernorm/real_weighted] joint@0.90=0.971 inf=0.00
+estimating Assumption 2.3 constants on 25 prior draws ...
+  kappa(H) median=2e+04 max=8.8e+07  ||grad h|| median=172
+wrote per-system papernorm widths -> synthetic_generation/regression/pke_20260726/gamma_real_val_1perhost/per_system_widths_papernorm.json
+
+total 3501s — wrote metrics/report to synthetic_generation/regression/pke_20260726/gamma_real_val_1perhost, figures to synthetic_generation/figures/synthetic_regression_10000/pke_20260726/gamma_real_val_1perhost
+/home/cim/misc/vpac005/rv-ml/.venv/lib/python3.12/site-packages/linear_operator/utils/cholesky.py:41: NumericalWarning: A not p.d., added jitter of 1.0e-06 to the diagonal
+  warnings.warn(
+/home/cim/misc/vpac005/rv-ml/.venv/lib/python3.12/site-packages/linear_operator/utils/cholesky.py:41: NumericalWarning: A not p.d., added jitter of 1.0e-05 to the diagonal
+  warnings.warn(
+/home/cim/misc/vpac005/rv-ml/.venv/lib/python3.12/site-packages/linear_operator/utils/cholesky.py:41: NumericalWarning: A not p.d., added jitter of 1.0e-04 to the diagonal
+  warnings.warn(
+/home/cim/misc/vpac005/rv-ml/.venv/lib/python3.12/site-packages/linear_operator/operators/_linear_operator.py:2180: NumericalWarning: Runtime Error when computing Cholesky decomposition: Matrix not positive definite after repeatedly adding jitter up to 1.0e-04.. Using symeig method.
+  warnings.warn(
+reported CP coordinates: ['log10_P', 'log10_K', 'e'] (Bonferroni divisor 3)
+noise proxy source: gp_residual_svgp
+trained RF psi on 10000 synthetic rows, 586 features (labels: bar)
+building real systems ...
+real filter: min_nights=0 one_per_host=False -> 57 test series, 36 hosts
+noise bound (max |y - h(psi(y))| on real train, rv_std units): 6.11
+building synthetic systems ...
+[synthetic_dataset] loaded 242 real observation profiles from training split
+noise filter: kept 1300/2500 draws (rejection rate 48.0%)
+n_cal=400 n_tune=100 n_test_syn=400 n_test_real=57 (weight fit: 400 synth vs 242 real-train)
+gamma tuning on real val split: 58 systems
+weights: ESS=289.7/400  clipped=0.0%
+fitting surrogate labels by gradient descent ...
+  done in 1462s
+v_c median (cal): log10_P=0.0409  log10_K=0.0494  e=0.0822
+computing paper-norm deltas (re-encode + reconstruction residuals) ...
+delta_c median (cal): log10_P=0.0864  log10_K=0.0712  e=0.048  delta_y=0.75
+surrogate-gap budget: beta=0.009901 (n_tune=100); main quantile spends alpha - beta
+naive_adj Delta_c (max gap on tune): log10_P=0.538  log10_K=1.26  e=0.867
+[naive] gamma_vnorm=2.043  gamma_v2norm=0.7797  gamma_papernorm=0.1903  w_papernorm=1.00
+  [naive/raw/synthetic_unweighted] joint@0.90=0.938 inf=0.00
+  [naive/raw/real_unweighted] joint@0.90=0.965 inf=0.00
+  [naive/raw/real_weighted] joint@0.90=0.947 inf=0.00
+  [naive/vnorm/synthetic_unweighted] joint@0.90=0.938 inf=0.00
+  [naive/vnorm/real_unweighted] joint@0.90=0.947 inf=0.00
+  [naive/vnorm/real_weighted] joint@0.90=0.947 inf=0.00
+  [naive/v2norm/synthetic_unweighted] joint@0.90=0.935 inf=0.00
+  [naive/v2norm/real_unweighted] joint@0.90=0.947 inf=0.00
+  [naive/v2norm/real_weighted] joint@0.90=0.930 inf=0.00
+  [naive/papernorm/synthetic_unweighted] joint@0.90=0.935 inf=0.00
+  [naive/papernorm/real_unweighted] joint@0.90=0.895 inf=0.00
+  [naive/papernorm/real_weighted] joint@0.90=0.895 inf=0.00
+[naive_adj] gamma_vnorm=0.613  gamma_v2norm=0.7797  gamma_papernorm=0.06345  w_papernorm=1.00
+  [naive_adj/raw/synthetic_unweighted] joint@0.90=0.998 inf=0.00
+  [naive_adj/raw/real_unweighted] joint@0.90=1.000 inf=0.00
+  [naive_adj/raw/real_weighted] joint@0.90=1.000 inf=0.00
+  [naive_adj/vnorm/synthetic_unweighted] joint@0.90=0.993 inf=0.00
+  [naive_adj/vnorm/real_unweighted] joint@0.90=0.982 inf=0.00
+  [naive_adj/vnorm/real_weighted] joint@0.90=0.982 inf=0.00
+  [naive_adj/v2norm/synthetic_unweighted] joint@0.90=0.993 inf=0.00
+  [naive_adj/v2norm/real_unweighted] joint@0.90=0.982 inf=0.00
+  [naive_adj/v2norm/real_weighted] joint@0.90=0.982 inf=0.00
+  [naive_adj/papernorm/synthetic_unweighted] joint@0.90=0.988 inf=0.00
+  [naive_adj/papernorm/real_unweighted] joint@0.90=0.982 inf=0.00
+  [naive_adj/papernorm/real_weighted] joint@0.90=0.982 inf=0.00
+[surrogate] gamma_vnorm=0.613  gamma_v2norm=0.2599  gamma_papernorm=0.06345  w_papernorm=1.00
+  [surrogate/raw/synthetic_unweighted] joint@0.90=0.960 inf=0.00
+  [surrogate/raw/real_unweighted] joint@0.90=0.982 inf=0.00
+  [surrogate/raw/real_weighted] joint@0.90=0.982 inf=0.00
+  [surrogate/vnorm/synthetic_unweighted] joint@0.90=0.953 inf=0.00
+  [surrogate/vnorm/real_unweighted] joint@0.90=0.947 inf=0.00
+  [surrogate/vnorm/real_weighted] joint@0.90=0.930 inf=0.00
+  [surrogate/v2norm/synthetic_unweighted] joint@0.90=0.935 inf=0.00
+  [surrogate/v2norm/real_unweighted] joint@0.90=0.930 inf=0.00
+  [surrogate/v2norm/real_weighted] joint@0.90=0.930 inf=0.00
+  [surrogate/papernorm/synthetic_unweighted] joint@0.90=0.940 inf=0.00
+  [surrogate/papernorm/real_unweighted] joint@0.90=0.930 inf=0.00
+  [surrogate/papernorm/real_weighted] joint@0.90=0.930 inf=0.00
+estimating Assumption 2.3 constants on 25 prior draws ...
+  kappa(H) median=2e+04 max=8.8e+07  ||grad h|| median=172
+wrote per-system papernorm widths -> synthetic_generation/regression/pke_20260726/gamma_real_val_nofilter/per_system_widths_papernorm.json
+
+total 3568s — wrote metrics/report to synthetic_generation/regression/pke_20260726/gamma_real_val_nofilter, figures to synthetic_generation/figures/synthetic_regression_10000/pke_20260726/gamma_real_val_nofilter
+/home/cim/misc/vpac005/rv-ml/.venv/lib/python3.12/site-packages/linear_operator/utils/cholesky.py:41: NumericalWarning: A not p.d., added jitter of 1.0e-06 to the diagonal
+  warnings.warn(
+/home/cim/misc/vpac005/rv-ml/.venv/lib/python3.12/site-packages/linear_operator/utils/cholesky.py:41: NumericalWarning: A not p.d., added jitter of 1.0e-05 to the diagonal
+  warnings.warn(
+/home/cim/misc/vpac005/rv-ml/.venv/lib/python3.12/site-packages/linear_operator/utils/cholesky.py:41: NumericalWarning: A not p.d., added jitter of 1.0e-04 to the diagonal
+  warnings.warn(
+/home/cim/misc/vpac005/rv-ml/.venv/lib/python3.12/site-packages/linear_operator/operators/_linear_operator.py:2180: NumericalWarning: Runtime Error when computing Cholesky decomposition: Matrix not positive definite after repeatedly adding jitter up to 1.0e-04.. Using symeig method.
+  warnings.warn(
+reported CP coordinates: ['log10_P', 'log10_K', 'e'] (Bonferroni divisor 3)
+noise proxy source: gp_residual_svgp
+trained RF psi on 10000 synthetic rows, 586 features (labels: bar)
+building real systems ...
+real filter: min_nights=5 one_per_host=False -> 51 test series, 34 hosts
+noise bound (max |y - h(psi(y))| on real train, rv_std units): 6.11
+building synthetic systems ...
+[synthetic_dataset] loaded 242 real observation profiles from training split
+noise filter: kept 1300/2500 draws (rejection rate 48.0%)
+n_cal=400 n_tune=100 n_test_syn=400 n_test_real=51 (weight fit: 400 synth vs 236 real-train)
+gamma tuning on real val split: 56 systems
+weights: ESS=288.3/400  clipped=0.0%
+fitting surrogate labels by gradient descent ...
+  done in 1457s
+v_c median (cal): log10_P=0.0409  log10_K=0.0494  e=0.0822
+computing paper-norm deltas (re-encode + reconstruction residuals) ...
+delta_c median (cal): log10_P=0.0864  log10_K=0.0712  e=0.048  delta_y=0.75
+surrogate-gap budget: beta=0.02 (n_tune=100); main quantile spends alpha - beta
+naive_adj Delta_c (max gap on tune): log10_P=0.533  log10_K=0.73  e=0.861
+[naive] gamma_vnorm=0.613  gamma_v2norm=0.7797  gamma_papernorm=0.1903  w_papernorm=1.00
+  [naive/raw/synthetic_unweighted] joint@0.90=0.938 inf=0.00
+  [naive/raw/real_unweighted] joint@0.90=0.961 inf=0.00
+  [naive/raw/real_weighted] joint@0.90=0.941 inf=0.00
+  [naive/vnorm/synthetic_unweighted] joint@0.90=0.945 inf=0.00
+  [naive/vnorm/real_unweighted] joint@0.90=0.941 inf=0.00
+  [naive/vnorm/real_weighted] joint@0.90=0.902 inf=0.00
+  [naive/v2norm/synthetic_unweighted] joint@0.90=0.935 inf=0.00
+  [naive/v2norm/real_unweighted] joint@0.90=0.941 inf=0.00
+  [naive/v2norm/real_weighted] joint@0.90=0.922 inf=0.00
+  [naive/papernorm/synthetic_unweighted] joint@0.90=0.935 inf=0.00
+  [naive/papernorm/real_unweighted] joint@0.90=0.902 inf=0.00
+  [naive/papernorm/real_weighted] joint@0.90=0.902 inf=0.00
+[naive_adj] gamma_vnorm=0.613  gamma_v2norm=0.7797  gamma_papernorm=0.06345  w_papernorm=1.00
+  [naive_adj/raw/synthetic_unweighted] joint@0.90=0.995 inf=0.00
+  [naive_adj/raw/real_unweighted] joint@0.90=1.000 inf=0.00
+  [naive_adj/raw/real_weighted] joint@0.90=1.000 inf=0.00
+  [naive_adj/vnorm/synthetic_unweighted] joint@0.90=0.990 inf=0.00
+  [naive_adj/vnorm/real_unweighted] joint@0.90=0.980 inf=0.00
+  [naive_adj/vnorm/real_weighted] joint@0.90=0.980 inf=0.00
+  [naive_adj/v2norm/synthetic_unweighted] joint@0.90=0.990 inf=0.00
+  [naive_adj/v2norm/real_unweighted] joint@0.90=0.980 inf=0.00
+  [naive_adj/v2norm/real_weighted] joint@0.90=0.980 inf=0.00
+  [naive_adj/papernorm/synthetic_unweighted] joint@0.90=0.985 inf=0.00
+  [naive_adj/papernorm/real_unweighted] joint@0.90=0.980 inf=0.00
+  [naive_adj/papernorm/real_weighted] joint@0.90=0.980 inf=0.00
+[surrogate] gamma_vnorm=0.613  gamma_v2norm=0.2599  gamma_papernorm=0.06345  w_papernorm=1.00
+  [surrogate/raw/synthetic_unweighted] joint@0.90=0.960 inf=0.00
+  [surrogate/raw/real_unweighted] joint@0.90=0.980 inf=0.00
+  [surrogate/raw/real_weighted] joint@0.90=0.980 inf=0.00
+  [surrogate/vnorm/synthetic_unweighted] joint@0.90=0.953 inf=0.00
+  [surrogate/vnorm/real_unweighted] joint@0.90=0.941 inf=0.00
+  [surrogate/vnorm/real_weighted] joint@0.90=0.922 inf=0.00
+  [surrogate/v2norm/synthetic_unweighted] joint@0.90=0.935 inf=0.00
+  [surrogate/v2norm/real_unweighted] joint@0.90=0.922 inf=0.00
+  [surrogate/v2norm/real_weighted] joint@0.90=0.922 inf=0.00
+  [surrogate/papernorm/synthetic_unweighted] joint@0.90=0.940 inf=0.00
+  [surrogate/papernorm/real_unweighted] joint@0.90=0.922 inf=0.00
+  [surrogate/papernorm/real_weighted] joint@0.90=0.922 inf=0.00
+estimating Assumption 2.3 constants on 25 prior draws ...
+  kappa(H) median=2e+04 max=8.8e+07  ||grad h|| median=172
+wrote per-system papernorm widths -> synthetic_generation/regression/pke_20260726/gamma_real_val_gapbeta02/per_system_widths_papernorm.json
+
+total 3656s — wrote metrics/report to synthetic_generation/regression/pke_20260726/gamma_real_val_gapbeta02, figures to synthetic_generation/figures/synthetic_regression_10000/pke_20260726/gamma_real_val_gapbeta02
+/home/cim/misc/vpac005/rv-ml/.venv/lib/python3.12/site-packages/linear_operator/utils/cholesky.py:41: NumericalWarning: A not p.d., added jitter of 1.0e-06 to the diagonal
+  warnings.warn(
+/home/cim/misc/vpac005/rv-ml/.venv/lib/python3.12/site-packages/linear_operator/utils/cholesky.py:41: NumericalWarning: A not p.d., added jitter of 1.0e-05 to the diagonal
+  warnings.warn(
+/home/cim/misc/vpac005/rv-ml/.venv/lib/python3.12/site-packages/linear_operator/utils/cholesky.py:41: NumericalWarning: A not p.d., added jitter of 1.0e-04 to the diagonal
+  warnings.warn(
+/home/cim/misc/vpac005/rv-ml/.venv/lib/python3.12/site-packages/linear_operator/operators/_linear_operator.py:2180: NumericalWarning: Runtime Error when computing Cholesky decomposition: Matrix not positive definite after repeatedly adding jitter up to 1.0e-04.. Using symeig method.
+  warnings.warn(
+reported CP coordinates: ['log10_P', 'log10_K', 'e', 'omega'] (Bonferroni divisor 4)
+noise proxy source: gp_residual_svgp
+trained RF psi on 10000 synthetic rows, 586 features (labels: bar)
+building real systems ...
+real filter: min_nights=5 one_per_host=False -> 51 test series, 34 hosts
+noise bound (max |y - h(psi(y))| on real train, rv_std units): 6.11
+building synthetic systems ...
+[synthetic_dataset] loaded 242 real observation profiles from training split
+noise filter: kept 1300/2500 draws (rejection rate 48.0%)
+n_cal=400 n_tune=100 n_test_syn=400 n_test_real=51 (weight fit: 400 synth vs 236 real-train)
+gamma tuning on real val split: 56 systems
+weights: ESS=288.3/400  clipped=0.0%
+fitting surrogate labels by gradient descent ...
+  done in 1443s
+v_c median (cal): log10_P=0.0409  log10_K=0.0494  e=0.0822  omega=0.293
+computing paper-norm deltas (re-encode + reconstruction residuals) ...
+delta_c median (cal): log10_P=0.0864  log10_K=0.0712  e=0.048  omega=0.156  delta_y=0.75
+surrogate-gap budget: beta=0.009901 (n_tune=100); main quantile spends alpha - beta
+naive_adj Delta_c (max gap on tune): log10_P=0.538  log10_K=1.26  e=0.867  omega=2.47
+[naive] gamma_vnorm=6.13  gamma_v2norm=0.9062  gamma_papernorm=0.2366  w_papernorm=1.00
+  [naive/raw/synthetic_unweighted] joint@0.90=0.938 inf=0.00
+  [naive/raw/real_unweighted] joint@0.90=0.922 inf=0.00
+  [naive/raw/real_weighted] joint@0.90=0.922 inf=0.00
+  [naive/vnorm/synthetic_unweighted] joint@0.90=0.940 inf=0.00
+  [naive/vnorm/real_unweighted] joint@0.90=0.922 inf=0.00
+  [naive/vnorm/real_weighted] joint@0.90=0.922 inf=0.00
+  [naive/v2norm/synthetic_unweighted] joint@0.90=0.930 inf=0.00
+  [naive/v2norm/real_unweighted] joint@0.90=0.882 inf=0.00
+  [naive/v2norm/real_weighted] joint@0.90=0.863 inf=0.00
+  [naive/papernorm/synthetic_unweighted] joint@0.90=0.930 inf=0.00
+  [naive/papernorm/real_unweighted] joint@0.90=0.941 inf=0.00
+  [naive/papernorm/real_weighted] joint@0.90=0.922 inf=0.00
+[naive_adj] gamma_vnorm=2.043  gamma_v2norm=0.9062  gamma_papernorm=0.07948  w_papernorm=0.75
+  [naive_adj/raw/synthetic_unweighted] joint@0.90=0.998 inf=0.00
+  [naive_adj/raw/real_unweighted] joint@0.90=1.000 inf=0.00
+  [naive_adj/raw/real_weighted] joint@0.90=1.000 inf=0.00
+  [naive_adj/vnorm/synthetic_unweighted] joint@0.90=0.998 inf=0.00
+  [naive_adj/vnorm/real_unweighted] joint@0.90=1.000 inf=0.00
+  [naive_adj/vnorm/real_weighted] joint@0.90=1.000 inf=0.00
+  [naive_adj/v2norm/synthetic_unweighted] joint@0.90=0.998 inf=0.00
+  [naive_adj/v2norm/real_unweighted] joint@0.90=0.980 inf=0.00
+  [naive_adj/v2norm/real_weighted] joint@0.90=0.980 inf=0.00
+  [naive_adj/papernorm/synthetic_unweighted] joint@0.90=0.995 inf=0.00
+  [naive_adj/papernorm/real_unweighted] joint@0.90=1.000 inf=0.00
+  [naive_adj/papernorm/real_weighted] joint@0.90=1.000 inf=0.00
+[surrogate] gamma_vnorm=2.043  gamma_v2norm=0.9062  gamma_papernorm=0.2366  w_papernorm=1.00
+  [surrogate/raw/synthetic_unweighted] joint@0.90=0.950 inf=0.00
+  [surrogate/raw/real_unweighted] joint@0.90=0.961 inf=0.00
+  [surrogate/raw/real_weighted] joint@0.90=0.961 inf=0.00
+  [surrogate/vnorm/synthetic_unweighted] joint@0.90=0.953 inf=0.00
+  [surrogate/vnorm/real_unweighted] joint@0.90=0.941 inf=0.00
+  [surrogate/vnorm/real_weighted] joint@0.90=0.941 inf=0.00
+  [surrogate/v2norm/synthetic_unweighted] joint@0.90=0.932 inf=0.00
+  [surrogate/v2norm/real_unweighted] joint@0.90=0.902 inf=0.00
+  [surrogate/v2norm/real_weighted] joint@0.90=0.902 inf=0.00
+  [surrogate/papernorm/synthetic_unweighted] joint@0.90=0.948 inf=0.00
+  [surrogate/papernorm/real_unweighted] joint@0.90=0.980 inf=0.00
+  [surrogate/papernorm/real_weighted] joint@0.90=0.961 inf=0.00
+estimating Assumption 2.3 constants on 25 prior draws ...
+  kappa(H) median=2e+04 max=8.8e+07  ||grad h|| median=172
+wrote per-system papernorm widths -> synthetic_generation/regression/pkew_20260726/per_system_widths_papernorm.json
+
+total 3611s — wrote metrics/report to synthetic_generation/regression/pkew_20260726, figures to synthetic_generation/figures/synthetic_regression_10000/pkew_20260726
+/home/cim/misc/vpac005/rv-ml/.venv/lib/python3.12/site-packages/linear_operator/utils/cholesky.py:41: NumericalWarning: A not p.d., added jitter of 1.0e-06 to the diagonal
+  warnings.warn(
+/home/cim/misc/vpac005/rv-ml/.venv/lib/python3.12/site-packages/linear_operator/utils/cholesky.py:41: NumericalWarning: A not p.d., added jitter of 1.0e-05 to the diagonal
+  warnings.warn(
+/home/cim/misc/vpac005/rv-ml/.venv/lib/python3.12/site-packages/linear_operator/utils/cholesky.py:41: NumericalWarning: A not p.d., added jitter of 1.0e-04 to the diagonal
+  warnings.warn(
+/home/cim/misc/vpac005/rv-ml/.venv/lib/python3.12/site-packages/linear_operator/operators/_linear_operator.py:2180: NumericalWarning: Runtime Error when computing Cholesky decomposition: Matrix not positive definite after repeatedly adding jitter up to 1.0e-04.. Using symeig method.
+  warnings.warn(
+[synthetic_dataset] loaded 242 real observation profiles from training split
+drew 25 synthetic systems (seed 0); coords=PKew (4-D)
+  steps=  200  PD fraction= 0.88  median lambda_min=+5.878  min=-1.603  median kappa=3.127e+04
+  steps= 1000  PD fraction= 0.84  median lambda_min=+5.252  min=-20.55  median kappa=1.108e+05
+  steps= 4000  PD fraction= 0.84  median lambda_min=+5.252  min=-20.55  median kappa=1.759e+05
+wrote figures/paper/assumption32/hessian_PKew.json
+/home/cim/misc/vpac005/rv-ml/.venv/lib/python3.12/site-packages/linear_operator/utils/cholesky.py:41: NumericalWarning: A not p.d., added jitter of 1.0e-06 to the diagonal
+  warnings.warn(
+/home/cim/misc/vpac005/rv-ml/.venv/lib/python3.12/site-packages/linear_operator/utils/cholesky.py:41: NumericalWarning: A not p.d., added jitter of 1.0e-05 to the diagonal
+  warnings.warn(
+/home/cim/misc/vpac005/rv-ml/.venv/lib/python3.12/site-packages/linear_operator/utils/cholesky.py:41: NumericalWarning: A not p.d., added jitter of 1.0e-04 to the diagonal
+  warnings.warn(
+/home/cim/misc/vpac005/rv-ml/.venv/lib/python3.12/site-packages/linear_operator/operators/_linear_operator.py:2180: NumericalWarning: Runtime Error when computing Cholesky decomposition: Matrix not positive definite after repeatedly adding jitter up to 1.0e-04.. Using symeig method.
+  warnings.warn(
+[synthetic_dataset] loaded 242 real observation profiles from training split
+drew 25 synthetic systems (seed 0); coords=PKe (3-D)
+  steps=  200  PD fraction= 0.88  median lambda_min=+29.71  min=-0.1816  median kappa=7449
+  steps= 1000  PD fraction= 0.84  median lambda_min=+30.94  min=-1.581  median kappa=6489
+  steps= 4000  PD fraction= 0.88  median lambda_min=+32.23  min=-1.581  median kappa=2.172e+04
+wrote figures/paper/assumption32/hessian_PKe.json

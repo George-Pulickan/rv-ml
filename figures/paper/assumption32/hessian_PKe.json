@@ -1,0 +1,25 @@
+{
+  "coords": "PKe",
+  "n_draws": 25,
+  "seed": 0,
+  "by_steps": {
+    "200": {
+      "pd_fraction": 0.88,
+      "lambda_min_median": 29.70500052132528,
+      "lambda_min_min": -0.18163409442507697,
+      "kappa_median": 7448.572431652319
+    },
+    "1000": {
+      "pd_fraction": 0.84,
+      "lambda_min_median": 30.942672178700544,
+      "lambda_min_min": -1.5808277592487412,
+      "kappa_median": 6489.396152100843
+    },
+    "4000": {
+      "pd_fraction": 0.88,
+      "lambda_min_median": 32.226944179508685,
+      "lambda_min_min": -1.5808277592487412,
+      "kappa_median": 21722.741226769565
+    }
+  }
+}
