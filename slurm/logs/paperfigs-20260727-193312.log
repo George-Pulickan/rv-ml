@@ -1,35 +1,35 @@
-=== start Mon 27 Jul 19:33:12 BST 2026 on cim-ts-node-03 ===
+=== start Mon 27 Jul 19:33:12 BST 2026 on <compute node> ===
 11e06fb paper figures: --table-alpha so the Earth-like table can be built at 0.68
 psi     : checkpoints/psi_20260726/mlp74_s42.pt (77485 bytes)
 metrics : synthetic_generation/regression/pke_20260726/gamma_real_val/conformal_shift_metrics.json (2026-07-27 17:45)
 --- 1/3 Earth-like table at nominal 0.68 vs catalogue 1-sigma ---
 loaded per-system widths (51 systems) from synthetic_generation/regression/pke_20260726/gamma_real_val/per_system_widths_papernorm.json
 Traceback (most recent call last):
-  File "/home/cim/misc/vpac005/rv-ml/scripts/paper_rv_figures.py", line 1221, in <module>
+  File "<repo>/scripts/paper_rv_figures.py", line 1221, in <module>
     main()
-  File "/home/cim/misc/vpac005/rv-ml/scripts/paper_rv_figures.py", line 1208, in main
+  File "<repo>/scripts/paper_rv_figures.py", line 1208, in main
     earthlike_table(psi_predict, feature_cols, q_table,
-  File "/home/cim/misc/vpac005/rv-ml/scripts/paper_rv_figures.py", line 976, in earthlike_table
+  File "<repo>/scripts/paper_rv_figures.py", line 976, in earthlike_table
     hw = _match_system_widths(pred, widths_blob, fallback=q01, alpha="0.10")
          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/home/cim/misc/vpac005/rv-ml/scripts/paper_rv_figures.py", line 109, in _match_system_widths
+  File "<repo>/scripts/paper_rv_figures.py", line 109, in _match_system_widths
     v = float(best["halfwidths"][alpha][c])
               ~~~~~~~~~~~~~~~~~~~~~~~~~^^^
 KeyError: 'omega'
   exit=1
 --- 2/3 2-D region boxes (needs the table csv above) ---
-Region-box figure -> /home/cim/misc/vpac005/rv-ml/figures/paper/rv_region_boxes.png
-Region-box figure -> /home/cim/misc/vpac005/rv-ml/figures/paper/rv_region_boxes_physical.png
+Region-box figure -> <repo>/figures/paper/rv_region_boxes.png
+Region-box figure -> <repo>/figures/paper/rv_region_boxes_physical.png
   exit=0
 --- 3/3 trajectories with CP-box samples + MSE in legend ---
 loaded per-system widths (51 systems) from synthetic_generation/regression/pke_20260726/gamma_real_val/per_system_widths_papernorm.json
-Trajectory figure -> /home/cim/misc/vpac005/rv-ml/figures/paper/rv_trajectories.png
+Trajectory figure -> <repo>/figures/paper/rv_trajectories.png
   exit=0
 === resulting artifacts ===
--rw-r--r-- 1 vpac005 misc    4567 2026-07-26_11:35 figures/paper/earthlike_top10.csv
--rw-r--r-- 1 vpac005 misc    2119 2026-07-26_11:16 figures/paper/earthlike_top10.tex
--rw-r--r-- 1 vpac005 misc   83737 2026-07-27_16:39 figures/paper/rv_mse_scatter.png
--rw-r--r-- 1 vpac005 misc  146026 2026-07-27_19:33 figures/paper/rv_region_boxes_physical.png
--rw-r--r-- 1 vpac005 misc  112218 2026-07-27_19:33 figures/paper/rv_region_boxes.png
--rw-r--r-- 1 vpac005 misc 1006237 2026-07-27_19:33 figures/paper/rv_trajectories.png
+-rw-r--r-- 1 <user> misc    4567 2026-07-26_11:35 figures/paper/earthlike_top10.csv
+-rw-r--r-- 1 <user> misc    2119 2026-07-26_11:16 figures/paper/earthlike_top10.tex
+-rw-r--r-- 1 <user> misc   83737 2026-07-27_16:39 figures/paper/rv_mse_scatter.png
+-rw-r--r-- 1 <user> misc  146026 2026-07-27_19:33 figures/paper/rv_region_boxes_physical.png
+-rw-r--r-- 1 <user> misc  112218 2026-07-27_19:33 figures/paper/rv_region_boxes.png
+-rw-r--r-- 1 <user> misc 1006237 2026-07-27_19:33 figures/paper/rv_trajectories.png
 === end Mon 27 Jul 19:33:39 BST 2026 ===

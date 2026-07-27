@@ -1,8 +1,8 @@
-=== start Mon 27 Jul 15:33:43 BST 2026 on cim-ts-node-01 ===
+=== start Mon 27 Jul 15:33:43 BST 2026 on <compute node> ===
 d323631 sbatch: pass the matching 74-D CSV, and assert it
 === inputs ===
--rw-r--r-- 1 vpac005 misc  1081541 2026-07-27 models/gp_residual_svgp.pt
--rw-r--r-- 1 vpac005 misc 16511266 2026-07-25 synthetic_generation/datasets/synthetic_regression_10000.csv
+-rw-r--r-- 1 <user> misc  1081541 2026-07-27 models/gp_residual_svgp.pt
+-rw-r--r-- 1 <user> misc 16511266 2026-07-25 synthetic_generation/datasets/synthetic_regression_10000.csv
 d323631 sbatch: pass the matching 74-D CSV, and assert it
 loading CSV from synthetic_generation/datasets/synthetic_regression_10000.csv (feature-set=74) ...
 dataset: 10,000 samples, 74 features -> 5 targets

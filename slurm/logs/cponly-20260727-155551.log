@@ -1,8 +1,8 @@
-=== start Mon 27 Jul 15:55:51 BST 2026 on cim-ts-node-02 ===
+=== start Mon 27 Jul 15:55:51 BST 2026 on <compute node> ===
 989b02a sbatch: RVML_SKIP_PSI to reuse existing checkpoints
 === inputs ===
--rw-r--r-- 1 vpac005 misc  1081541 2026-07-27 models/gp_residual_svgp.pt
--rw-r--r-- 1 vpac005 misc 16511266 2026-07-25 synthetic_generation/datasets/synthetic_regression_10000.csv
+-rw-r--r-- 1 <user> misc  1081541 2026-07-27 models/gp_residual_svgp.pt
+-rw-r--r-- 1 <user> misc 16511266 2026-07-25 synthetic_generation/datasets/synthetic_regression_10000.csv
 989b02a sbatch: RVML_SKIP_PSI to reuse existing checkpoints
 === step 1 skipped (RVML_SKIP_PSI=1); reusing existing checkpoints ===
 psi: checkpoints/psi_20260726/mlp74_s42.pt (77485 bytes, 2026-07-27 15:42)

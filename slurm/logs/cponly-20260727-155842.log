@@ -1,18 +1,18 @@
-=== start Mon 27 Jul 15:58:42 BST 2026 on cim-ts-node-02 ===
+=== start Mon 27 Jul 15:58:42 BST 2026 on <compute node> ===
 268cebf sbatch: actually define CSV74 (the earlier edit never landed)
 === inputs ===
--rw-r--r-- 1 vpac005 misc  1081541 2026-07-27 models/gp_residual_svgp.pt
--rw-r--r-- 1 vpac005 misc 16511266 2026-07-25 synthetic_generation/datasets/synthetic_regression_10000.csv
+-rw-r--r-- 1 <user> misc  1081541 2026-07-27 models/gp_residual_svgp.pt
+-rw-r--r-- 1 <user> misc 16511266 2026-07-25 synthetic_generation/datasets/synthetic_regression_10000.csv
 268cebf sbatch: actually define CSV74 (the earlier edit never landed)
 === step 1 skipped (RVML_SKIP_PSI=1); reusing existing checkpoints ===
 psi: checkpoints/psi_20260726/mlp74_s42.pt (77485 bytes, 2026-07-27 15:42)
-/home/cim/misc/vpac005/rv-ml/.venv/lib/python3.12/site-packages/linear_operator/utils/cholesky.py:41: NumericalWarning: A not p.d., added jitter of 1.0e-06 to the diagonal
+<repo>/.venv/lib/python3.12/site-packages/linear_operator/utils/cholesky.py:41: NumericalWarning: A not p.d., added jitter of 1.0e-06 to the diagonal
   warnings.warn(
-/home/cim/misc/vpac005/rv-ml/.venv/lib/python3.12/site-packages/linear_operator/utils/cholesky.py:41: NumericalWarning: A not p.d., added jitter of 1.0e-05 to the diagonal
+<repo>/.venv/lib/python3.12/site-packages/linear_operator/utils/cholesky.py:41: NumericalWarning: A not p.d., added jitter of 1.0e-05 to the diagonal
   warnings.warn(
-/home/cim/misc/vpac005/rv-ml/.venv/lib/python3.12/site-packages/linear_operator/utils/cholesky.py:41: NumericalWarning: A not p.d., added jitter of 1.0e-04 to the diagonal
+<repo>/.venv/lib/python3.12/site-packages/linear_operator/utils/cholesky.py:41: NumericalWarning: A not p.d., added jitter of 1.0e-04 to the diagonal
   warnings.warn(
-/home/cim/misc/vpac005/rv-ml/.venv/lib/python3.12/site-packages/linear_operator/operators/_linear_operator.py:2180: NumericalWarning: Runtime Error when computing Cholesky decomposition: Matrix not positive definite after repeatedly adding jitter up to 1.0e-04.. Using symeig method.
+<repo>/.venv/lib/python3.12/site-packages/linear_operator/operators/_linear_operator.py:2180: NumericalWarning: Runtime Error when computing Cholesky decomposition: Matrix not positive definite after repeatedly adding jitter up to 1.0e-04.. Using symeig method.
   warnings.warn(
 reported CP coordinates: ['log10_P', 'log10_K', 'e'] (Bonferroni divisor 3)
 noise proxy source: gp_residual_svgp
@@ -77,13 +77,13 @@ wrote per-system papernorm widths -> synthetic_generation/regression/pke_2026072
 
 total 3133s — wrote metrics/report to synthetic_generation/regression/pke_20260726/gamma_syn, figures to synthetic_generation/figures/synthetic_regression_10000/pke_20260726/gamma_syn
   ok: psi=mlp csv=synthetic_regression_10000.csv
-/home/cim/misc/vpac005/rv-ml/.venv/lib/python3.12/site-packages/linear_operator/utils/cholesky.py:41: NumericalWarning: A not p.d., added jitter of 1.0e-06 to the diagonal
+<repo>/.venv/lib/python3.12/site-packages/linear_operator/utils/cholesky.py:41: NumericalWarning: A not p.d., added jitter of 1.0e-06 to the diagonal
   warnings.warn(
-/home/cim/misc/vpac005/rv-ml/.venv/lib/python3.12/site-packages/linear_operator/utils/cholesky.py:41: NumericalWarning: A not p.d., added jitter of 1.0e-05 to the diagonal
+<repo>/.venv/lib/python3.12/site-packages/linear_operator/utils/cholesky.py:41: NumericalWarning: A not p.d., added jitter of 1.0e-05 to the diagonal
   warnings.warn(
-/home/cim/misc/vpac005/rv-ml/.venv/lib/python3.12/site-packages/linear_operator/utils/cholesky.py:41: NumericalWarning: A not p.d., added jitter of 1.0e-04 to the diagonal
+<repo>/.venv/lib/python3.12/site-packages/linear_operator/utils/cholesky.py:41: NumericalWarning: A not p.d., added jitter of 1.0e-04 to the diagonal
   warnings.warn(
-/home/cim/misc/vpac005/rv-ml/.venv/lib/python3.12/site-packages/linear_operator/operators/_linear_operator.py:2180: NumericalWarning: Runtime Error when computing Cholesky decomposition: Matrix not positive definite after repeatedly adding jitter up to 1.0e-04.. Using symeig method.
+<repo>/.venv/lib/python3.12/site-packages/linear_operator/operators/_linear_operator.py:2180: NumericalWarning: Runtime Error when computing Cholesky decomposition: Matrix not positive definite after repeatedly adding jitter up to 1.0e-04.. Using symeig method.
   warnings.warn(
 reported CP coordinates: ['log10_P', 'log10_K', 'e'] (Bonferroni divisor 3)
 noise proxy source: gp_residual_svgp
@@ -149,13 +149,13 @@ wrote per-system papernorm widths -> synthetic_generation/regression/pke_2026072
 
 total 3221s — wrote metrics/report to synthetic_generation/regression/pke_20260726/gamma_real_val, figures to synthetic_generation/figures/synthetic_regression_10000/pke_20260726/gamma_real_val
   ok: psi=mlp csv=synthetic_regression_10000.csv
-/home/cim/misc/vpac005/rv-ml/.venv/lib/python3.12/site-packages/linear_operator/utils/cholesky.py:41: NumericalWarning: A not p.d., added jitter of 1.0e-06 to the diagonal
+<repo>/.venv/lib/python3.12/site-packages/linear_operator/utils/cholesky.py:41: NumericalWarning: A not p.d., added jitter of 1.0e-06 to the diagonal
   warnings.warn(
-/home/cim/misc/vpac005/rv-ml/.venv/lib/python3.12/site-packages/linear_operator/utils/cholesky.py:41: NumericalWarning: A not p.d., added jitter of 1.0e-05 to the diagonal
+<repo>/.venv/lib/python3.12/site-packages/linear_operator/utils/cholesky.py:41: NumericalWarning: A not p.d., added jitter of 1.0e-05 to the diagonal
   warnings.warn(
-/home/cim/misc/vpac005/rv-ml/.venv/lib/python3.12/site-packages/linear_operator/utils/cholesky.py:41: NumericalWarning: A not p.d., added jitter of 1.0e-04 to the diagonal
+<repo>/.venv/lib/python3.12/site-packages/linear_operator/utils/cholesky.py:41: NumericalWarning: A not p.d., added jitter of 1.0e-04 to the diagonal
   warnings.warn(
-/home/cim/misc/vpac005/rv-ml/.venv/lib/python3.12/site-packages/linear_operator/operators/_linear_operator.py:2180: NumericalWarning: Runtime Error when computing Cholesky decomposition: Matrix not positive definite after repeatedly adding jitter up to 1.0e-04.. Using symeig method.
+<repo>/.venv/lib/python3.12/site-packages/linear_operator/operators/_linear_operator.py:2180: NumericalWarning: Runtime Error when computing Cholesky decomposition: Matrix not positive definite after repeatedly adding jitter up to 1.0e-04.. Using symeig method.
   warnings.warn(
 reported CP coordinates: ['log10_P', 'log10_K', 'e'] (Bonferroni divisor 3)
 noise proxy source: gp_residual_svgp
@@ -221,13 +221,13 @@ wrote per-system papernorm widths -> synthetic_generation/regression/pke_2026072
 
 total 3205s — wrote metrics/report to synthetic_generation/regression/pke_20260726/gamma_real_val_1perhost, figures to synthetic_generation/figures/synthetic_regression_10000/pke_20260726/gamma_real_val_1perhost
   ok: psi=mlp csv=synthetic_regression_10000.csv
-/home/cim/misc/vpac005/rv-ml/.venv/lib/python3.12/site-packages/linear_operator/utils/cholesky.py:41: NumericalWarning: A not p.d., added jitter of 1.0e-06 to the diagonal
+<repo>/.venv/lib/python3.12/site-packages/linear_operator/utils/cholesky.py:41: NumericalWarning: A not p.d., added jitter of 1.0e-06 to the diagonal
   warnings.warn(
-/home/cim/misc/vpac005/rv-ml/.venv/lib/python3.12/site-packages/linear_operator/utils/cholesky.py:41: NumericalWarning: A not p.d., added jitter of 1.0e-05 to the diagonal
+<repo>/.venv/lib/python3.12/site-packages/linear_operator/utils/cholesky.py:41: NumericalWarning: A not p.d., added jitter of 1.0e-05 to the diagonal
   warnings.warn(
-/home/cim/misc/vpac005/rv-ml/.venv/lib/python3.12/site-packages/linear_operator/utils/cholesky.py:41: NumericalWarning: A not p.d., added jitter of 1.0e-04 to the diagonal
+<repo>/.venv/lib/python3.12/site-packages/linear_operator/utils/cholesky.py:41: NumericalWarning: A not p.d., added jitter of 1.0e-04 to the diagonal
   warnings.warn(
-/home/cim/misc/vpac005/rv-ml/.venv/lib/python3.12/site-packages/linear_operator/operators/_linear_operator.py:2180: NumericalWarning: Runtime Error when computing Cholesky decomposition: Matrix not positive definite after repeatedly adding jitter up to 1.0e-04.. Using symeig method.
+<repo>/.venv/lib/python3.12/site-packages/linear_operator/operators/_linear_operator.py:2180: NumericalWarning: Runtime Error when computing Cholesky decomposition: Matrix not positive definite after repeatedly adding jitter up to 1.0e-04.. Using symeig method.
   warnings.warn(
 reported CP coordinates: ['log10_P', 'log10_K', 'e'] (Bonferroni divisor 3)
 noise proxy source: gp_residual_svgp
@@ -293,13 +293,13 @@ wrote per-system papernorm widths -> synthetic_generation/regression/pke_2026072
 
 total 3266s — wrote metrics/report to synthetic_generation/regression/pke_20260726/gamma_real_val_nofilter, figures to synthetic_generation/figures/synthetic_regression_10000/pke_20260726/gamma_real_val_nofilter
   ok: psi=mlp csv=synthetic_regression_10000.csv
-/home/cim/misc/vpac005/rv-ml/.venv/lib/python3.12/site-packages/linear_operator/utils/cholesky.py:41: NumericalWarning: A not p.d., added jitter of 1.0e-06 to the diagonal
+<repo>/.venv/lib/python3.12/site-packages/linear_operator/utils/cholesky.py:41: NumericalWarning: A not p.d., added jitter of 1.0e-06 to the diagonal
   warnings.warn(
-/home/cim/misc/vpac005/rv-ml/.venv/lib/python3.12/site-packages/linear_operator/utils/cholesky.py:41: NumericalWarning: A not p.d., added jitter of 1.0e-05 to the diagonal
+<repo>/.venv/lib/python3.12/site-packages/linear_operator/utils/cholesky.py:41: NumericalWarning: A not p.d., added jitter of 1.0e-05 to the diagonal
   warnings.warn(
-/home/cim/misc/vpac005/rv-ml/.venv/lib/python3.12/site-packages/linear_operator/utils/cholesky.py:41: NumericalWarning: A not p.d., added jitter of 1.0e-04 to the diagonal
+<repo>/.venv/lib/python3.12/site-packages/linear_operator/utils/cholesky.py:41: NumericalWarning: A not p.d., added jitter of 1.0e-04 to the diagonal
   warnings.warn(
-/home/cim/misc/vpac005/rv-ml/.venv/lib/python3.12/site-packages/linear_operator/operators/_linear_operator.py:2180: NumericalWarning: Runtime Error when computing Cholesky decomposition: Matrix not positive definite after repeatedly adding jitter up to 1.0e-04.. Using symeig method.
+<repo>/.venv/lib/python3.12/site-packages/linear_operator/operators/_linear_operator.py:2180: NumericalWarning: Runtime Error when computing Cholesky decomposition: Matrix not positive definite after repeatedly adding jitter up to 1.0e-04.. Using symeig method.
   warnings.warn(
 reported CP coordinates: ['log10_P', 'log10_K', 'e'] (Bonferroni divisor 3)
 noise proxy source: gp_residual_svgp
@@ -365,13 +365,13 @@ wrote per-system papernorm widths -> synthetic_generation/regression/pke_2026072
 
 total 3269s — wrote metrics/report to synthetic_generation/regression/pke_20260726/gamma_real_val_gapbeta02, figures to synthetic_generation/figures/synthetic_regression_10000/pke_20260726/gamma_real_val_gapbeta02
   ok: psi=mlp csv=synthetic_regression_10000.csv
-/home/cim/misc/vpac005/rv-ml/.venv/lib/python3.12/site-packages/linear_operator/utils/cholesky.py:41: NumericalWarning: A not p.d., added jitter of 1.0e-06 to the diagonal
+<repo>/.venv/lib/python3.12/site-packages/linear_operator/utils/cholesky.py:41: NumericalWarning: A not p.d., added jitter of 1.0e-06 to the diagonal
   warnings.warn(
-/home/cim/misc/vpac005/rv-ml/.venv/lib/python3.12/site-packages/linear_operator/utils/cholesky.py:41: NumericalWarning: A not p.d., added jitter of 1.0e-05 to the diagonal
+<repo>/.venv/lib/python3.12/site-packages/linear_operator/utils/cholesky.py:41: NumericalWarning: A not p.d., added jitter of 1.0e-05 to the diagonal
   warnings.warn(
-/home/cim/misc/vpac005/rv-ml/.venv/lib/python3.12/site-packages/linear_operator/utils/cholesky.py:41: NumericalWarning: A not p.d., added jitter of 1.0e-04 to the diagonal
+<repo>/.venv/lib/python3.12/site-packages/linear_operator/utils/cholesky.py:41: NumericalWarning: A not p.d., added jitter of 1.0e-04 to the diagonal
   warnings.warn(
-/home/cim/misc/vpac005/rv-ml/.venv/lib/python3.12/site-packages/linear_operator/operators/_linear_operator.py:2180: NumericalWarning: Runtime Error when computing Cholesky decomposition: Matrix not positive definite after repeatedly adding jitter up to 1.0e-04.. Using symeig method.
+<repo>/.venv/lib/python3.12/site-packages/linear_operator/operators/_linear_operator.py:2180: NumericalWarning: Runtime Error when computing Cholesky decomposition: Matrix not positive definite after repeatedly adding jitter up to 1.0e-04.. Using symeig method.
   warnings.warn(
 reported CP coordinates: ['log10_P', 'log10_K', 'e', 'omega'] (Bonferroni divisor 4)
 noise proxy source: gp_residual_svgp

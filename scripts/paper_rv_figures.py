@@ -739,7 +739,10 @@ def figure_trajectories(
     sigma_min: float = 0.1,
     sigma_max: float = 100.0,
     q_box: dict | None = None,
-    n_box_samples: int = 12,
+    n_box_samples: int = 5,
+    surrogate: bool = True,
+    gd_steps: int = 200,
+    gd_lr: float = 0.02,
 ) -> None:
     """RV trajectories in time — no projection onto a single period.
 
@@ -793,6 +796,20 @@ def figure_trajectories(
 
     X = np.asarray([_feat_row_for_system(s, feature_cols) for s in systems], dtype=float)
     th_psi = psi_predict(X)
+
+    # The surrogate label theta*, the quantity the CP algorithm is actually
+    # calibrated against. Without it this figure shows only the catalogue fit
+    # against the zero-shot predictor, which reads as "our estimator is worse"
+    # -- whereas the paper's claim is that theta* matches the catalogue and it
+    # is the *fast* predictor that trades accuracy for speed. Same GD fit the
+    # MSE scatter uses, initialised at the tabulated value.
+    th_star = None
+    if surrogate:
+        from conformal_shift import surrogate_fit_gd
+
+        _decoder = KeplerDecoder().eval()
+        th_star = surrogate_fit_gd(_decoder, [s["theta5"] for s in systems],
+                                   systems, gd_steps, gd_lr)
 
     ncol = 2
     nrow = int(np.ceil(len(systems) / ncol))
@@ -850,6 +867,15 @@ def figure_trajectories(
                                  - float(np.median(rv - _kepler_on_grid(th_psi[k], t, tp_psi)))) ** 2))
         ax.plot(t_grid, y_tab, color="tab:blue", lw=1.2, alpha=0.9,
                 label=rf"$h(\theta_{{\mathrm{{tab}}}})$  MSE={mse_tab:.3g}")
+        if th_star is not None:
+            th_s = np.asarray(th_star[k], dtype=float)
+            tp_st = _anchor_t_peri(th_s, t, rv)
+            off_st = float(np.median(rv - _kepler_on_grid(th_s, t, tp_st)))
+            mse_star = float(np.mean(
+                (rv - _kepler_on_grid(th_s, t, tp_st) - off_st) ** 2))
+            ax.plot(t_grid, _kepler_on_grid(th_s, t_grid, tp_st) + off_st,
+                    color="tab:green", lw=1.2, alpha=0.9, ls="--",
+                    label=rf"$h(\theta^*)$  MSE={mse_star:.3g}")
         ax.plot(t_grid, y_psi, color="tab:red", lw=1.2, alpha=0.9,
                 label=rf"$h(\psi(y))$  MSE={mse_psi:.3g}")
         ax.errorbar(t, rv, yerr=sig, fmt="o", ms=3.0, color="k", ecolor="0.6",
@@ -1143,9 +1169,14 @@ def main() -> None:
                    help="alpha whose quantiles fill the Earth-like table; use "
                         "0.32 (nominal 0.68) with --sigma-scale 1.0 to compare "
                         "against catalogue 1-sigma intervals")
-    ap.add_argument("--n-box-samples", type=int, default=12,
+    ap.add_argument("--n-box-samples", type=int, default=5,
                    help="parameter vectors drawn from the CP box and overlaid on "
                         "each trajectory panel (Nicolo 2026-07-26)")
+    ap.add_argument("--box-alpha", default="0.40", choices=("0.10","0.40"),
+                   help="level the trajectory box samples are drawn from. The "
+                        "0.10 region spans ~1.8 dex in log10 P, i.e. a factor 60 "
+                        "in period, so samples from it render as a solid band; "
+                        "0.40 is legible")
     ap.add_argument("--no-box-samples", action="store_true",
                    help="draw only h(theta_tab) and h(psi(y)), no box samples")
     ap.add_argument("--no-surrogate-floor", action="store_true",
@@ -1212,7 +1243,7 @@ def main() -> None:
         figure_trajectories(psi_predict, feature_cols, OUT_DIR / "rv_trajectories.png",
                             real_split=args.real_split, n_systems=args.n_trajectories,
                             n_cycles=args.traj_cycles,
-                            q_box=None if args.no_box_samples else q01,
+                            q_box=None if args.no_box_samples else (q04 if args.box_alpha == "0.40" else q01),
                             n_box_samples=args.n_box_samples)
     if want in ("all", "table"):
         earthlike_table(psi_predict, feature_cols, q_table,

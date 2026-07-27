@@ -1,8 +1,8 @@
-=== start Mon 27 Jul 11:21:21 BST 2026 on cim-ts-node-03 ===
+=== start Mon 27 Jul 11:21:21 BST 2026 on <compute node> ===
 0405f8f sbatch: allow skipping the Hessian sweep on a psi-only rerun
 === inputs ===
--rw-r--r-- 1 vpac005 misc  1081541 2026-07-27 models/gp_residual_svgp.pt
--rw-r--r-- 1 vpac005 misc 16511266 2026-07-25 synthetic_generation/datasets/synthetic_regression_10000.csv
+-rw-r--r-- 1 <user> misc  1081541 2026-07-27 models/gp_residual_svgp.pt
+-rw-r--r-- 1 <user> misc 16511266 2026-07-25 synthetic_generation/datasets/synthetic_regression_10000.csv
 0405f8f sbatch: allow skipping the Hessian sweep on a psi-only rerun
 loading CSV from synthetic_generation/datasets/synthetic_regression_10000.csv (feature-set=74) ...
 dataset: 10,000 samples, 74 features -> 5 targets
@@ -236,9 +236,9 @@ real transfer (log10_K): R2=0.820  MSE=0.04696
 reported CP coordinates: ['log10_P', 'log10_K', 'e'] (Bonferroni divisor 3)
 noise proxy source: gp_residual_svgp
 Traceback (most recent call last):
-  File "/home/cim/misc/vpac005/rv-ml/conformal_shift.py", line 1336, in <module>
+  File "<repo>/conformal_shift.py", line 1336, in <module>
     main()
-  File "/home/cim/misc/vpac005/rv-ml/conformal_shift.py", line 967, in main
+  File "<repo>/conformal_shift.py", line 967, in main
     raise ValueError(
 ValueError: MLP in_dim=74 but --csv has 586 feature columns; pass a matching CSV (e.g. synthetic_regression_10000.csv for the 74-D checkpoint)
 === exit=1 end Mon 27 Jul 11:28:50 BST 2026 ===
