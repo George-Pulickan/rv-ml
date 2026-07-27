@@ -417,8 +417,12 @@ full-scale encoder run evaluated with `injection_recovery.py`.
 
 - Project log (who is doing what): <https://docs.google.com/document/d/1OZliqxJH3tyKIoUy9zpJO3d2aDqwG9eJZJ9lcB3FvqU/edit>
 - Overleaf draft: <https://www.overleaf.com/8188483955gysdcwmjrwhq#ac30a1>
-- Session-to-session working state, open decisions, and cluster access notes:
-  `handover.md` (gitignored, local only).
+- **Session-to-session working state, current results, open decisions with
+  Nicolò, traps, and cluster access: `handover.md`.** It is the single source of
+  truth for anything not derivable from the code. Deliberately **not** in this
+  repo — `main` is public and it carries cluster access details. It is kept in a
+  private gist; ask George for the link. Fetch it to the repo root before doing
+  anything cluster-related.
 
 Data sources: NASA Exoplanet Archive bulk RV download (1071 curves) and the
 Planetary Systems table via TAP.
