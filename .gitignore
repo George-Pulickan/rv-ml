@@ -13,7 +13,7 @@ handover.md
 # under review, and `main` is public — they must never be committed. They
 # previously described themselves as gitignored while merely being untracked.
 paper_*.md
-paper_section4_draft.tex
+paper_*.tex
 meeting_*.md
 
 checkpoints/
