@@ -411,18 +411,28 @@ def noise_bound_from_real(proxy: "NoiseProxy", systems: list, theta_hats: list) 
 
 def make_synthetic_filtered(n: int, seed: int, bound: float | None,
                             proxy: "NoiseProxy",
-                            max_tries: int = 6) -> tuple[list, int, list]:
+                            max_tries: int = 6,
+                            f_multi: float = 0.0,
+                            noise_frac: float = 0.0,
+                            noise_tau_days: float = 30.0) -> tuple[list, int, list]:
     """make_synthetic + the Assumption 2.1 discard rule: reject draws whose
     max_t |y_t - kepler(theta_bar, t)| (rv_std units) exceeds the real-data
     noise bound.  Returns (accepted systems, number generated, rejected theta5s
-    — for the truncation histogram figure)."""
+    — for the truncation histogram figure).
+
+    ``f_multi`` and ``noise_frac`` drive the two misspecification studies and are
+    forwarded to make_synthetic.  Note that filtering and ``f_multi`` > 0 work
+    against each other: companion planets are exactly the kind of unmodelled
+    structure the bound rejects, so a misspecification study must pass
+    ``bound=None`` for the set it is perturbing (see ``--test-f-multi``)."""
+    kw = dict(f_multi=f_multi, noise_frac=noise_frac, noise_tau_days=noise_tau_days)
     if bound is None:
-        return make_synthetic(n, seed), n, []
+        return make_synthetic(n, seed, **kw), n, []
     out: list = []
     rejected: list = []
     n_gen = 0
     for k in range(max_tries):
-        batch = make_synthetic(n, seed + 131 * k)
+        batch = make_synthetic(n, seed + 131 * k, **kw)
         n_gen += len(batch)
         for s in batch:
             stat = float(np.abs(recon_residual_norm(proxy, s["theta5"], s["curve"])).max())
@@ -937,6 +947,28 @@ def main() -> None:
     ap.add_argument("--no-noise-filter", action="store_true",
                     help="disable the Assumption 2.1 bounded-noise discard rule "
                          "on synthetic draws")
+    ap.add_argument("--test-f-multi", type=float, default=None,
+                    help="controlled MEAN-structure misspecification: inject "
+                         "companion planets at this rate into the synthetic "
+                         "TEST set only (calibration/tuning stay at 0, i.e. the "
+                         "ideal simulator). Implies an unfiltered test set; "
+                         "pass 0 for the matched control. NOTE this perturbs "
+                         "the mean structure, which the paper does not claim "
+                         "robustness to, and it moves theta* away from "
+                         "theta_bar so the study is confounded by construction; "
+                         "prefer --test-noise-frac.")
+    ap.add_argument("--test-noise-frac", type=float, default=None,
+                    help="controlled NOISE-model misspecification: add a "
+                         "correlated (squared-exponential) component at this "
+                         "fraction of the curve's rv_std to the synthetic TEST "
+                         "set only, standing for stellar activity. h(theta_bar) "
+                         "remains the exact mean structure, so this tests the "
+                         "paper's actual claim -- that the noise process is "
+                         "bounded but otherwise unconstrained. Implies an "
+                         "unfiltered test set; pass 0 for the control.")
+    ap.add_argument("--test-noise-tau", type=float, default=30.0,
+                    help="correlation timescale in days for --test-noise-frac "
+                         "(default 30 d, a typical stellar rotation period)")
     ap.add_argument("--n-constants", type=int, default=25,
                     help="prior draws for the Assumption 2.3 constants "
                          "(kappa(H), ||grad h||); 0 skips")
@@ -1039,7 +1071,31 @@ def main() -> None:
     tune, g, rj = make_synthetic_filtered(args.n_tune, args.seed + 11, bound, proxy)
     n_gen_total += g
     rejected_thetas += rj
-    test_syn, g, rj = make_synthetic_filtered(args.n_test, args.seed + 2, bound, proxy)
+    if args.test_noise_frac is not None:
+        # Noise-model study: the perturbation leaves h(theta_bar) as the exact
+        # mean structure, so theta_bar remains the right target and theta* has
+        # no reason to drift — only the noise process differs from calibration.
+        # Unfiltered for the same reason as below: the Assumption 2.1 bound
+        # would preferentially reject the perturbed curves.
+        test_syn, g, rj = make_synthetic_filtered(
+            args.n_test, args.seed + 2, None, proxy,
+            noise_frac=args.test_noise_frac, noise_tau_days=args.test_noise_tau)
+        print(f"misspecification study: synthetic test set drawn UNFILTERED with "
+              f"correlated noise frac={args.test_noise_frac} "
+              f"tau={args.test_noise_tau}d ({len(test_syn)} systems)")
+    elif args.test_f_multi is None:
+        test_syn, g, rj = make_synthetic_filtered(args.n_test, args.seed + 2, bound, proxy)
+    else:
+        # Mean-structure study: the synthetic test set stands in for reality, so
+        # it is drawn UNFILTERED (bound=None).  Real curves are not screened
+        # against Assumption 2.1 either, and the filter would otherwise reject
+        # precisely the companion-injected curves the study is about.  Pass
+        # --test-f-multi 0 for the matched control, so the only thing varying
+        # across the sweep is f_multi.
+        test_syn, g, rj = make_synthetic_filtered(
+            args.n_test, args.seed + 2, None, proxy, f_multi=args.test_f_multi)
+        print(f"misspecification study: synthetic test set drawn UNFILTERED with "
+              f"f_multi={args.test_f_multi} ({len(test_syn)} systems)")
     n_gen_total += g
     rejected_thetas += rj
     wsynth, g, rj = make_synthetic_filtered(args.n_weight_synth, args.seed + 21, bound, proxy)
@@ -1281,6 +1337,13 @@ def main() -> None:
             c: {"used_max": adj[c],
                 "median": float(np.median(gap[c])),
                 "p90": float(np.percentile(gap[c], 90))} for c in COORDS},
+        "test_f_multi": args.test_f_multi,
+        "test_noise_frac": args.test_noise_frac,
+        "test_noise_tau_days": (args.test_noise_tau
+                                if args.test_noise_frac is not None else None),
+        "test_set_filtered": (args.test_f_multi is None
+                              and args.test_noise_frac is None
+                              and bound is not None),
         "noise_filter": {
             "enabled": bound is not None,
             "bound_rv_std": bound,
