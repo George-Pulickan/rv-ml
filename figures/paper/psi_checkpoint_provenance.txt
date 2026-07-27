@@ -1,22 +1,55 @@
-psi checkpoint pinned for the AAAI paper
-========================================
-file        : regression_mlp_74_paper_20260726-0946.pt
-sha256      : 4c09059aa44167197172adeb87b6ed7f060e2d98a940ffb303e901f363fba394
-created     : 2026-07-26T09:50:18+01:00
+psi checkpoints for the AAAI paper
+==================================
+The paper's conformal-prediction runs use SEED 42:
+
+    checkpoints/psi_20260726/mlp74_s42.pt
+    sha256 43c8cce44bc80f00709ae9b7b89682aa755af3c1162bfe0116344801e157e1cd
+
+This file is committed to the repository, so no external download is needed.
+Every run under synthetic_generation/regression/pke_20260726/ records this path
+in its conformal_shift_metrics.json "checkpoint" field; that record, not this
+note, is the authority on what produced a given number.
+
+trained     : 2026-07-27T15:42 (+01:00)
+git commit  : d323631  "sbatch: pass the matching 74-D CSV, and assert it"
+command     : python regression.py --feature-set 74 --epochs 200 --seed 42 \
+                  --real-split test \
+                  --out figures/regression_synthetic/seed_42 \
+                  --checkpoint checkpoints/psi_20260726/mlp74_s42.pt
 host        : <cluster compute node, CPU only>
-git commit  : 515a264d7ed43d17a40a1a68681faa0891a22afe
-command     : python regression.py --two-step --device cpu
 run from    : <repository root>  (any checkout at the commit above)
 versions    : python 3.12.3 | torch 2.12.0+cu130 | numpy 2.4.4
 source CSV  : synthetic_generation/datasets/synthetic_regression_10000.csv
             : sha256 913a9859ff1758fe3df06c5b74a98180ca7c308e655fdf1c6d0c9cbf478f80ab
-phasefold   : synthetic_generation/datasets/synthetic_regression_10000_phasefold.csv
-            : sha256 93b8467e1c5fc5e8598cb81c461fb9ed5d2f04e1df7e85b733b904ce3f6b709e
-notes       : regression.py --two-step trains the 74-D model via train_model(...,
-              checkpoint_path=CHECKPOINT_74) with argparse defaults for
-              epochs/seed/lr/batch/val_frac/patience.  Re-running the command
-              above at this commit reproduces the checkpoint.
-              Supersedes the 2026-07-25 19:57 checkpoint, which was trained
-              while the cluster was at be9df5a (46 commits behind, regression.py
-              differing by 1852 lines) and is therefore NOT reproducible from
-              main.
+
+Seed sweep
+----------
+Trained in one loop by slurm/nicolo_20260726.sbatch step 1, identical arguments
+apart from --seed. The spread across seeds is what we report; no single seed is
+presented as the model. All six are committed.
+
+    mlp74_s0.pt    c708814a62d9b118a0b53bf9b2d120535ede742f1d24607d12d5fb4e5fd99f31
+    mlp74_s1.pt    5a7dc250e301c636bf39a2911c049efcf8ef912baf80e98a0ef053c59067e894
+    mlp74_s2.pt    d6649631c60a5f508ed27b6792d2dd5925c8a188cb9bb554c04e5591827353f5
+    mlp74_s7.pt    e5ac193cb5d4003e5a5389767154d43001724f79fee2b808a7bb8804069988e3
+    mlp74_s42.pt   43c8cce44bc80f00709ae9b7b89682aa755af3c1162bfe0116344801e157e1cd  <-- paper
+    mlp74_s123.pt  164c854dc562789916ec1e99174f652652c7135d5cce5cf795d1e771760bbb7e
+
+regression.py is deterministic per seed, so retraining at commit d323631 with
+the CSV above reproduces these files.
+
+Checkpoints that must NOT be used
+---------------------------------
+checkpoints/regression_mlp_74.pt (present on the laptop-sync branch, renamed
+there on 2026-07-27 to make the hazard obvious) is a 15-epoch smoke artifact
+that predicts near the training mean. It is not on main. Passing --checkpoint
+explicitly, as the sbatch script does, avoids it.
+
+Superseded pins
+---------------
+Two earlier files exist outside the repository and describe DIFFERENT trainings:
+regression_mlp_74_paper_20260726-0946.pt (sha256 4c09059a...) and
+regression_mlp_74_paper.pt (sha256 30f40259...), both from 2026-07-26. An
+earlier version of this note documented the first of those as the paper
+checkpoint. That was wrong: no reported number came from it. The 2026-07-27
+seed sweep above supersedes both.

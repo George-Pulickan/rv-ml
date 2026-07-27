@@ -16,8 +16,16 @@ paper_*.md
 paper_*.tex
 meeting_*.md
 
-checkpoints/
+checkpoints/*
 *.pt
+# Exception: the six psi checkpoints behind every number in the paper (~76 KB
+# each, 454 KB total). Deliberately tracked -- without them Table 1 cannot be
+# reproduced, and the similarly-named checkpoints/regression_mlp_74.pt is a
+# 15-epoch smoke artifact that predicts near the training mean. A bare
+# `git add` skipped these silently until 2026-07-27.
+# See figures/paper/psi_checkpoint_provenance.txt.
+!checkpoints/psi_20260726/
+!checkpoints/psi_20260726/*.pt
 *.pdf
 # The paper draft and its extracted text. main is public and this is an
 # anonymised submission under review -- deliberately kept out (2026-07-27).
