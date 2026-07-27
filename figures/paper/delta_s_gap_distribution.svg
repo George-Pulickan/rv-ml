@@ -1,0 +1,124 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="720" height="446" viewBox="0 0 720 446" font-family="Inter, ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif" role="img" aria-label="Distribution of the surrogate-label gap delta s across four orbital coordinates, on a logarithmic scale. Median values are near zero while the maximum, which Delta c uses, is three orders of magnitude larger.">
+  <style>
+    svg, :root {
+      --surface-1: #fcfcfb;
+      --text-primary: #0b0b0b;
+      --text-secondary: #52514e;
+      --text-muted: #77766f;
+      --grid: #e6e5e1;
+      --axis: #c9c8c3;
+      --connector: #d5d4cf;
+      --s-median: #86b6ef;
+      --s-p90: #3987e5;
+      --s-max: #184f95;
+    }
+    @media (prefers-color-scheme: dark) {
+      svg, :root {
+        --surface-1: #1a1a19;
+        --text-primary: #ffffff;
+        --text-secondary: #c3c2b7;
+        --text-muted: #96958c;
+        --grid: #2e2e2c;
+        --axis: #4a4a46;
+        --connector: #3d3d3a;
+        --s-median: #b7d3f6;
+        --s-p90: #6da7ec;
+        --s-max: #2a78d6;
+      }
+    }
+    .bg    { fill: var(--surface-1); }
+    .t1    { fill: var(--text-primary); }
+    .t2    { fill: var(--text-secondary); }
+    .t3    { fill: var(--text-muted); }
+    .grid  { stroke: var(--grid); stroke-width: 1; }
+    .axis  { stroke: var(--axis); stroke-width: 1; }
+    .conn  { stroke: var(--connector); stroke-width: 2; stroke-linecap: round; }
+    .ring  { stroke: var(--surface-1); stroke-width: 2; }
+    .dMed  { fill: var(--s-median); }
+    .dP90  { fill: var(--s-p90); }
+    .dMax  { fill: var(--s-max); }
+    .lead  { stroke: var(--axis); stroke-width: 1; stroke-dasharray: 3 3; }
+  </style>
+
+  <rect class="bg" x="0" y="0" width="720" height="446"/>
+
+  <text class="t1" x="24" y="30" font-size="16" font-weight="600">The gap the experiment sets to zero</text>
+  <text class="t2" x="24" y="52" font-size="12.5">Δs = |θ̄ − θ*| over the 100-curve tuning set. Typically ~0 — but Δ_c takes the maximum, three orders of magnitude larger.</text>
+
+  <!-- legend -->
+  <g font-size="11.5">
+    <circle class="dMed ring" cx="30" cy="76" r="5"/>
+    <text class="t2" x="41" y="80">median</text>
+    <circle class="dP90 ring" cx="119" cy="76" r="5"/>
+    <text class="t2" x="130" y="80">90th percentile</text>
+    <circle class="dMax ring" cx="243" cy="76" r="6"/>
+    <text class="t2" x="255" y="80">maximum — the value Δ_c uses</text>
+  </g>
+
+  <!-- gridlines at decades -->
+  <g class="grid">
+    <line x1="92"  y1="104" x2="92"  y2="336"/>
+    <line x1="205.6" y1="104" x2="205.6" y2="336"/>
+    <line x1="319.2" y1="104" x2="319.2" y2="336"/>
+    <line x1="432.8" y1="104" x2="432.8" y2="336"/>
+    <line x1="546.4" y1="104" x2="546.4" y2="336"/>
+    <line x1="660"  y1="104" x2="660"  y2="336"/>
+  </g>
+
+  <!-- row 1: log10 P -->
+  <text class="t1" x="84" y="136" font-size="12.5" text-anchor="end">log₁₀P</text>
+  <text class="t3" x="84" y="149" font-size="10" text-anchor="end">dex</text>
+  <line class="conn" x1="174.3" y1="132" x2="515.8" y2="132"/>
+  <circle class="dMed ring" cx="174.3" cy="132" r="5"/>
+  <circle class="dP90 ring" cx="446.7" cy="132" r="5"/>
+  <circle class="dMax ring" cx="515.8" cy="132" r="6"/>
+  <text class="t3" x="164" y="136" font-size="10.5" text-anchor="end">0.0005</text>
+  <text class="t2" x="528" y="136" font-size="11" font-weight="600">0.54</text>
+
+  <!-- row 2: log10 K -->
+  <text class="t1" x="84" y="192" font-size="12.5" text-anchor="end">log₁₀K</text>
+  <text class="t3" x="84" y="205" font-size="10" text-anchor="end">dex</text>
+  <line class="conn" x1="276.1" y1="188" x2="557.7" y2="188"/>
+  <circle class="dMed ring" cx="276.1" cy="188" r="5"/>
+  <circle class="dP90 ring" cx="467.4" cy="188" r="5"/>
+  <circle class="dMax ring" cx="557.7" cy="188" r="6"/>
+  <text class="t3" x="266" y="192" font-size="10.5" text-anchor="end">0.0042</text>
+  <text class="t2" x="570" y="192" font-size="11" font-weight="600">1.26</text>
+
+  <!-- row 3: e -->
+  <text class="t1" x="84" y="248" font-size="12.5" text-anchor="end">e</text>
+  <text class="t3" x="84" y="261" font-size="10" text-anchor="end">support [0,1]</text>
+  <line class="conn" x1="262.9" y1="244" x2="539.4" y2="244"/>
+  <circle class="dMed ring" cx="262.9" cy="244" r="5"/>
+  <circle class="dP90 ring" cx="505.3" cy="244" r="5"/>
+  <circle class="dMax ring" cx="539.4" cy="244" r="6"/>
+  <text class="t3" x="253" y="248" font-size="10.5" text-anchor="end">0.0032</text>
+  <text class="t2" x="552" y="248" font-size="11" font-weight="600">0.87</text>
+
+  <!-- row 4: omega -->
+  <text class="t1" x="84" y="304" font-size="12.5" text-anchor="end">ω</text>
+  <text class="t3" x="84" y="317" font-size="10" text-anchor="end">rad, not reported</text>
+  <line class="conn" x1="410.2" y1="300" x2="591" y2="300"/>
+  <circle class="dMed ring" cx="410.2" cy="300" r="5"/>
+  <circle class="dP90 ring" cx="557.4" cy="300" r="5"/>
+  <circle class="dMax ring" cx="591" cy="300" r="6"/>
+  <text class="t3" x="400" y="304" font-size="10.5" text-anchor="end">0.063</text>
+  <text class="t2" x="603" y="304" font-size="11" font-weight="600">2.47</text>
+
+  <!-- x axis -->
+  <line class="axis" x1="92" y1="336" x2="660" y2="336"/>
+  <g class="t2" font-size="10.5" text-anchor="middle">
+    <text x="92"   y="354">10⁻⁴</text>
+    <text x="205.6" y="354">10⁻³</text>
+    <text x="319.2" y="354">10⁻²</text>
+    <text x="432.8" y="354">10⁻¹</text>
+    <text x="546.4" y="354">1</text>
+    <text x="660"  y="354">10</text>
+  </g>
+  <text class="t2" x="376" y="376" font-size="11.5" text-anchor="middle">|θ̄ − θ*|, log scale — zero is off-scale to the left</text>
+
+  <!-- footnotes -->
+  <text class="t3" x="24" y="404" font-size="10.5">The reported intervals set Δs = 0. Only the naive + Δ_c variant adds it, and there Δ_c = max, which is why that variant pins at 57/57.</text>
+  <text class="t3" x="24" y="420" font-size="10.5">ω carries the largest gap by an order of magnitude — consistent with dropping it as a reported coordinate.</text>
+  <text class="t3" x="24" y="436" font-size="10.5">Source: regression/paper_20260726-0946, ψ = MLP, n_cal = 400, n_tune = 100. Provisional — see note on the cluster rerun.</text>
+</svg>
