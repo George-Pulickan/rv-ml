@@ -115,6 +115,12 @@ echo "psi: $PSI ($(stat -c %s "$PSI") bytes, $(stat -c %y "$PSI" | cut -c1-16))"
 CP_BASE=synthetic_generation/regression/pke_20260726
 FIG_BASE=synthetic_generation/figures/synthetic_regression_10000/pke_20260726
 
+# conformal_shift.py's --csv defaults to the 512-bin LSP set (586 feature
+# columns); the 74-D checkpoint needs this one (74).  Passing the wrong width is
+# a hard ValueError under --psi mlp, and was silently harmless under --psi rf.
+CSV74=synthetic_generation/datasets/synthetic_regression_10000.csv
+test -f "$CSV74" || { echo "MISSING $CSV74"; exit 1; }
+
 # Fail the job if a completed run did not use the MLP psi.
 assert_mlp() {
     local out_dir="$1"
