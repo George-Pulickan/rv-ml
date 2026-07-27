@@ -160,12 +160,20 @@ srun python conformal_shift.py --psi mlp --checkpoint "$PSI" --coords PKew \
 assert_mlp "synthetic_generation/regression/pkew_20260726"
 
 # ---- 4. Assumption 3.2 Hessian convergence sweep --------------------------
-mkdir -p figures/paper/assumption32
-for C in PKew PKe; do
-    srun python -m scripts.diagnostics.assumption_hessian \
-        --n-draws 25 --steps 200 1000 4000 --coords "$C" --seed 0 \
-        --out "figures/paper/assumption32/hessian_${C}.json"
-done
+# ~3 h, and it does NOT depend on psi (assumption_hessian.py never loads a
+# predictor -- it works on the decoder loss ||y-h(theta)||^2).  So a rerun that
+# only fixes the psi selection can skip it: same code + same --seed gives the
+# same numbers.  Set RVML_SKIP_HESSIAN=1 to skip.
+if [[ "${RVML_SKIP_HESSIAN:-0}" == "1" ]]; then
+    echo "=== step 4 skipped (RVML_SKIP_HESSIAN=1); existing hessian_*.json kept ==="
+else
+    mkdir -p figures/paper/assumption32
+    for C in PKew PKe; do
+        srun python -m scripts.diagnostics.assumption_hessian \
+            --n-draws 25 --steps 200 1000 4000 --coords "$C" --seed 0 \
+            --out "figures/paper/assumption32/hessian_${C}.json"
+    done
+fi
 
 # ---- 5. Push artifacts to the rhul-results branch -------------------------
 # A failed push never fails the job — artifacts stay on disk.
