@@ -153,7 +153,9 @@ def _load_mlp_psi(checkpoint: Path, device: torch.device):
 
     return psi_predict, norm_stats
 
-ALPHAS = [0.05, 0.10, 0.15, 0.20, 0.30, 0.40]
+# 0.32 gives nominal 0.68 -- the 1-sigma level Nicolo asked for, so CP regions
+# can be put beside the catalogue's 1-sigma Bayesian error bars.
+ALPHAS = [0.05, 0.10, 0.15, 0.20, 0.30, 0.32, 0.40]
 STRATEGIES = ["naive", "naive_adj", "surrogate"]
 NORMS = ["raw", "vnorm", "v2norm", "papernorm"]
 
