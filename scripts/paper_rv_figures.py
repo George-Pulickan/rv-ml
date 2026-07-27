@@ -726,6 +726,8 @@ def figure_trajectories(
     n_cycles: float = 10.0,
     sigma_min: float = 0.1,
     sigma_max: float = 100.0,
+    q_box: dict | None = None,
+    n_box_samples: int = 12,
 ) -> None:
     """RV trajectories in time — no projection onto a single period.
 
@@ -811,9 +813,33 @@ def figure_trajectories(
         y_tab += float(np.median(rv - _kepler_on_grid(th_tab, t, tp_tab)))
         y_psi += float(np.median(rv - _kepler_on_grid(th_psi[k], t, tp_psi)))
 
+        # Nicolo 2026-07-26: overlay a random sample of parameter vectors drawn
+        # from the CP box, so the figure shows the *region* rather than a point.
+        # Drawn first and faint so the two headline curves stay legible.
+        if q_box:
+            rng_box = np.random.default_rng(1234 + k)
+            for _ in range(n_box_samples):
+                th_s = np.array(th_psi[k], dtype=float).copy()
+                for ci, cname in enumerate(("log10_P", "log10_K", "e")):
+                    hw = float(q_box.get(cname, 0.0))
+                    if hw > 0:
+                        th_s[ci] += rng_box.uniform(-hw, hw)
+                th_s[2] = float(np.clip(th_s[2], 0.0, 0.99))
+                tp_s = _anchor_t_peri(th_s, t, rv)
+                y_s = _kepler_on_grid(th_s, t_grid, tp_s)
+                y_s += float(np.median(rv - _kepler_on_grid(th_s, t, tp_s)))
+                ax.plot(t_grid, y_s, color="tab:red", lw=0.6, alpha=0.16, zorder=1)
+
+        # MSE against the observations, so the legend carries the comparison
+        # Nicolo asked for rather than requiring a cross-reference to the scatter.
+        mse_tab = float(np.mean((rv - _kepler_on_grid(th_tab, t, tp_tab)
+                                 - float(np.median(rv - _kepler_on_grid(th_tab, t, tp_tab)))) ** 2))
+        mse_psi = float(np.mean((rv - _kepler_on_grid(th_psi[k], t, tp_psi)
+                                 - float(np.median(rv - _kepler_on_grid(th_psi[k], t, tp_psi)))) ** 2))
         ax.plot(t_grid, y_tab, color="tab:blue", lw=1.2, alpha=0.9,
-                label=r"$h(\theta_{\mathrm{tab}})$")
-        ax.plot(t_grid, y_psi, color="tab:red", lw=1.2, alpha=0.9, label=r"$h(\psi(y))$")
+                label=rf"$h(\theta_{{\mathrm{{tab}}}})$  MSE={mse_tab:.3g}")
+        ax.plot(t_grid, y_psi, color="tab:red", lw=1.2, alpha=0.9,
+                label=rf"$h(\psi(y))$  MSE={mse_psi:.3g}")
         ax.errorbar(t, rv, yerr=sig, fmt="o", ms=3.0, color="k", ecolor="0.6",
                     elinewidth=0.6, capsize=0, zorder=5)
         host = s.get("host") or f"system {k}"
@@ -1100,6 +1126,11 @@ def main() -> None:
     ap.add_argument("--traj-cycles", type=float, default=10.0,
                    help="orbits shown per trajectory panel; the densest window of "
                         "this length is chosen (full baseline if shorter)")
+    ap.add_argument("--n-box-samples", type=int, default=12,
+                   help="parameter vectors drawn from the CP box and overlaid on "
+                        "each trajectory panel (Nicolo 2026-07-26)")
+    ap.add_argument("--no-box-samples", action="store_true",
+                   help="draw only h(theta_tab) and h(psi(y)), no box samples")
     ap.add_argument("--no-surrogate-floor", action="store_true",
                    help="skip the GD theta* floor in the MSE scatter (much faster)")
     ap.add_argument(
@@ -1155,7 +1186,9 @@ def main() -> None:
     if want in ("all", "trajectories"):
         figure_trajectories(psi_predict, feature_cols, OUT_DIR / "rv_trajectories.png",
                             real_split=args.real_split, n_systems=args.n_trajectories,
-                            n_cycles=args.traj_cycles)
+                            n_cycles=args.traj_cycles,
+                            q_box=None if args.no_box_samples else q01,
+                            n_box_samples=args.n_box_samples)
     if want in ("all", "table"):
         earthlike_table(psi_predict, feature_cols, q01,
                         OUT_DIR / "earthlike_top10.csv",
