@@ -111,19 +111,22 @@ assert_mlp() {
     python - "$m" <<'PYEOF'
 import json, sys
 m = json.load(open(sys.argv[1]))
-psi, ckpt = m.get("psi"), m.get("checkpoint")
+psi, ckpt, csv = m.get("psi"), m.get("checkpoint"), str(m.get("csv") or "")
 if psi != "mlp" or not ckpt:
     sys.exit(f"FATAL: {sys.argv[1]} recorded psi={psi!r} checkpoint={ckpt!r}; "
              "expected the MLP. Add --psi mlp to this call.")
-print(f"  ok: psi={psi} checkpoint={ckpt}")
+if "synthetic_regression_10000.csv" not in csv or "lsp" in csv.lower():
+    sys.exit(f"FATAL: {sys.argv[1]} recorded csv={csv!r}; the 74-D checkpoint "
+             "needs synthetic_regression_10000.csv, not the 512-bin LSP set.")
+print(f"  ok: psi={psi} csv={csv.split('/')[-1]}")
 PYEOF
 }
 
-srun python conformal_shift.py --psi mlp --checkpoint "$PSI" --coords PKe \
+srun python conformal_shift.py --psi mlp --csv "$CSV74" --checkpoint "$PSI" --coords PKe \
     --out-dir "${CP_BASE}/gamma_syn" --fig-dir "${FIG_BASE}/gamma_syn"
 assert_mlp "${CP_BASE}/gamma_syn"
 
-srun python conformal_shift.py --psi mlp --checkpoint "$PSI" --coords PKe \
+srun python conformal_shift.py --psi mlp --csv "$CSV74" --checkpoint "$PSI" --coords PKe \
     --gamma-tune-on real-val \
     --out-dir "${CP_BASE}/gamma_real_val" --fig-dir "${FIG_BASE}/gamma_real_val"
 assert_mlp "${CP_BASE}/gamma_real_val"
@@ -131,14 +134,14 @@ assert_mlp "${CP_BASE}/gamma_real_val"
 # One series per star: the corpus stores one row per RV file, so 51 filtered
 # test series are only 34 distinct stars (HD 179949 contributes 4).  This
 # variant makes the real test points independent across hosts.
-srun python conformal_shift.py --psi mlp --checkpoint "$PSI" --coords PKe \
+srun python conformal_shift.py --psi mlp --csv "$CSV74" --checkpoint "$PSI" --coords PKe \
     --gamma-tune-on real-val --one-per-host \
     --out-dir "${CP_BASE}/gamma_real_val_1perhost" \
     --fig-dir "${FIG_BASE}/gamma_real_val_1perhost"
 assert_mlp "${CP_BASE}/gamma_real_val_1perhost"
 
 # No min-nights filter, to quantify what the filter changed.
-srun python conformal_shift.py --psi mlp --checkpoint "$PSI" --coords PKe \
+srun python conformal_shift.py --psi mlp --csv "$CSV74" --checkpoint "$PSI" --coords PKe \
     --gamma-tune-on real-val --min-nights 0 \
     --out-dir "${CP_BASE}/gamma_real_val_nofilter" \
     --fig-dir "${FIG_BASE}/gamma_real_val_nofilter"
@@ -146,14 +149,14 @@ assert_mlp "${CP_BASE}/gamma_real_val_nofilter"
 
 # Surrogate-gap constant as an explicit conformal quantile rather than the max,
 # so Delta_c carries a stated out-of-sample budget (Theorem 3.6 discussion).
-srun python conformal_shift.py --psi mlp --checkpoint "$PSI" --coords PKe \
+srun python conformal_shift.py --psi mlp --csv "$CSV74" --checkpoint "$PSI" --coords PKe \
     --gamma-tune-on real-val --gap-beta 0.02 \
     --out-dir "${CP_BASE}/gamma_real_val_gapbeta02" \
     --fig-dir "${FIG_BASE}/gamma_real_val_gapbeta02"
 assert_mlp "${CP_BASE}/gamma_real_val_gapbeta02"
 
 # ---- 3. PKew control ------------------------------------------------------
-srun python conformal_shift.py --psi mlp --checkpoint "$PSI" --coords PKew \
+srun python conformal_shift.py --psi mlp --csv "$CSV74" --checkpoint "$PSI" --coords PKew \
     --gamma-tune-on real-val \
     --out-dir "synthetic_generation/regression/pkew_20260726" \
     --fig-dir "synthetic_generation/figures/synthetic_regression_10000/pkew_20260726"
