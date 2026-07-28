@@ -1,0 +1,28 @@
+Dual e-head ablation checkpoint
+===============================
+NOT the paper / Table 1 model.
+
+    checkpoints/ablations/mlp74_dual_ehead.pt
+    sha256 f71c11434a7466237d693129b002d4fd1cd53a0480d59145160cade16ac29080
+    size   225821 bytes
+    e_head dual (model_kind=dual)
+
+Table 1 uses checkpoints/psi_20260726/mlp74_s42.pt (sha256 43c8cce4...,
+e_head direct). Do not confuse the two. Never place this file at
+checkpoints/regression_mlp_74.pt — that path is reserved/dangerous (see
+figures/paper/psi_checkpoint_provenance.txt).
+
+Trained
+-------
+Date        : 2026-07-16 (two-step pipeline, stage 1)
+Command     : python regression.py --two-step --stage2-fold predicted \
+                  --period-source lsp_peak \
+                  --csv synthetic_generation/datasets/synthetic_regression_10000_phasefold.csv \
+                  --out figures/regression_synthetic --device cpu --e-head dual
+Defaults    : epochs 200, batch 64, lr 1e-3, val-frac 0.2, seed 42, patience 30
+Targets     : theta
+Feature set : 74 (stage-1 of two-step; CSV is the phasefold file but
+              features loaded as 74-D)
+
+Note: this checkpoint has no train_config stamp (saved before that landed).
+Use this PROVENANCE note + sha256 to identify it.
