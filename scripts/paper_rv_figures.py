@@ -632,6 +632,7 @@ def figure_region_boxes(
     sigma_scale: float = 1.6449,
     pairs: list[tuple[str, str]] | None = None,
     space: str = "relative",
+    alpha: str = "0.10",
 ) -> None:
     """2-D CP boxes vs catalog (Bayesian) boxes for the Earth-like sample.
 
@@ -709,8 +710,11 @@ def figure_region_boxes(
         ax.autoscale_view()
 
     handles = [
+        # Must track --table-alpha: the csv's halfwidth_*_a01 columns carry
+        # whatever alpha the table was built at, so a hardcoded 0.1 here
+        # silently mislabels every figure generated at any other level.
         plt.Line2D([], [], marker="s", ls="", ms=11, mfc="0.7", mec="0.3", alpha=0.35,
-                   label=r"conformal region ($\alpha=0.1$)"),
+                   label=rf"conformal region ($\alpha={float(alpha):g}$)"),
         plt.Line2D([], [], marker="s", ls="", ms=7, mfc="0.35", mec="k",
                    label=f"catalog {sigma_scale:g}$\\sigma$ region"),
         plt.Line2D([], [], marker="*", ls="", ms=11, mfc="0.5", mec="k", label="tabulated"),
@@ -1200,7 +1204,8 @@ def main() -> None:
             suffix = "" if sp == "relative" else "_physical"
             figure_region_boxes(OUT_DIR / "earthlike_top10.csv",
                                 OUT_DIR / f"rv_region_boxes{suffix}.png",
-                                sigma_scale=args.sigma_scale, space=sp)
+                                sigma_scale=args.sigma_scale, space=sp,
+                                alpha=args.table_alpha)
         return
 
     q_blob = load_quantiles(args.quantiles, args.metrics)
@@ -1255,7 +1260,8 @@ def main() -> None:
             suffix = "" if sp == "relative" else "_physical"
             figure_region_boxes(OUT_DIR / "earthlike_top10.csv",
                                 OUT_DIR / f"rv_region_boxes{suffix}.png",
-                                sigma_scale=args.sigma_scale, space=sp)
+                                sigma_scale=args.sigma_scale, space=sp,
+                                alpha=args.table_alpha)
 
 
 if __name__ == "__main__":
