@@ -1,0 +1,12 @@
+\paragraph{Synthetic experiment: forced pendulum.}
+As a controlled test before the radial-velocity application, we augment the pendulum in \eqref{pendulum} with a hidden nonlinear forcing term,
+\(\ddot y(t)=-\theta\sin y(t)+\lambda\cos(1.7t)y(t)(1-y(t)^2)\), and infer the two latent parameters \((\theta,\lambda)\), where \(\theta=g/\ell\).  The estimator is trained on labelled synthetic trajectories from the ideal simulator, and the conformal box is calibrated on a separate synthetic calibration set.  Held-out ``realistic'' trajectories include measurement noise and occasional unmodelled state perturbations; their labels are hidden during training and calibration and used only for evaluation.  To compare with Bayesian one-standard-deviation intervals, we set the conformal target to joint confidence \(0.68\), using coordinate confidence \(1-(1-0.68)/2=0.84\).
+
+Figure~\ref{fig:pendulum_scatter} shows that \(\theta\) is easy while the forcing coefficient \(\lambda\) is the informative failure mode.  The conformal point estimator has lower MSE on both coordinates, \(4.7\times10^{-4}\) for \(\theta\) and \(0.222\) for \(\lambda\), compared with \(5.2\times10^{-3}\) and \(0.486\) for the Bayesian posterior mean.  At nominal joint confidence \(0.68\), the conformal box contains the hidden pair for \(35/45\) held-out trajectories, while the Bayesian one-standard-deviation rectangle contains it for \(2/45\).  Trajectory plots and noise-sensitivity checks are deferred to the supplementary material.
+
+\begin{figure}[!htbp]
+\centering
+\includegraphics[width=\linewidth]{Data/forced_parameter_prediction_comparison.png}
+\caption{Forced-pendulum parameter identification on held-out realistic trajectories.  Error bars show conformal intervals and Bayesian one-standard-deviation intervals; hidden true values are used only for evaluation.}
+\label{fig:pendulum_scatter}
+\end{figure}

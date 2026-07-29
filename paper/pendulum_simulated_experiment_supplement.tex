@@ -1,0 +1,23 @@
+\paragraph{Forced pendulum experiment.}
+The pendulum system in \eqref{pendulum} provides a controlled test of the proposed pipeline before moving to radial-velocity data.  To make the simulated experiment nontrivial while keeping exact Bayesian inference feasible, we augment the ideal pendulum with a hidden nonlinear forcing term,
+\begin{align}
+    \ddot y(t)
+    =
+    -\theta \sin y(t)
+    +
+    \lambda \cos(1.7t)y(t)\{1-y(t)^2\},
+\end{align}
+where \(\theta=g/\ell\) and \(\lambda\) is an unknown forcing coefficient.  The target parameter is therefore two-dimensional, \((\theta,\lambda)\).  Synthetic trajectories are generated from this ideal forced model and labelled by their generating parameters.  Held-out realistic trajectories are generated with the same physical family, but include measurement noise and occasional state perturbations, so the simulator used for calibration remains deliberately incomplete.
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=\linewidth]{Data/forced_trajectory_comparison.png}
+\caption{Held-out forced-pendulum trajectories.  Each panel shows the noisy observation, the underlying clean trajectory, and clean simulator trajectories obtained from the conformal and Bayesian parameter estimates.  The faint curves are obtained by sampling parameters from the conformal box and from the Bayesian one-standard-deviation region.}
+\label{fig:supp_pendulum_trajectories}
+\end{figure}
+
+The information pattern mirrors the real-data application.  The encoder \(\psi\) is trained only on synthetic trajectories, and the conformal box is calibrated on a separate synthetic calibration set, for which the generating value of \((\theta,\lambda)\) is known.  The labels of the held-out realistic trajectories are hidden during training and calibration, and are used only for evaluation.  Since the comparison is with Bayesian one-standard-deviation regions, the target joint confidence for conformal prediction is set to \(0.68\).  For the two coordinates, we use the Bonferroni allocation \(1-(1-0.68)/2=0.84\), giving a rectangular prediction region for \((\theta,\lambda)\).
+
+For the Bayesian baseline, we compute a two-dimensional grid posterior for each held-out trajectory under a Gaussian observation likelihood and the same ideal forced simulator.  This is a favourable baseline: the Bayesian estimate is recomputed separately for every test trajectory, whereas the conformal estimate is produced by an amortised predictor and one synthetic calibration set.  The main-text scatter plot shows that \(\theta=g/\ell\) is recovered accurately by both procedures, while the nonlinear forcing coefficient \(\lambda\) is substantially harder.  In this run, the conformal point estimator has lower mean squared error on both coordinates, \(4.7\times10^{-4}\) for \(\theta\) and \(0.222\) for \(\lambda\), compared with \(5.2\times10^{-3}\) and \(0.486\) for the Bayesian posterior mean.
+
+At nominal joint confidence \(0.68\), the conformal box contains the hidden generating pair for \(35/45\) held-out realistic trajectories, or \(0.778\) of the test set.  The Bayesian one-standard-deviation rectangle contains the hidden pair for only \(2/45\) trajectories in the same run.  Figure~\ref{fig:supp_pendulum_trajectories} shows that this under-coverage is not obvious from the observed curves alone: both fitted simulators often track the noisy trajectory visually.  The experiment therefore isolates the uncertainty question addressed by the paper: even when the latent parameter is not directly observable and the simulator is only an approximation, calibration can be reported in the hidden physical parameter space rather than only in observation space.
