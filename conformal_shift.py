@@ -125,7 +125,7 @@ from generate_synthetic_regression_csv import (  # noqa: E402
 from feature_columns import TARGET_COLUMNS  # noqa: E402
 from train_regression_models import _build  # noqa: E402
 from eval_omega_nn_vs_rf import _summary_row  # noqa: E402
-from preprocess import compute_lsp
+from preprocess import LSP_PERIODS, compute_lsp
 
 ROOT = Path(__file__).resolve().parent
 if str(ROOT) not in sys.path:
@@ -228,6 +228,154 @@ def _gd_batch(decoder, init5s: np.ndarray, curves: list, steps: int,
         better = loss < best_loss
         best_th[better] = th.detach()[better]
     return best_th.numpy().astype(float)
+
+
+def _batch_losses(decoder, theta5s: list, systems: list) -> np.ndarray:
+    """Mean squared masked residual (rv_std units) per system, batched by length.
+
+    Same objective as _gd_batch's "sq" mode, i.e. eq (2)'s ||h(theta) - y||^2.
+    Used to pick the winner among multi-start candidates.
+    """
+    out = np.zeros(len(systems), dtype=float)
+    by_len: dict[int, list[int]] = {}
+    for i, s in enumerate(systems):
+        by_len.setdefault(len(s["curve"]["t_norm"]), []).append(i)
+    with torch.no_grad():
+        for idx in by_len.values():
+            curves = [systems[i]["curve"] for i in idx]
+            th = torch.as_tensor(np.asarray([theta5s[i] for i in idx]), dtype=torch.float32)
+            t_norm = torch.from_numpy(np.stack([c["t_norm"] for c in curves]))
+            rv_obs = torch.from_numpy(np.stack([c["rv_obs"] for c in curves]))
+            mask = torch.from_numpy(np.stack([c["mask"] for c in curves]))
+            n = mask.sum(dim=1).clamp(min=1.0)
+            rv_pred = decoder(
+                th, t_norm,
+                torch.tensor([c["t_span"] for c in curves], dtype=torch.float32),
+                torch.tensor([c["t_min"] for c in curves], dtype=torch.float32),
+                rv_obs,
+                torch.tensor([c["rv_std"] for c in curves], dtype=torch.float32),
+                mask)
+            lo = ((((rv_obs - rv_pred) ** 2) * mask).sum(dim=1) / n).numpy()
+            for k, i in enumerate(idx):
+                out[i] = float(lo[k])
+    return out
+
+
+def _top_peak_periods(lsp: np.ndarray, m: int) -> np.ndarray:
+    """Periods (days) of the m strongest local maxima of the GLS, strongest first.
+
+    Local maxima rather than the m largest samples: a single broad peak occupies
+    many adjacent bins of the 512-point grid, so top-m *samples* would return m
+    copies of the same period and buy nothing.
+    """
+    p = np.asarray(lsp, dtype=float).reshape(-1)
+    if p.size < 3:
+        return LSP_PERIODS[[int(np.argmax(p))]] if p.size else np.array([])
+    interior = (p[1:-1] > p[:-2]) & (p[1:-1] >= p[2:])
+    idx = np.flatnonzero(np.r_[False, interior, False])
+    if idx.size == 0:
+        idx = np.array([int(np.argmax(p))])
+    idx = idx[np.argsort(p[idx])[::-1][:m]]
+    return LSP_PERIODS[idx]
+
+
+@torch.no_grad()
+def refit_k_analytic(theta5s: list, systems: list) -> list:
+    """Replace log10_K by its closed-form least-squares value given P, e, omega.
+
+    h is linear in K:  rv(t) = K * shape(t; P, e, omega, T_peri) + gamma,  so with
+    T_peri fixed the optimal (K, gamma) is a two-parameter least squares -- the
+    same closed form the decoder already applies to gamma alone. Leaving K to
+    gradient descent is why a refined fit can land on exactly the right period
+    with a third of the true amplitude (51 Peg, 2026-07-28).
+
+    Measured on the 51 real test curves: q0.90 |psi' - theta*| on log10_K
+    0.4731 -> 0.3149 (-33%), reconstruction MSE 0.2121 -> 0.2118, and the
+    fraction beating the catalogue 0.431 -> 0.471.
+
+    Applied to the PREDICTOR only, never to theta*: the label is defined by
+    descent on the full objective and changing it would move the calibration
+    target that every committed number is measured against.
+
+    K is clamped non-negative -- a negative slope means the shape is
+    anti-correlated with the data, and the best fit under K >= 0 is flat.
+    """
+    from models.kepler_torch import fit_t_peri, rv_keplerian
+
+    out = [np.asarray(t, dtype=float).copy() for t in theta5s]
+    by_len: dict[int, list[int]] = {}
+    for i, s in enumerate(systems):
+        by_len.setdefault(len(s["curve"]["t_norm"]), []).append(i)
+
+    for idx in by_len.values():
+        curves = [systems[i]["curve"] for i in idx]
+        th = np.asarray([out[i] for i in idx], dtype=float)
+        t_norm = torch.from_numpy(np.stack([c["t_norm"] for c in curves]))
+        mask = torch.from_numpy(np.stack([c["mask"] for c in curves]))
+        rv_std = torch.tensor([c["rv_std"] for c in curves], dtype=torch.float32)
+        t_span = torch.tensor([c["t_span"] for c in curves], dtype=torch.float32)
+        t_min = torch.tensor([c["t_min"] for c in curves], dtype=torch.float32)
+        rv_ms = torch.from_numpy(np.stack([c["rv_obs"] for c in curves])) * rv_std.unsqueeze(1)
+        t_days = t_norm * t_span.unsqueeze(1) + t_min.unsqueeze(1)
+
+        P = torch.tensor(10.0 ** th[:, 0], dtype=torch.float32)
+        K0 = torch.tensor(10.0 ** th[:, 1], dtype=torch.float32)
+        e = torch.tensor(np.clip(th[:, 2], 0.0, 0.99), dtype=torch.float32)
+        omega = torch.tensor(np.arctan2(th[:, 4], th[:, 3]), dtype=torch.float32)
+
+        t_peri = fit_t_peri(t_days, rv_ms, mask, P, K0, e, omega)
+        shape = rv_keplerian(t_days, P, torch.ones_like(P), e, omega, t_peri)
+        n = mask.sum(dim=1, keepdim=True).clamp(min=1)
+        sm = (shape * mask).sum(dim=1, keepdim=True) / n
+        rm = (rv_ms * mask).sum(dim=1, keepdim=True) / n
+        cov = (((shape - sm) * (rv_ms - rm)) * mask).sum(dim=1, keepdim=True) / n
+        var = (((shape - sm) ** 2) * mask).sum(dim=1, keepdim=True) / n
+        k_hat = (cov / var.clamp(min=1e-12)).clamp(min=1e-6).squeeze(1).numpy()
+        for j, i in enumerate(idx):
+            out[i][1] = float(np.log10(max(float(k_hat[j]), 1e-6)))
+    return out
+
+
+def multistart_fit_gd(decoder, init5s: list, systems: list, steps: int,
+                      lr: float, n_starts: int, return_candidates: bool = False):
+    """GD from psi(y) plus the top periodogram peaks; keep the lowest-loss fit.
+
+    The period likelihood is strongly multimodal (1-day and 1-year aliases,
+    P/2 and 2P harmonics), so a single descent from psi(y) lands in whatever
+    basin psi happened to point at. Restarting from the strongest GLS peaks is
+    what classical RV pipelines do, and it is the direct lever on the
+    basin-agreement rate -- which is what sets how tight the conformal regions
+    can be at a given confidence level.
+
+    Every candidate keeps psi's K, e and omega and varies only the period: the
+    periodogram constrains P and says nothing about the rest.
+
+    ``return_candidates`` additionally hands back every candidate as a list of
+    (n_starts+1, 5) arrays, so a union-of-intervals region can be built over
+    them without paying for the fits twice.
+    """
+    best = list(surrogate_fit_gd(decoder, init5s, systems, steps, lr))
+    all_fits = [np.stack(best)]
+    if n_starts > 0:
+        best_loss = _batch_losses(decoder, best, systems)
+        peaks = [_top_peak_periods(s.get("lsp", np.array([])), n_starts) for s in systems]
+        for j in range(n_starts):
+            cand_init = []
+            for th, pk in zip(init5s, peaks):
+                t2 = np.asarray(th, dtype=float).copy()
+                if j < len(pk) and pk[j] > 0:
+                    t2[0] = float(np.log10(pk[j]))
+                cand_init.append(t2)
+            cand = list(surrogate_fit_gd(decoder, cand_init, systems, steps, lr))
+            all_fits.append(np.stack(cand))
+            cand_loss = _batch_losses(decoder, cand, systems)
+            for i in range(len(systems)):
+                if cand_loss[i] < best_loss[i]:
+                    best_loss[i], best[i] = cand_loss[i], cand[i]
+    if not return_candidates:
+        return best
+    cands = [np.stack([f[i] for f in all_fits]) for i in range(len(systems))]
+    return best, cands
 
 
 def surrogate_fit_gd(decoder, init5s: list, systems: list, steps: int = 200,
@@ -648,10 +796,99 @@ def export_per_system_widths(
     }
 
 
+def _merged_length(centres: np.ndarray, half: float) -> float:
+    """Total length of the union of [c - half, c + half], overlaps merged."""
+    iv = sorted((float(c) - half, float(c) + half) for c in centres)
+    total, lo, hi = 0.0, iv[0][0], iv[0][1]
+    for a, b in iv[1:]:
+        if a > hi:
+            total += hi - lo
+            lo, hi = a, b
+        else:
+            hi = max(hi, b)
+    return total + (hi - lo)
+
+
+def union_scores(cand_hats: list, targets: list) -> dict:
+    """Conformity score for a union region: distance to the NEAREST candidate.
+
+    The period posterior of a sparsely sampled RV curve is genuinely multimodal
+    (1-day and 1-year aliases, P/2 and 2P harmonics), so forcing the prediction
+    set to be a single interval is a shape mismatch: it has to span the gap
+    between modes even though the data strongly excludes it. Conformal
+    prediction does not require a convex set -- scoring against the nearest of
+    several candidates and taking the union of the per-candidate intervals is
+    calibrated exactly the same way.
+    """
+    out = {}
+    for c in COORDS:
+        vals = []
+        for cand, tgt in zip(cand_hats, targets):
+            vals.append(min(_coord_abs_err(cand[j], tgt, c) for j in range(len(cand))))
+        out[c] = np.asarray(vals, dtype=float)
+    return out
+
+
+def evaluate_union(cal_scores: dict, systems: list, cand_hats: list, sup: dict,
+                   den_cal=None, den_sys=None, w_cal=None, w_test=None,
+                   targets: list | None = None) -> dict:
+    """Coverage and MERGED measure of the union region, mirroring evaluate().
+
+    Coverage: theta* is covered if it falls inside ANY candidate's interval.
+    Width: total length of the merged union, which is what should be compared
+    against the box's 2*q -- charging one interval per candidate would be the
+    worst case and is far too pessimistic, since candidates often coincide.
+    """
+    n_test = len(systems)
+    n_cal = len(next(iter(cal_scores.values())))
+    w_cal = np.ones(n_cal) if w_cal is None else w_cal
+    w_test = np.ones(n_test) if w_test is None else w_test
+
+    out = {}
+    for a in ALPHAS:
+        level = 1.0 - a / len(COORDS)
+        per_cov = {c: [] for c in COORDS}
+        per_w = {c: [] for c in COORDS}
+        joint = []
+        for i, (s, cand) in enumerate(zip(systems, cand_hats)):
+            all_c = True
+            for c in COORDS:
+                sc = cal_scores[c] if den_cal is None else cal_scores[c] / den_cal[c]
+                q = weighted_quantile(sc, w_cal, float(w_test[i]), level)
+                half = q if den_sys is None else q * float(den_sys[c][i])
+                if not math.isfinite(half):
+                    half = sup[c][1] - sup[c][0]
+                tgt = s["theta5"] if targets is None else targets[i]
+                err = min(_coord_abs_err(cand[j], tgt, c)
+                          for j in range(len(cand)))
+                cov = err <= half
+                centres = [_true_coord(cand[j], c) for j in range(len(cand))]
+                per_cov[c].append(bool(cov))
+                per_w[c].append(_merged_length(np.asarray(centres), half))
+                all_c = all_c and bool(cov)
+            joint.append(all_c)
+        out[f"{a:.2f}"] = {
+            "per_coord_coverage": {c: float(np.mean(per_cov[c])) for c in COORDS},
+            "per_coord_median_measure": {c: float(np.median(per_w[c])) for c in COORDS},
+            "joint_coverage": float(np.mean(joint)),
+        }
+    return out
+
+
 def evaluate(cal_scores: dict, systems: list, theta_hats: list, sup: dict,
              den_cal: dict | None = None, den_sys: dict | None = None,
-             w_cal: np.ndarray | None = None, w_test: np.ndarray | None = None) -> dict:
+             w_cal: np.ndarray | None = None, w_test: np.ndarray | None = None,
+             targets: list | None = None, delta_s: dict | None = None) -> dict:
     """Coverage/width of the per-coordinate intervals psi(y)_c ± q_c at each alpha.
+
+    targets=None -> score against s["theta5"] (theta_bar on synthetic curves,
+    the tabulated values on real ones).  Pass an explicit list to score against
+    something else -- notably theta*, which is what Theorem 3.6 actually bounds
+    and which is computable on synthetic curves only.
+
+    delta_s=None -> no gap reported.  Otherwise a per-coordinate Delta_s; the
+    weighted mass of calibration scores in [q - Delta_s, q] is recorded as
+    "gap", i.e. eq (32): the coverage given up by setting Delta_s = 0.
 
     den_cal/den_sys=None -> raw score s;  otherwise per-coordinate denominator
     arrays (gamma + v_y [+ v_c]) and the normalized score s' = s/den is used
@@ -670,6 +907,17 @@ def evaluate(cal_scores: dict, systems: list, theta_hats: list, sup: dict,
         per_w = {c: [] for c in COORDS}
         n_inf = 0
         joint = []
+        # eq (32): mass of calibration scores within Delta_s below the quantile.
+        # Evaluated at the unit-weight quantile, so it is one number per coord
+        # rather than one per test point.
+        gap = {}
+        if delta_s is not None:
+            for c in COORDS:
+                sc_c = cal_scores[c] if den_cal is None else cal_scores[c] / den_cal[c]
+                q0 = weighted_quantile(sc_c, w_cal, 1.0, level)
+                ds_c = delta_s[c] if den_cal is None else delta_s[c] / den_cal[c]
+                m = (sc_c >= q0 - ds_c) & (sc_c <= q0)
+                gap[c] = float(np.sum(w_cal[m]) / max(float(np.sum(w_cal)), 1e-12))
         for i, (s, th) in enumerate(zip(systems, theta_hats)):
             all_c = True
             any_inf = False
@@ -680,7 +928,8 @@ def evaluate(cal_scores: dict, systems: list, theta_hats: list, sup: dict,
                 if not math.isfinite(half):
                     any_inf = True
                     half = sup[c][1] - sup[c][0]     # cap at full support
-                err = _coord_abs_err(s["theta5"], th, c)
+                tgt = s["theta5"] if targets is None else targets[i]
+                err = _coord_abs_err(tgt, th, c)
                 cov = err <= half
                 per_cov[c].append(bool(cov))
                 per_w[c].append(_interval_width(c, _true_coord(th, c), half, sup))
@@ -693,6 +942,8 @@ def evaluate(cal_scores: dict, systems: list, theta_hats: list, sup: dict,
             "joint_coverage": float(np.mean(joint)),
             "frac_infinite": n_inf / max(n_test, 1),
         }
+        if delta_s is not None:
+            out[f"{a:.2f}"]["gap"] = gap
     return out
 
 
@@ -890,6 +1141,32 @@ def main() -> None:
     ap.add_argument("--gd-steps", type=int, default=200,
                     help="Adam steps for the surrogate-label gradient descent")
     ap.add_argument("--gd-lr", type=float, default=0.02)
+    ap.add_argument("--psi-refine", type=int, default=0, metavar="K",
+                    help="refine the predictor as psi'(y) = GD_K(psi(y)): K Adam "
+                         "steps on ||h(theta)-y||^2 started from psi(y), applied "
+                         "identically to calibration, tuning and both test sets. "
+                         "0 disables (feed-forward psi, the pre-2026-07-28 "
+                         "behaviour). Needs no label, so it is computable on real "
+                         "curves at test time. K should be cross-validated on the "
+                         "tuning split, not the test set.")
+    ap.add_argument("--psi-multistart", type=int, default=0, metavar="M",
+                    help="with --psi-refine, also restart the descent from the "
+                         "M strongest GLS peaks (period only; K/e/omega keep "
+                         "psi's values) and keep the lowest-loss fit. Raises the "
+                         "basin-agreement rate, which is what sets how tight the "
+                         "regions can be. 0 = single start from psi(y).")
+    ap.add_argument("--psi-refit-k", action="store_true",
+                    help="after refinement, replace psi's log10_K by its "
+                         "closed-form least-squares value given P, e, omega. h "
+                         "is linear in K, so this is exact rather than "
+                         "approached by GD. Applies to the predictor only, "
+                         "never to theta*.")
+    ap.add_argument("--union-regions", action="store_true",
+                    help="also report a union-of-intervals region built over the "
+                         "--psi-multistart candidates: score = distance to the "
+                         "NEAREST candidate, region = union of the per-candidate "
+                         "intervals with overlaps merged. Reported alongside the "
+                         "box region, never replacing it.")
     ap.add_argument("--clip-weights", type=float, default=20.0,
                     help="clip likelihood-ratio weights to [1/x, x]")
     ap.add_argument("--real-split", default="test", choices=("all", "train", "val", "test"))
@@ -1047,8 +1324,50 @@ def main() -> None:
     grids = histogram_grids(args.grid, args.seed)
     sup = _support(grids)
 
-    def hats(systems):
-        return list(psi_predict(feat_matrix(systems)))
+    # Candidate sets per keyed set, populated by hats() when --union-regions is
+    # on so the union evaluation reuses the fits instead of recomputing them.
+    cand_sets: dict[str, list] = {}
+
+    def hats(systems, key=None):
+        init = list(psi_predict(feat_matrix(systems)))
+        if args.psi_refine <= 0:
+            return init
+        # Nicolo 2026-07-28: psi'(y) = GD_K(psi(y)). A feed-forward psi cannot
+        # reach the precision a trajectory needs -- phase coherence over the
+        # median 21.7-orbit baseline wants |dlog10 P| < 0.002 dex, i.e.
+        # R^2 > 0.99999 -- so the predictor has to finish with a local fit.
+        #
+        # Applied here, inside hats(), so it hits EVERY keyed set (cal, tune,
+        # syn, real, gtune) identically. That identity is what keeps the
+        # conformity score valid: psi must be the same map on calibration and
+        # test. Do not refine one set and not another.
+        #
+        # The label theta* is still GD from theta_bar, so refining psi does not
+        # touch the target; it only moves psi closer to it.
+        if args.union_regions:
+            refined, cands = multistart_fit_gd(
+                proxy.decoder, init, systems, args.psi_refine, args.gd_lr,
+                args.psi_multistart, return_candidates=True)
+            refined = list(refined)
+            if args.psi_refit_k:
+                refined = refit_k_analytic(refined, systems)
+                # Refit K on every candidate too, so the union's intervals are
+                # centred on the same map the box's centre uses.
+                m = len(cands[0])
+                flat = [c[j] for c in cands for j in range(m)]
+                reps = [s for s in systems for _ in range(m)]
+                fixed = refit_k_analytic(flat, reps)
+                cands = [np.stack(fixed[i * m:(i + 1) * m])
+                         for i in range(len(systems))]
+            if key is not None:
+                cand_sets[key] = cands
+            return refined
+        refined = list(multistart_fit_gd(proxy.decoder, init, systems,
+                                         args.psi_refine, args.gd_lr,
+                                         args.psi_multistart))
+        if args.psi_refit_k:
+            refined = refit_k_analytic(refined, systems)
+        return refined
     print("building real systems ...")
     real_kw = dict(min_nights=args.min_nights, one_per_host=args.one_per_host)
     test_real = make_real(args.real_split, args.sigma_min, args.sigma_max, **real_kw)
@@ -1126,7 +1445,7 @@ def main() -> None:
         print(f"gamma tuning on real val split: {len(gtune)} systems")
         keyed_sets.append(("gtune", gtune))
 
-    hat = {k: hats(sys_) for k, sys_ in keyed_sets}
+    hat = {k: hats(sys_, key=k) for k, sys_ in keyed_sets}
 
     v = {k: np.array([proxy.value(th, s["curve"]) for s, th in zip(sys_, hat[k])])
          for k, sys_ in keyed_sets}
@@ -1156,6 +1475,14 @@ def main() -> None:
                                   calib, args.gd_steps, args.gd_lr)
     theta_star_tune = surrogate_fit_gd(proxy.decoder, [s["theta5"] for s in tune],
                                        tune, args.gd_steps, args.gd_lr)
+    # theta* on the SYNTHETIC TEST set. Not needed to calibrate anything -- it
+    # exists so we can measure coverage of theta* itself, which is what
+    # Theorem 3.6 bounds. Every coverage number in the paper is scored against
+    # s["theta5"] (theta_bar on synthetic curves, tabulated values on real
+    # ones), so without this the theorem is never checked. It is computable on
+    # synthetic curves only: on real ones theta* is the unobservable quantity.
+    theta_star_syn = surrogate_fit_gd(proxy.decoder, [s["theta5"] for s in test_syn],
+                                      test_syn, args.gd_steps, args.gd_lr)
     print(f"  done in {time.perf_counter() - t0:.0f}s")
 
     # Surrogate-label error model v_c (second factor of the v2norm denominator),
@@ -1291,11 +1618,53 @@ def main() -> None:
                 "real_weighted": evaluate(cs, test_real, hat["real"], sup,
                                           dens["cal"], dens["real"],
                                           w_cal=w_cal, w_test=w_real),
+                # Coverage of theta* itself -- the quantity Theorem 3.6 bounds.
+                # Synthetic only; theta* is unobservable on real curves. Also
+                # carries the eq (32) gap, the coverage given up by Delta_s = 0.
+                "synthetic_thetastar": evaluate(cs, test_syn, hat["syn"], sup,
+                                                dens["cal"], dens["syn"],
+                                                targets=theta_star_syn,
+                                                delta_s=adj),
             }
-            for dom in ["synthetic_unweighted", "real_unweighted", "real_weighted"]:
+            for dom in ["synthetic_unweighted", "real_unweighted", "real_weighted",
+                        "synthetic_thetastar"]:
                 r = results[strat][norm][dom]["0.10"]
                 print(f"  [{strat}/{norm}/{dom}] joint@0.90={r['joint_coverage']:.3f} "
                       f"inf={r['frac_infinite']:.2f}")
+
+    # Union-of-intervals region, reported ALONGSIDE the box, never replacing it.
+    # Scored on the surrogate label with the papernorm denominator, i.e. the
+    # combination the paper reports.
+    union_results = None
+    if args.union_regions and cand_sets:
+        print("evaluating union-of-intervals regions (surrogate/papernorm) ...")
+        u_cal = union_scores(cand_sets["cal"], theta_star)
+        w_pn = pn_weight.get("surrogate")
+        g_pn = gamma_reg["surrogate"]["papernorm"]
+        den_c = {c: g_pn + base("papernorm", "cal", w_pn)[c] for c in COORDS}
+        den_of = {k: {c: g_pn + base("papernorm", k, w_pn)[c] for c in COORDS}
+                  for k in ("syn", "real")}
+        union_results = {
+            "synthetic_unweighted": evaluate_union(
+                u_cal, test_syn, cand_sets["syn"], sup,
+                den_cal=den_c, den_sys=den_of["syn"]),
+            "real_weighted": evaluate_union(
+                u_cal, test_real, cand_sets["real"], sup,
+                den_cal=den_c, den_sys=den_of["real"],
+                w_cal=w_cal, w_test=w_real),
+            "synthetic_thetastar": evaluate_union(
+                u_cal, test_syn, cand_sets["syn"], sup,
+                den_cal=den_c, den_sys=den_of["syn"],
+                targets=theta_star_syn),
+        }
+        for dom, r in union_results.items():
+            b = results["surrogate"]["papernorm"][dom]["0.10"]
+            u = r["0.10"]
+            print(f"  [union/{dom}] joint@0.90={u['joint_coverage']:.3f} "
+                  f"(box {b['joint_coverage']:.3f})  measure P/K/e = "
+                  + "/".join(f"{u['per_coord_median_measure'][c]:.3f}" for c in COORDS)
+                  + "  vs box "
+                  + "/".join(f"{2 * b['per_coord_median_width'][c]:.3f}" for c in COORDS))
 
     constants = None
     if args.n_constants > 0:
@@ -1314,6 +1683,15 @@ def main() -> None:
         "checkpoint": str(args.checkpoint) if args.psi == "mlp" else None,
         "csv": str(args.csv),
         "psi_labels": args.psi_labels,
+        # Recorded because a refined run and a feed-forward run are otherwise
+        # indistinguishable from their outputs, and the metrics file is the
+        # authority for what a run actually did.
+        "psi_refine": int(args.psi_refine),
+        "psi_multistart": int(args.psi_multistart),
+        "psi_refit_k": bool(args.psi_refit_k),
+        "union_regions": union_results,
+        "gd_steps": int(args.gd_steps),
+        "gd_lr": float(args.gd_lr),
         "gamma_tune_on": args.gamma_tune_on,
         "gamma_reg": gamma_reg,
         "weights": {"ess": ess, "frac_clipped": frac_clipped,
