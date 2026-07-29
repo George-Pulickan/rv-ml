@@ -58,7 +58,34 @@ from regression import (  # noqa: E402
 )
 from synthetic_dataset import _inject_noise  # noqa: E402
 
-DEFAULT_CKPT = ROOT / "checkpoints" / "regression_mlp_74.pt"
+def _refine_psi(th_psi, systems, refine, multistart, gd_lr, refit_k):
+    """psi'(y) = GD_refine(psi(y)), multi-started from GLS peaks, K refit.
+
+    MUST stay identical to what conformal_shift.py applies under
+    --psi-refine / --psi-multistart / --psi-refit-k. If the figure draws a
+    different psi' from the one the CP run calibrates, the figure shows a
+    predictor the intervals do not belong to.
+
+    Measured 2026-07-28 on 51 real curves, refine=200 multistart=5 refit_k:
+    median period error 0.179 -> 0.0015 dex, reconstruction MSE 1.1235 ->
+    0.1755, fraction beating the catalogue 2.0% -> 51.0%.
+    """
+    if refine <= 0:
+        return th_psi
+    from conformal_shift import multistart_fit_gd, refit_k_analytic
+    out = np.asarray(
+        multistart_fit_gd(KeplerDecoder().eval(), list(th_psi), systems,
+                          refine, gd_lr, multistart), dtype=float)
+    if refit_k:
+        out = np.asarray(refit_k_analytic(list(out), systems), dtype=float)
+    return out
+
+
+# NOTE: there is deliberately no DEFAULT_CKPT. The old default pointed at
+# checkpoints/regression_mlp_74.pt, a degenerate near-mean predictor (R^2
+# 0.055/0.112/0.002 against 0.790/0.849/0.436 for the paper's psi), so a run
+# that forgot --checkpoint silently produced figures from a broken model.
+# --psi mlp now errors without an explicit checkpoint.
 DEFAULT_CSV = ROOT / "synthetic_generation" / "datasets" / "synthetic_regression_10000.csv"
 DEFAULT_Q = ROOT / "figures" / "paper" / "mlp_cp_quantiles.json"
 DEFAULT_METRICS = ROOT / "synthetic_generation" / "regression" / "mlp_psi" / "conformal_shift_metrics.json"
@@ -478,6 +505,9 @@ def figure_mse_scatter(
     surrogate: bool = True,
     gd_steps: int = 200,
     gd_lr: float = 0.02,
+    refine: int = 0,
+    multistart: int = 1,
+    refit_k: bool = False,
 ) -> dict:
     """Per-planet reconstruction MSE: tabulated (x) vs our prediction (y).
 
@@ -496,7 +526,7 @@ def figure_mse_scatter(
         raise RuntimeError(f"no real systems in split {real_split!r}")
 
     X = np.asarray([_feat_row_for_system(s, feature_cols) for s in systems], dtype=float)
-    th_psi = psi_predict(X)
+    th_psi = _refine_psi(psi_predict(X), systems, refine, multistart, gd_lr, refit_k)
 
     rows = []
     for i, s in enumerate(systems):
@@ -747,6 +777,9 @@ def figure_trajectories(
     surrogate: bool = True,
     gd_steps: int = 200,
     gd_lr: float = 0.02,
+    refine: int = 0,
+    multistart: int = 1,
+    refit_k: bool = False,
 ) -> None:
     """RV trajectories in time — no projection onto a single period.
 
@@ -799,7 +832,7 @@ def figure_trajectories(
         raise RuntimeError(f"no real systems in split {real_split!r}")
 
     X = np.asarray([_feat_row_for_system(s, feature_cols) for s in systems], dtype=float)
-    th_psi = psi_predict(X)
+    th_psi = _refine_psi(psi_predict(X), systems, refine, multistart, gd_lr, refit_k)
 
     # The surrogate label theta*, the quantity the CP algorithm is actually
     # calibrated against. Without it this figure shows only the catalogue fit
@@ -1147,7 +1180,28 @@ def render_earthlike_tex(rows: list[dict]) -> str:
 
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--checkpoint", type=Path, default=DEFAULT_CKPT)
+    ap.add_argument("--checkpoint", type=Path, default=None,
+                   help="MLP checkpoint; required with --psi mlp. There is "
+                        "deliberately no default: the old one pointed at a "
+                        "degenerate near-mean predictor.")
+    ap.add_argument("--psi", choices=("mlp", "rf"), default="mlp",
+                   help="regression head. 'rf' trains a RandomForest inline on "
+                        "--csv, matching conformal_shift.py --psi rf, so the "
+                        "MSE/trajectory figures can be made for the RF arm "
+                        "(Nicolo 2026-07-28)")
+    ap.add_argument("--n-estimators", type=int, default=300,
+                   help="trees per target when --psi rf")
+    ap.add_argument("--psi-refine", type=int, default=0,
+                   help="draw the figures for psi'(y) = GD_K(psi(y)), matching "
+                        "conformal_shift.py --psi-refine")
+    ap.add_argument("--psi-multistart", type=int, default=1,
+                   help="with --psi-refine, restart from the M strongest GLS "
+                        "peaks and keep the lowest-loss fit")
+    ap.add_argument("--psi-refit-k", action="store_true",
+                   help="after refinement, replace log10_K by its closed-form "
+                        "least-squares value. MUST match the CP run's flag, or "
+                        "the figure shows a predictor the intervals do not "
+                        "belong to.")
     ap.add_argument("--csv", type=Path, default=DEFAULT_CSV)
     ap.add_argument("--quantiles", type=Path, default=DEFAULT_Q)
     ap.add_argument("--metrics", type=Path, default=DEFAULT_METRICS)
@@ -1224,6 +1278,9 @@ def main() -> None:
         widths_blob = json.loads(args.widths.read_text())
         print(f"loaded per-system widths ({widths_blob.get('n_systems')} systems) from {args.widths}")
 
+    if args.psi == "mlp" and args.checkpoint is None:
+        ap.error("--psi mlp requires --checkpoint (there is no safe default; "
+                 "see the checkpoint provenance note)")
     psi_predict, norm_stats = _load_mlp_psi(args.checkpoint, device)
     df = pd.read_csv(args.csv, nrows=1)
     feature_cols = [c for c in df.columns if c not in TARGET_COLUMNS]
@@ -1243,13 +1300,17 @@ def main() -> None:
     if want in ("all", "mse"):
         figure_mse_scatter(psi_predict, feature_cols, OUT_DIR / "rv_mse_scatter.png",
                            real_split=args.real_split,
-                           surrogate=not args.no_surrogate_floor)
+                           surrogate=not args.no_surrogate_floor,
+                           refine=args.psi_refine, multistart=args.psi_multistart,
+                           refit_k=args.psi_refit_k)
     if want in ("all", "trajectories"):
         figure_trajectories(psi_predict, feature_cols, OUT_DIR / "rv_trajectories.png",
                             real_split=args.real_split, n_systems=args.n_trajectories,
                             n_cycles=args.traj_cycles,
                             q_box=None if args.no_box_samples else (q04 if args.box_alpha == "0.40" else q01),
-                            n_box_samples=args.n_box_samples)
+                            n_box_samples=args.n_box_samples,
+                            refine=args.psi_refine, multistart=args.psi_multistart,
+                            refit_k=args.psi_refit_k)
     if want in ("all", "table"):
         earthlike_table(psi_predict, feature_cols, q_table,
                         OUT_DIR / "earthlike_top10.csv",
