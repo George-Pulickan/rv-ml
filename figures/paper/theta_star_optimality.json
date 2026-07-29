@@ -1,0 +1,33 @@
+{
+  "refine": 50,
+  "multistart": 5,
+  "gd_steps": 200,
+  "domains": {
+    "synthetic": {
+      "n": 300,
+      "frac_psi_better_than_star": 0.23,
+      "median_loss_ratio": 1.164467298974468,
+      "median_abs_dlog10P": 0.1404276043176651,
+      "when_better": {
+        "n": 69,
+        "median_loss_ratio": 0.8708995664878914,
+        "median_abs_dlog10P": 0.8000668287277222,
+        "max_abs_dlog10P": 3.4752056151628494
+      },
+      "verdict": "theta* is NOT the argmin on these curves -- the calibration target is a local optimum"
+    },
+    "real": {
+      "n": 51,
+      "frac_psi_better_than_star": 0.0784313725490196,
+      "median_loss_ratio": 1.5885201011615013,
+      "median_abs_dlog10P": 0.0024734139442443848,
+      "when_better": {
+        "n": 4,
+        "median_loss_ratio": 0.9429100499556758,
+        "median_abs_dlog10P": 0.0062947869300842285,
+        "max_abs_dlog10P": 0.06943535804748535
+      },
+      "verdict": "psi' wins by a negligible parameter margin (same optimum)"
+    }
+  }
+}

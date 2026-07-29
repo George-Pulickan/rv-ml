@@ -1,0 +1,23 @@
+\begin{table}[t]
+\centering
+\small
+\begin{tabular}{lr}
+\toprule
+quantity & value \\
+\midrule
+\multicolumn{2}{l}{\textit{Assumption 3.1 (bounded noise)}} \\
+\quad $\varepsilon_{\sup}=\max_t|y_t-h_t|$ (rv\_std) & 5.994 \\
+\quad synthetic draws rejected & 48\% \\
+\quad draws generated / kept & 2500 / 1300 \\
+\addlinespace[4pt]
+\multicolumn{2}{l}{\textit{Assumption 3.2 (non-degenerate labels)}} \\
+\quad draws ($H^*$ at $\theta^*$, $d=0$) & 25 \\
+\quad $\lambda_{\min}(H^*)$ median & -- \\
+\quad $\lambda_{\min}(H^*)$ $p_{10}$ / min & -- / -- \\
+\quad \textbf{positive definite} & \textbf{0\%} \\
+\quad $\kappa(H^*)$ median & $1.62\times 10^{4}$ \\
+\bottomrule
+\end{tabular}
+\caption{Empirical status of the two assumptions. $\varepsilon_{\sup}$ drives the Assumption 3.1 discard rule; $\varepsilon_\ell$ is the same discrepancy on the scale of $\ell(\theta)=\|y-h(\theta)\|^2$ and is the one that pairs dimensionally with $C_H$. $H^*$ is evaluated at the surrogate label $\theta^*$ in the four physical coordinates. Note the Lemma 3.4 correction exceeds the support of $e$, so the theoretical guarantee is uninformative at these constants; reported intervals are calibrated by the empirical $\Delta_c$ instead.}
+\label{tab:cp-assumptions}
+\end{table}

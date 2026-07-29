@@ -1,0 +1,27 @@
+\begin{table}[t]
+\centering
+\small
+\begin{tabular}{llcccc}
+\toprule
+strategy & norm & synthetic & real & real & vacuous \\
+         &      &           & (unweighted) & (weighted) & (\%) \\
+\midrule
+naive ($\bar\theta$) & raw & 0.780 & 0.971 & 0.971 & 0.0  \quad$\leftarrow$ baseline \\
+ & $v_y$ & 0.743 & 0.941 & 0.941 & 0.0 \\
+ & $v_y + v_c$ & 0.765 & 0.971 & 0.912 & 0.0 \\
+ & $\delta_c,\delta_y$ & 0.770 & 0.971 & 0.882 & 0.0 \\
+\midrule
+naive + $\Delta_c$ & raw & 0.948 & 1.000 & 1.000 & 0.0 \\
+ & $v_y$ & 0.950 & 1.000 & 1.000 & 0.0 \\
+ & $v_y + v_c$ & 0.963 & 1.000 & 1.000 & 0.0 \\
+ & $\delta_c,\delta_y$ & 0.980 & 1.000 & 1.000 & 0.0 \\
+\midrule
+surrogate ($\theta^*$) & raw & 0.765 & 0.971 & 0.824 & 0.0 \\
+ & $v_y$ & 0.725 & 0.941 & 0.912 & 0.0 \\
+ & $v_y + v_c$ & 0.728 & 0.941 & 0.912 & 0.0 \\
+ & $\delta_c,\delta_y$ & 0.738 & 0.941 & 0.882 & 0.0 \\
+\bottomrule
+\end{tabular}
+\caption{Joint coverage at nominal $1-\alpha = 0.68$ (Bonferroni-corrected across the $d=4$ coordinates). Synthetic test $n=400$, real test $n=34$. The first row is standard split conformal prediction calibrated on the data-generating parameters $\bar\theta$, without surrogate labels or covariate-shift reweighting. ``vacuous'' is the fraction of real test systems whose interval is unbounded.}
+\label{tab:cp-ablation}
+\end{table}
