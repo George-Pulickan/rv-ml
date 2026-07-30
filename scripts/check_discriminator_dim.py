@@ -80,15 +80,29 @@ def fit_weight_model_C(synth_feats: np.ndarray, real_feats: np.ndarray,
     return w, clf
 
 
-def heldout_auc(sf: np.ndarray, rf: np.ndarray, seed: int, C: float,
-                folds: int = 5) -> float:
-    """Cross-fitted AUC: the separation that generalises.
+def heldout_scores(sf: np.ndarray, rf: np.ndarray, seed: int, C: float,
+                   folds: int = 5) -> dict:
+    """Cross-fitted AUC *and* log-loss for the real-vs-synthetic discriminator.
 
     The in-sample AUC is not comparable across dimensions -- a 74-parameter fit
     on ~640 points overfits more than a 10-parameter one, so 74-D scoring higher
     in sample says nothing about whether it captures more real covariate shift.
-    Only an out-of-fold AUC answers that, and it is the number the module
-    docstring always claimed to report.
+    Only an out-of-fold number answers that, and it is what the module docstring
+    always claimed to report.
+
+    AUC alone cannot choose the L2 strength, though, and this is the trap worth
+    naming: AUC is rank-based and scale-free, while the weight is the *odds*
+    p/(1-p). Shrinking C compresses the logits toward 0, so every weight moves
+    toward 1 and ESS rises -- in the limit C -> 0 the weights are all exactly 1,
+    ESS is a perfect 100%, and the shift is not corrected at all. High ESS is
+    therefore trivially purchasable by under-correcting, which is precisely the
+    failure the discriminator caveat is about.
+
+    Log-loss is a strictly proper scoring rule, so it is sensitive to the
+    magnitude of the predicted probability and not just its rank. It is the
+    number that can legitimately choose C; ``ll_intercept`` is the log-loss of
+    the class-prior-only model, i.e. the score a discriminator that gives up and
+    returns weights of 1 would get.
     """
     rng = np.random.default_rng(seed)
     X = np.vstack([sf, rf])
@@ -100,7 +114,12 @@ def heldout_auc(sf: np.ndarray, rf: np.ndarray, seed: int, C: float,
         tr = np.setdiff1d(idx, te, assume_unique=False)
         _, clf = fit_weight_model_C(X[tr][y[tr] == 0], X[tr][y[tr] == 1], seed, C)
         oof[te] = clf.predict_proba(X[te])[:, 1]
-    return auc(oof, y)
+    p = np.clip(oof, 1e-12, 1 - 1e-12)
+    ll = float(-np.mean(y * np.log(p) + (1 - y) * np.log(1 - p)))
+    pri = float(y.mean())
+    ll0 = float(-(pri * np.log(pri) + (1 - pri) * np.log(1 - pri)))
+    return {"auc": auc(oof, y), "logloss": ll, "logloss_intercept_only": ll0,
+            "logloss_skill": (ll0 - ll) / ll0}
 
 
 def weight_stats(w_raw: np.ndarray, clip: float) -> dict:
@@ -163,8 +182,8 @@ def main() -> None:
            "by_dim": {}, "by_C_at_full_dim": {}}
 
     print("\n=== separation vs weight degeneracy by dimension (C=1.0) ===")
-    print(f"  {'d':>4}  {'AUC_in':>7} {'AUC_oof':>8}  {'ESS':>15}  "
-          f"{'clip%':>6}  {'w_max':>8}")
+    print(f"  {'d':>4}  {'AUC_in':>7} {'AUC_oof':>8} {'logloss':>8} {'skill':>7}  "
+          f"{'ESS':>15}  {'clip%':>6}  {'w_max':>8}")
     for d in dims:
         sf = np.vstack([s["features"][:d] for s in wsynth])
         rf = np.vstack([s["features"][:d] for s in real_train])
@@ -173,35 +192,56 @@ def main() -> None:
         X = np.vstack([sf, rf])
         y = np.r_[np.zeros(len(sf)), np.ones(len(rf))]
         a_in = auc(clf.predict_proba(X)[:, 1], y)
-        a_oof = heldout_auc(sf, rf, args.seed, C=1.0)
+        oof = heldout_scores(sf, rf, args.seed, C=1.0)
 
         w_raw = w_fn(cal_feats_full[:, :d])
-        rec = {"dim": d, "auc_in_sample": a_in, "auc_out_of_fold": a_oof,
+        rec = {"dim": d, "auc_in_sample": a_in, "auc_out_of_fold": oof["auc"],
+               "logloss_out_of_fold": oof["logloss"],
+               "logloss_intercept_only": oof["logloss_intercept_only"],
+               "logloss_skill": oof["logloss_skill"],
                **weight_stats(w_raw, args.clip)}
         out["by_dim"][str(d)] = rec
-        print(f"  {d:4d}  {a_in:7.4f} {a_oof:8.4f}  {rec['ess']:7.1f}/{len(w_raw)} "
+        print(f"  {d:4d}  {a_in:7.4f} {oof['auc']:8.4f} {oof['logloss']:8.4f} "
+              f"{oof['logloss_skill']:+7.4f}  {rec['ess']:7.1f}/{len(w_raw)} "
               f"({100*rec['ess_frac']:4.1f}%)  {100*rec['frac_clipped']:5.1f}%  "
               f"{rec['w_max_raw']:8.3g}")
 
-    print(f"\n=== L2 strength at d={full_dim}: can regularisation buy back ESS "
-          f"without losing real separation? ===")
-    print(f"  {'C':>6}  {'AUC_in':>7} {'AUC_oof':>8}  {'ESS':>15}  "
-          f"{'clip%':>6}  {'w_max':>8}")
+    print(f"\n=== L2 strength at d={full_dim} ===")
+    print("  ESS alone cannot pick C: as C -> 0 the weights -> 1, ESS -> 100% and "
+          "the shift\n  goes uncorrected. Out-of-fold LOG-LOSS is the proper "
+          "score, so it is the column\n  that legitimately chooses C; 'skill' is "
+          "the fraction of the intercept-only\n  log-loss removed (0 = weights "
+          "might as well be 1).")
+    print(f"  {'C':>6}  {'AUC_in':>7} {'AUC_oof':>8} {'logloss':>8} {'skill':>7}  "
+          f"{'ESS':>15}  {'clip%':>6}  {'w_max':>8}")
     sf = np.vstack([s["features"] for s in wsynth])
     rf = np.vstack([s["features"] for s in real_train])
     X = np.vstack([sf, rf])
     y = np.r_[np.zeros(len(sf)), np.ones(len(rf))]
+    best = None
     for C in args.c_grid:
         w_fn, clf = fit_weight_model_C(sf, rf, args.seed, C)
         a_in = auc(clf.predict_proba(X)[:, 1], y)
-        a_oof = heldout_auc(sf, rf, args.seed, C=C)
+        oof = heldout_scores(sf, rf, args.seed, C=C)
         w_raw = w_fn(cal_feats_full)
-        rec = {"C": C, "auc_in_sample": a_in, "auc_out_of_fold": a_oof,
+        rec = {"C": C, "auc_in_sample": a_in, "auc_out_of_fold": oof["auc"],
+               "logloss_out_of_fold": oof["logloss"],
+               "logloss_intercept_only": oof["logloss_intercept_only"],
+               "logloss_skill": oof["logloss_skill"],
                **weight_stats(w_raw, args.clip)}
         out["by_C_at_full_dim"][str(C)] = rec
-        print(f"  {C:6.3g}  {a_in:7.4f} {a_oof:8.4f}  {rec['ess']:7.1f}/{len(w_raw)} "
+        if best is None or oof["logloss"] < best[1]:
+            best = (C, oof["logloss"])
+        print(f"  {C:6.3g}  {a_in:7.4f} {oof['auc']:8.4f} {oof['logloss']:8.4f} "
+              f"{oof['logloss_skill']:+7.4f}  {rec['ess']:7.1f}/{len(w_raw)} "
               f"({100*rec['ess_frac']:4.1f}%)  {100*rec['frac_clipped']:5.1f}%  "
               f"{rec['w_max_raw']:8.3g}")
+    if best is not None:
+        sel = out["by_C_at_full_dim"][str(best[0])]
+        out["selected_C_by_logloss"] = best[0]
+        print(f"\n  best out-of-fold log-loss at C={best[0]:g} "
+              f"(loss {best[1]:.4f}, skill {sel['logloss_skill']:+.4f}, "
+              f"ESS {100*sel['ess_frac']:.1f}%)")
 
     args.out.parent.mkdir(parents=True, exist_ok=True)
     args.out.write_text(json.dumps(out, indent=2))

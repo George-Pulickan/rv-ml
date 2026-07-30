@@ -692,19 +692,26 @@ def fit_weight_model(synth_feats: np.ndarray, real_feats: np.ndarray, seed: int,
 
     It is exposed because C=1.0 is measurably *not* the best operating point.
     `scripts/check_discriminator_dim.py` sweeps it at d=74 (n_synth=400,
-    n_real=236, seed 0) and finds C=1.0 pays 26 points of effective sample size
-    for separation it does not actually generalise:
+    n_real=236, seed 0). Note ESS on its own cannot choose C -- as C -> 0 every
+    weight tends to 1, ESS tends to 100% and the shift simply goes uncorrected --
+    so the column that decides is the out-of-fold LOG-LOSS, a strictly proper
+    score that is sensitive to the magnitude of p and not merely its rank:
 
-        C      AUC out-of-fold    ESS
-        0.01       0.6401       87.7%
-        0.03       0.6520       72.7%
-        0.10       0.6526       56.5%
-        1.00       0.6477       46.7%   <- current default
+        C      logloss_oof   skill    AUC_oof    ESS      w_max
+        0.01     0.6371     +0.0340    0.6401   87.5%      3.75
+        0.03     0.6312     +0.0430    0.6521   71.7%      8.07   <- best
+        0.10     0.6332     +0.0400    0.6527   54.2%      14.2
+        0.30     0.6372     +0.0338    0.6496   46.7%      17.5
+        1.00     0.6403     +0.0292    0.6478   44.1%      18.7   <- current
+        3.00     0.6416     +0.0272    0.6465   43.2%      19.1
 
-    C=0.03 dominates C=1.0 on both axes at once -- higher cross-fitted AUC and
-    1.56x the ESS, with max raw weight 7.5 instead of 16.9. Adopting it changes
-    the weighted quantiles, so it needs a full CP re-run before it becomes the
-    default; until then this argument makes that run a one-flag change.
+    Log-loss is non-monotone in C and turns over at 0.03, which is what confirms
+    the metric is doing its job: C=0.01 has the higher ESS and the *worse* score,
+    i.e. it buys its effective sample size by under-correcting. C=0.03 is better
+    than the C=1.0 default on every axis at once -- proper score, AUC, ESS and
+    tail weight. Adopting it changes the weighted quantiles, so it needs a full
+    CP re-run and a re-run of scripts/check_paper_numbers.py before it becomes
+    the default; until then this argument makes that run a one-flag change.
     """
     from sklearn.linear_model import LogisticRegression
     from sklearn.pipeline import make_pipeline
@@ -1160,10 +1167,11 @@ def main() -> None:
     ap.add_argument("--weight-c", type=float, default=1.0, metavar="C",
                     help="inverse L2 strength of the likelihood-ratio "
                          "discriminator. 1.0 (the default) is every result up to "
-                         "2026-07-29. C=0.03 measures strictly better -- "
-                         "out-of-fold AUC 0.652 vs 0.648 and ESS 72.7%% vs 46.7%% "
-                         "at d=74 -- so it is the value to try when re-running; "
-                         "see scripts/check_discriminator_dim.py")
+                         "2026-07-29. C=0.03 measures strictly better on a proper "
+                         "score -- out-of-fold log-loss 0.6312 vs 0.6403, AUC "
+                         "0.652 vs 0.648, ESS 71.7%% vs 44.1%% and max weight 8.1 "
+                         "vs 18.7 at d=74 -- so it is the value to try when "
+                         "re-running; see scripts/check_discriminator_dim.py")
     ap.add_argument("--grid", type=int, default=33,
                     help="resolution of the empirical histogram grids (support)")
     ap.add_argument("--gd-steps", type=int, default=200,
