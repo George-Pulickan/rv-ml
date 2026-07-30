@@ -26,13 +26,26 @@ import torch.nn as nn
 # Core math
 # ---------------------------------------------------------------------------
 
-def solve_kepler(M: torch.Tensor, e: torch.Tensor, tol: float = 1e-10,
+def solve_kepler(M: torch.Tensor, e: torch.Tensor, tol: float | None = None,
                  maxiter: int = 50) -> torch.Tensor:
     """
     Solve Kepler's equation  M = E − e·sin(E)  for eccentric anomaly E.
 
     Uses Newton–Raphson with Danby starting guess.  The iteration is
     composed entirely of differentiable torch ops, so autograd flows through.
+
+    ``tol=None`` (the default) picks the convergence threshold from M's dtype.
+    This matters: Newton's update bottoms out at the dtype's rounding floor, not
+    at zero.  In float32 -- which is what ``_gd_batch`` runs the refinement in --
+    max|dE| stalls at ~2.5e-7 from iteration 7 onwards and *never* reaches the
+    old hard-coded 1e-10, so the loop silently ran all ``maxiter`` iterations on
+    every call.  Iterations 8..50 moved E by less than one float32 ulp while
+    still costing a full sin/cos pass forward and 43 extra layers of autograd
+    graph backward -- measured at 5.2x the necessary cost of a fwd+bwd.
+
+    The floor is scaled to the dtype and never loosened past the historical
+    1e-10, so float64 callers keep bit-identical behaviour and only the float32
+    path changes.
 
     Parameters
     ----------
@@ -43,6 +56,9 @@ def solve_kepler(M: torch.Tensor, e: torch.Tensor, tol: float = 1e-10,
     -------
     E : same shape as M
     """
+    if tol is None:
+        tol = max(1e-10, 32.0 * float(torch.finfo(M.dtype).eps))
+
     M = torch.remainder(M + torch.pi, 2 * torch.pi) - torch.pi  # wrap to (−π, π]
     E = M + e * torch.sin(M)  # Danby first-order guess
 
