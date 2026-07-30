@@ -1,0 +1,23 @@
+{
+  "n_systems": 51,
+  "repeats": 3,
+  "threads": 1,
+  "config": {
+    "psi_refine": 200,
+    "psi_multistart": 5,
+    "psi_refit_k": true,
+    "gd_steps": 200
+  },
+  "per_system_ms": {
+    "featurisation": 0.018103568650343838,
+    "psi_forward": 0.028351156894738477,
+    "psi_total": 0.046454725545082315,
+    "psi_prime_refine": 55912.57550160791,
+    "theta_star_gd": 9902.771833980189
+  },
+  "ratios": {
+    "psi_prime_over_psi": 1203592.8497165947,
+    "theta_star_over_psi": 213170.38724876277,
+    "theta_star_over_psi_prime": 0.17711170957766753
+  }
+}

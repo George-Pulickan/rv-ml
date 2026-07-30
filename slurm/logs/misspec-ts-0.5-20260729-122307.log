@@ -1,0 +1,98 @@
+=== start Wed 29 Jul 12:23:07 BST 2026 on node-02  noise-frac=0.5 ===
+gp ckpt : 1081541 bytes  [must be 1081541]
+reported CP coordinates: ['log10_P', 'log10_K', 'e'] (Bonferroni divisor 3)
+noise proxy source: gp_residual_svgp
+loaded MLP psi from checkpoints/psi_20260726/mlp74_s42.pt (feature_set=74, in_dim=74, e_head=direct)
+building real systems ...
+real filter: min_nights=5 one_per_host=True -> 34 test series, 34 hosts
+noise bound (max |y - h(psi(y))| on real train, rv_std units): 5.99
+building synthetic systems ...
+[synthetic_dataset] loaded 242 real observation profiles from training split
+<repo>/.venv/lib/python3.12/site-packages/linear_operator/utils/cholesky.py:41: NumericalWarning: A not p.d., added jitter of 1.0e-06 to the diagonal
+  warnings.warn(
+<repo>/.venv/lib/python3.12/site-packages/linear_operator/utils/cholesky.py:41: NumericalWarning: A not p.d., added jitter of 1.0e-05 to the diagonal
+  warnings.warn(
+<repo>/.venv/lib/python3.12/site-packages/linear_operator/utils/cholesky.py:41: NumericalWarning: A not p.d., added jitter of 1.0e-04 to the diagonal
+  warnings.warn(
+<repo>/.venv/lib/python3.12/site-packages/linear_operator/operators/_linear_operator.py:2180: NumericalWarning: Runtime Error when computing Cholesky decomposition: Matrix not positive definite after repeatedly adding jitter up to 1.0e-04.. Using symeig method.
+  warnings.warn(
+misspecification study: synthetic test set drawn UNFILTERED with correlated noise frac=0.5 tau=30.0d (400 systems)
+noise filter: kept 1300/2100 draws (rejection rate 38.1%)
+n_cal=400 n_tune=100 n_test_syn=400 n_test_real=34 (weight fit: 400 synth vs 155 real-train)
+gamma tuning on real val split: 33 systems
+weights: ESS=262.6/400  clipped=0.0%
+fitting surrogate labels by gradient descent ...
+  done in 4555s
+v_c median (cal): log10_P=0.0414  log10_K=0.0544  e=0.0867
+computing paper-norm deltas (re-encode + reconstruction residuals) ...
+delta_c median (cal): log10_P=0.297  log10_K=0.0724  e=0.143  delta_y=0.374
+surrogate-gap budget: beta=0.009901 (n_tune=100); main quantile spends alpha - beta
+naive_adj Delta_c (max gap on tune): log10_P=0.538  log10_K=1.26  e=0.865
+[naive] gamma_vnorm=0.2043  gamma_v2norm=0.2579  gamma_papernorm=0.02024  w_papernorm=0.75
+  [naive/raw/synthetic_unweighted] joint@0.90=0.920 inf=0.00
+  [naive/raw/real_unweighted] joint@0.90=1.000 inf=0.00
+  [naive/raw/real_weighted] joint@0.90=1.000 inf=0.00
+  [naive/raw/synthetic_thetastar] joint@0.90=0.953 inf=0.00
+  [naive/vnorm/synthetic_unweighted] joint@0.90=0.877 inf=0.00
+  [naive/vnorm/real_unweighted] joint@0.90=1.000 inf=0.00
+  [naive/vnorm/real_weighted] joint@0.90=0.971 inf=0.00
+  [naive/vnorm/synthetic_thetastar] joint@0.90=0.905 inf=0.00
+  [naive/v2norm/synthetic_unweighted] joint@0.90=0.865 inf=0.00
+  [naive/v2norm/real_unweighted] joint@0.90=1.000 inf=0.00
+  [naive/v2norm/real_weighted] joint@0.90=1.000 inf=0.00
+  [naive/v2norm/synthetic_thetastar] joint@0.90=0.900 inf=0.00
+  [naive/papernorm/synthetic_unweighted] joint@0.90=0.882 inf=0.00
+  [naive/papernorm/real_unweighted] joint@0.90=1.000 inf=0.00
+  [naive/papernorm/real_weighted] joint@0.90=1.000 inf=0.00
+  [naive/papernorm/synthetic_thetastar] joint@0.90=0.902 inf=0.00
+[naive_adj] gamma_vnorm=0.6128  gamma_v2norm=0.7736  gamma_papernorm=0.2024  w_papernorm=0.75
+  [naive_adj/raw/synthetic_unweighted] joint@0.90=0.985 inf=0.00
+  [naive_adj/raw/real_unweighted] joint@0.90=1.000 inf=0.00
+  [naive_adj/raw/real_weighted] joint@0.90=1.000 inf=0.00
+  [naive_adj/raw/synthetic_thetastar] joint@0.90=0.988 inf=0.00
+  [naive_adj/vnorm/synthetic_unweighted] joint@0.90=0.975 inf=0.00
+  [naive_adj/vnorm/real_unweighted] joint@0.90=1.000 inf=0.00
+  [naive_adj/vnorm/real_weighted] joint@0.90=1.000 inf=0.00
+  [naive_adj/vnorm/synthetic_thetastar] joint@0.90=0.975 inf=0.00
+  [naive_adj/v2norm/synthetic_unweighted] joint@0.90=0.978 inf=0.00
+  [naive_adj/v2norm/real_unweighted] joint@0.90=1.000 inf=0.00
+  [naive_adj/v2norm/real_weighted] joint@0.90=1.000 inf=0.00
+  [naive_adj/v2norm/synthetic_thetastar] joint@0.90=0.978 inf=0.00
+  [naive_adj/papernorm/synthetic_unweighted] joint@0.90=0.970 inf=0.00
+  [naive_adj/papernorm/real_unweighted] joint@0.90=1.000 inf=0.00
+  [naive_adj/papernorm/real_weighted] joint@0.90=1.000 inf=0.00
+  [naive_adj/papernorm/synthetic_thetastar] joint@0.90=0.970 inf=0.00
+[surrogate] gamma_vnorm=0.2043  gamma_v2norm=0.2579  gamma_papernorm=0.002852  w_papernorm=0.50
+  [surrogate/raw/synthetic_unweighted] joint@0.90=0.880 inf=0.00
+  [surrogate/raw/real_unweighted] joint@0.90=1.000 inf=0.00
+  [surrogate/raw/real_weighted] joint@0.90=1.000 inf=0.00
+  [surrogate/raw/synthetic_thetastar] joint@0.90=0.925 inf=0.00
+  [surrogate/vnorm/synthetic_unweighted] joint@0.90=0.850 inf=0.00
+  [surrogate/vnorm/real_unweighted] joint@0.90=1.000 inf=0.00
+  [surrogate/vnorm/real_weighted] joint@0.90=0.971 inf=0.00
+  [surrogate/vnorm/synthetic_thetastar] joint@0.90=0.890 inf=0.00
+  [surrogate/v2norm/synthetic_unweighted] joint@0.90=0.835 inf=0.00
+  [surrogate/v2norm/real_unweighted] joint@0.90=1.000 inf=0.00
+  [surrogate/v2norm/real_weighted] joint@0.90=1.000 inf=0.00
+  [surrogate/v2norm/synthetic_thetastar] joint@0.90=0.877 inf=0.00
+  [surrogate/papernorm/synthetic_unweighted] joint@0.90=0.863 inf=0.00
+  [surrogate/papernorm/real_unweighted] joint@0.90=1.000 inf=0.00
+  [surrogate/papernorm/real_weighted] joint@0.90=1.000 inf=0.00
+  [surrogate/papernorm/synthetic_thetastar] joint@0.90=0.897 inf=0.00
+estimating Assumption 2.3 constants on 25 prior draws ...
+  kappa(H) median=2.08e+04 max=8.81e+07  ||grad h|| median=172
+wrote per-system papernorm widths -> synthetic_generation/regression/refined_20260729/misspec_f0.5/per_system_widths_papernorm.json
+
+total 45098s — wrote metrics/report to synthetic_generation/regression/refined_20260729/misspec_f0.5, figures to synthetic_generation/figures/synthetic_regression_10000/refined_20260729/misspec_f0.5
+exit=0
+=== recorded config + coverage under misspecification ===
+{'psi': 'mlp', 'psi_refine': 200, 'psi_multistart': 5, 'psi_refit_k': True, 'test_noise_frac': 0.5, 'test_noise_tau_days': 30.0, 'n_test_real': 34}
+naive      synthetic_unweighted   a=0.10 joint=0.8825
+naive      synthetic_unweighted   a=0.32 joint=0.6750
+naive      synthetic_thetastar    a=0.10 joint=0.9025
+naive      synthetic_thetastar    a=0.32 joint=0.7125
+surrogate  synthetic_unweighted   a=0.10 joint=0.8625
+surrogate  synthetic_unweighted   a=0.32 joint=0.6450
+surrogate  synthetic_thetastar    a=0.10 joint=0.8975
+surrogate  synthetic_thetastar    a=0.32 joint=0.7225
+=== end Thu 30 Jul 00:54:57 BST 2026 ===

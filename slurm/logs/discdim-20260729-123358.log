@@ -1,0 +1,21 @@
+=== start Wed 29 Jul 12:33:58 BST 2026 on node-01 ===
+noise proxy source: gp_residual_svgp
+real train systems: 236
+noise bound: 6.47 rv_std
+[synthetic_dataset] loaded 242 real observation profiles from training split
+<repo>/.venv/lib/python3.12/site-packages/linear_operator/utils/cholesky.py:41: NumericalWarning: A not p.d., added jitter of 1.0e-06 to the diagonal
+  warnings.warn(
+<repo>/.venv/lib/python3.12/site-packages/linear_operator/utils/cholesky.py:41: NumericalWarning: A not p.d., added jitter of 1.0e-05 to the diagonal
+  warnings.warn(
+<repo>/.venv/lib/python3.12/site-packages/linear_operator/utils/cholesky.py:41: NumericalWarning: A not p.d., added jitter of 1.0e-04 to the diagonal
+  warnings.warn(
+<repo>/.venv/lib/python3.12/site-packages/linear_operator/operators/_linear_operator.py:2180: NumericalWarning: Runtime Error when computing Cholesky decomposition: Matrix not positive definite after repeatedly adding jitter up to 1.0e-04.. Using symeig method.
+  warnings.warn(
+synthetic: 400 for the fit, 400 as calibration
+feature dimensions available: 74; testing [10, 74]
+  d=  10  AUC=0.5786  ESS=  367.7/400 ( 91.9%)  clipped=  0.0%  w_max=2.06
+  d=  74  AUC=0.6954  ESS=  176.4/400 ( 44.1%)  clipped=  0.0%  w_max=18.7
+
+wrote <repo>/figures/paper/discriminator_dim.json
+exit=0
+=== end Wed 29 Jul 12:38:33 BST 2026 ===
