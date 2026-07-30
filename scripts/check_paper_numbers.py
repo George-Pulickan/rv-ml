@@ -108,12 +108,16 @@ for a, nom in (("0.10", "0.90"), ("0.32", "0.68")):
 eq("union joint @0.90", uni["0.10"]["joint_coverage"], 1.0)
 eq("union joint @0.68", uni["0.32"]["joint_coverage"], 0.8529, tol=1e-3)
 
-print("\nunion reduction quoted in the text (nominal 0.68)")
+print("\nunion reduction as the SUBMITTED text computes it (nominal 0.68)")
+# These pin what the submitted paper prints, NOT what is correct. The baseline
+# 2 * per_coord_median_width doubles an already-full, support-clipped width and
+# is compared against an unclipped merged length. Corrected, the union does not
+# reduce measure -- see "union regions, CORRECTED measure comparison" below.
 wb = sur["real_weighted"]["0.32"]["per_coord_median_width"]
 um = uni["0.32"]["per_coord_median_measure"]
 for c, want in (("log10_P", 43), ("log10_K", 50), ("e", 6)):
     red = 100 * (1 - um[c] / (2 * wb[c]))
-    eq(f"  {c} reduction %", round(red), want, tol=0.5)
+    eq(f"  {c} reduction % [as submitted, KNOWN WRONG]", round(red), want, tol=0.5)
 
 print("\nreconstruction MSE (rv_mse_scatter.csv)")
 rows = list(csv.DictReader((FIG / "rv_mse_scatter.csv").open()))
@@ -223,14 +227,23 @@ eq("per-system log10_P spread, ratio (text: 9.3)", max(_hw) / min(_hw), 9.3, tol
 eq("per-system log10_P spread, min", min(_hw), 0.275, tol=1e-3)
 eq("per-system log10_P spread, max", max(_hw), 2.552, tol=1e-3)
 
-print("\nunion regions, reductions quoted in the text")
+print("\nunion regions, CORRECTED measure comparison (supp Table union)")
+# The main text builds the box baseline as 2 * per_coord_median_width. That
+# doubles a quantity which is ALREADY a full width (conformal_shift.py:764) and
+# is clipped to the support, then compares it against _merged_length, which is
+# unclipped -- inflating the box by ~1.5x. Compared like for like, the union
+# does not reduce measure. See the note printed at the end.
 buni = b["union_regions"]
-for a, nom, want in (("0.10", "0.90", (24, 42, 22)), ("0.32", "0.68", (50, 50, 17))):
-    wb = bsur["synthetic_unweighted"][a]["per_coord_median_width"]
-    um = buni["synthetic_unweighted"][a]["per_coord_median_measure"]
-    for c, v in zip(COORDS, want):
-        eq(f"  nominal {nom} {c} reduction %", round(100 * (1 - um[c] / (2 * wb[c]))), v, tol=0.5)
-eq("union vs theta* @0.90 (text: 0.933 > box 0.905)",
+UNION = {"0.10": ((2.200, 2.527, +15), (1.242, 1.135, -9), (1.170, 1.392, +19)),
+         "0.32": ((0.915, 1.016, +11), (0.544, 0.491, -10), (0.810, 1.087, +34))}
+for a, nom in (("0.10", "0.90"), ("0.32", "0.68")):
+    um = buni["real_weighted"][a]["per_coord_median_measure"]
+    for c, (box, uni_, pct) in zip(COORDS, UNION[a]):
+        got_box = 2 * halfwidth(BASE, a, c)
+        eq(f"  nominal {nom} {c} box (unclipped)", got_box, box, tol=1e-3)
+        eq(f"  nominal {nom} {c} union", um[c], uni_, tol=1e-3)
+        eq(f"  nominal {nom} {c} change %", round(100 * (um[c] / got_box - 1)), pct, tol=0.5)
+eq("union improves theta* coverage @0.90 (0.933 vs box 0.905)",
    buni["synthetic_thetastar"]["0.10"]["joint_coverage"], 0.9325, tol=1e-3)
 eq("union real weighted @0.90", buni["real_weighted"]["0.10"]["joint_coverage"], 1.0)
 
@@ -366,7 +379,14 @@ if fails:
         print("  -", f)
     sys.exit(1)
 print("all paper numbers reproduce from the committed artifacts")
-print("\nWARNING -- UNRESOLVED: the submitted table's half-widths (1.663/0.982/0.767) are")
-print("    per_coord_median_width; the supplementary's (1.100/0.621/0.585) are the")
-print("    per-system export, for the SAME run. Both are pinned above. Decide which")
-print("    the paper means before the supplementary goes out.")
+print("\nWARNING -- TWO REPORTING ERRORS IN THE SUBMITTED TEXT, both pinned above:")
+print("  1. Half-widths. The table prints per_coord_median_width")
+print("     (1.663/0.982/0.767), which conformal_shift.py:764 computes as a FULL")
+print("     width CLIPPED to the support. The half-width is the per-system export,")
+print("     1.100/0.621/0.585. The supplementary uses the latter.")
+print("  2. Union measure. Table 1's box baseline is 2 * per_coord_median_width,")
+print("     i.e. an already-full clipped width doubled, compared against an")
+print("     unclipped merged length. Like for like the union does NOT reduce")
+print("     measure: log10 P +15%, log10 K -9%, e +19% at nominal 0.90.")
+print("  Neither touches coverage, calibration or validity -- both are downstream")
+print("  of the calibrated quantile. The union efficiency claim needs restating.")
