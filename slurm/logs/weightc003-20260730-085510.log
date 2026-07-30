@@ -1,0 +1,121 @@
+=== start Thu 30 Jul 08:55:10 BST 2026 on node-02 ===
+gp ckpt : 1081541 bytes  [must be 1081541]
+kepler  : original tol=1e-10 (A/B stays clean)
+flag    : --weight-c present
+reported CP coordinates: ['log10_P', 'log10_K', 'e'] (Bonferroni divisor 3)
+noise proxy source: gp_residual_svgp
+loaded MLP psi from checkpoints/psi_20260726/mlp74_s42.pt (feature_set=74, in_dim=74, e_head=direct)
+building real systems ...
+real filter: min_nights=5 one_per_host=True -> 34 test series, 34 hosts
+noise bound (max |y - h(psi(y))| on real train, rv_std units): 5.99
+building synthetic systems ...
+[synthetic_dataset] loaded 242 real observation profiles from training split
+<repo>/.venv/lib/python3.12/site-packages/linear_operator/utils/cholesky.py:41: NumericalWarning: A not p.d., added jitter of 1.0e-06 to the diagonal
+  warnings.warn(
+<repo>/.venv/lib/python3.12/site-packages/linear_operator/utils/cholesky.py:41: NumericalWarning: A not p.d., added jitter of 1.0e-05 to the diagonal
+  warnings.warn(
+<repo>/.venv/lib/python3.12/site-packages/linear_operator/utils/cholesky.py:41: NumericalWarning: A not p.d., added jitter of 1.0e-04 to the diagonal
+  warnings.warn(
+<repo>/.venv/lib/python3.12/site-packages/linear_operator/operators/_linear_operator.py:2180: NumericalWarning: Runtime Error when computing Cholesky decomposition: Matrix not positive definite after repeatedly adding jitter up to 1.0e-04.. Using symeig method.
+  warnings.warn(
+noise filter: kept 1300/2500 draws (rejection rate 48.0%)
+n_cal=400 n_tune=100 n_test_syn=400 n_test_real=34 (weight fit: 400 synth vs 155 real-train)
+gamma tuning on real val split: 33 systems
+weights: ESS=336.7/400  clipped=0.0%
+fitting surrogate labels by gradient descent ...
+  done in 2179s
+v_c median (cal): log10_P=0.0362  log10_K=0.0484  e=0.085
+computing paper-norm deltas (re-encode + reconstruction residuals) ...
+delta_c median (cal): log10_P=0.28  log10_K=0.0728  e=0.145  delta_y=0.371
+surrogate-gap budget: beta=0.009901 (n_tune=100); main quantile spends alpha - beta
+naive_adj Delta_c (max gap on tune): log10_P=0.538  log10_K=1.26  e=0.861
+[naive] gamma_vnorm=0.2043  gamma_v2norm=0.2532  gamma_papernorm=0.06027  w_papernorm=0.75
+  [naive/raw/synthetic_unweighted] joint@0.90=0.900 inf=0.00
+  [naive/raw/real_unweighted] joint@0.90=1.000 inf=0.00
+  [naive/raw/real_weighted] joint@0.90=1.000 inf=0.00
+  [naive/raw/synthetic_thetastar] joint@0.90=0.930 inf=0.00
+  [naive/vnorm/synthetic_unweighted] joint@0.90=0.930 inf=0.00
+  [naive/vnorm/real_unweighted] joint@0.90=1.000 inf=0.00
+  [naive/vnorm/real_weighted] joint@0.90=0.971 inf=0.00
+  [naive/vnorm/synthetic_thetastar] joint@0.90=0.935 inf=0.00
+  [naive/v2norm/synthetic_unweighted] joint@0.90=0.925 inf=0.00
+  [naive/v2norm/real_unweighted] joint@0.90=1.000 inf=0.00
+  [naive/v2norm/real_weighted] joint@0.90=1.000 inf=0.00
+  [naive/v2norm/synthetic_thetastar] joint@0.90=0.938 inf=0.00
+  [naive/papernorm/synthetic_unweighted] joint@0.90=0.932 inf=0.00
+  [naive/papernorm/real_unweighted] joint@0.90=1.000 inf=0.00
+  [naive/papernorm/real_weighted] joint@0.90=1.000 inf=0.00
+  [naive/papernorm/synthetic_thetastar] joint@0.90=0.925 inf=0.00
+[naive_adj] gamma_vnorm=2.043  gamma_v2norm=0.7596  gamma_papernorm=0.2009  w_papernorm=0.75
+  [naive_adj/raw/synthetic_unweighted] joint@0.90=0.980 inf=0.00
+  [naive_adj/raw/real_unweighted] joint@0.90=1.000 inf=0.00
+  [naive_adj/raw/real_weighted] joint@0.90=1.000 inf=0.00
+  [naive_adj/raw/synthetic_thetastar] joint@0.90=0.988 inf=0.00
+  [naive_adj/vnorm/synthetic_unweighted] joint@0.90=0.985 inf=0.00
+  [naive_adj/vnorm/real_unweighted] joint@0.90=1.000 inf=0.00
+  [naive_adj/vnorm/real_weighted] joint@0.90=1.000 inf=0.00
+  [naive_adj/vnorm/synthetic_thetastar] joint@0.90=0.988 inf=0.00
+  [naive_adj/v2norm/synthetic_unweighted] joint@0.90=0.988 inf=0.00
+  [naive_adj/v2norm/real_unweighted] joint@0.90=1.000 inf=0.00
+  [naive_adj/v2norm/real_weighted] joint@0.90=1.000 inf=0.00
+  [naive_adj/v2norm/synthetic_thetastar] joint@0.90=0.988 inf=0.00
+  [naive_adj/papernorm/synthetic_unweighted] joint@0.90=0.985 inf=0.00
+  [naive_adj/papernorm/real_unweighted] joint@0.90=1.000 inf=0.00
+  [naive_adj/papernorm/real_weighted] joint@0.90=1.000 inf=0.00
+  [naive_adj/papernorm/synthetic_thetastar] joint@0.90=0.985 inf=0.00
+[surrogate] gamma_vnorm=0.2043  gamma_v2norm=0.2532  gamma_papernorm=0.002858  w_papernorm=0.50
+  [surrogate/raw/synthetic_unweighted] joint@0.90=0.875 inf=0.00
+  [surrogate/raw/real_unweighted] joint@0.90=1.000 inf=0.00
+  [surrogate/raw/real_weighted] joint@0.90=1.000 inf=0.00
+  [surrogate/raw/synthetic_thetastar] joint@0.90=0.910 inf=0.00
+  [surrogate/vnorm/synthetic_unweighted] joint@0.90=0.905 inf=0.00
+  [surrogate/vnorm/real_unweighted] joint@0.90=1.000 inf=0.00
+  [surrogate/vnorm/real_weighted] joint@0.90=0.971 inf=0.00
+  [surrogate/vnorm/synthetic_thetastar] joint@0.90=0.917 inf=0.00
+  [surrogate/v2norm/synthetic_unweighted] joint@0.90=0.892 inf=0.00
+  [surrogate/v2norm/real_unweighted] joint@0.90=1.000 inf=0.00
+  [surrogate/v2norm/real_weighted] joint@0.90=1.000 inf=0.00
+  [surrogate/v2norm/synthetic_thetastar] joint@0.90=0.902 inf=0.00
+  [surrogate/papernorm/synthetic_unweighted] joint@0.90=0.915 inf=0.00
+  [surrogate/papernorm/real_unweighted] joint@0.90=1.000 inf=0.00
+  [surrogate/papernorm/real_weighted] joint@0.90=1.000 inf=0.00
+  [surrogate/papernorm/synthetic_thetastar] joint@0.90=0.905 inf=0.00
+evaluating union-of-intervals regions (surrogate/papernorm) ...
+  [union/synthetic_unweighted] joint@0.90=0.897 (box 0.915)  measure P/K/e = 3.361/1.161/1.464  vs box 4.413/2.015/1.888
+  [union/real_weighted] joint@0.90=1.000 (box 1.000)  measure P/K/e = 2.728/1.174/1.408  vs box 3.423/2.006/1.610
+  [union/synthetic_thetastar] joint@0.90=0.932 (box 0.905)  measure P/K/e = 3.361/1.161/1.464  vs box 4.413/2.015/1.888
+estimating Assumption 2.3 constants on 25 prior draws ...
+  kappa(H) median=1.62e+04 max=8.8e+07  ||grad h|| median=172
+wrote per-system papernorm widths -> synthetic_generation/regression/refined_20260730/1perhost_K200M5_uk_C003/per_system_widths_papernorm.json
+
+total 24641s — wrote metrics/report to synthetic_generation/regression/refined_20260730/1perhost_K200M5_uk_C003, figures to synthetic_generation/figures/synthetic_regression_10000/refined_20260730/1perhost_K200M5_uk_C003
+exit=0
+
+=== C=0.03 vs the C=1.0 baseline ===
+ASSERTED psi=mlp  ckpt=checkpoints/psi_20260726/mlp74_s42.pt  weights.C=0.03
+config: refine=200 M=5 refit_k=True n_cal=400 n_test_real=34
+
+-- discriminator weights --
+  ESS                                    C=0.03     336.7   C=1.0     262.6   delta +74.1882
+  frac clipped                           C=0.03    0.0000   C=1.0    0.0000   delta +0.0000
+
+-- joint coverage (surrogate/papernorm) --
+  synthetic_unweighted a=0.10            C=0.03    0.9150   C=1.0    0.9150   delta +0.0000
+  synthetic_unweighted a=0.32            C=0.03    0.7375   C=1.0    0.7375   delta +0.0000
+  synthetic_thetastar a=0.10             C=0.03    0.9050   C=1.0    0.9050   delta +0.0000
+  synthetic_thetastar a=0.32             C=0.03    0.7625   C=1.0    0.7625   delta +0.0000
+  real_weighted a=0.10                   C=0.03    1.0000   C=1.0    1.0000   delta +0.0000
+  real_weighted a=0.32                   C=0.03    0.9118   C=1.0    0.8824   delta +0.0294
+
+-- median half-width (per-system export, the paper's definition) --
+  a=0.10 log10_P                         C=0.03    1.1598   C=1.0    1.1002   delta +0.0596
+  a=0.10 log10_K                         C=0.03    0.6577   C=1.0    0.6211   delta +0.0366
+  a=0.10 e                               C=0.03    0.6068   C=1.0    0.5849   delta +0.0220
+  a=0.32 log10_P                         C=0.03    0.6135   C=1.0    0.4577   delta +0.1558
+  a=0.32 log10_K                         C=0.03    0.2856   C=1.0    0.2721   delta +0.0135
+  a=0.32 e                               C=0.03    0.4196   C=1.0    0.4049   delta +0.0146
+
+-- eq (32) gap, synthetic_thetastar --
+  a=0.10  C=0.03 {'log10_P': 0.175, 'log10_K': 0.92, 'e': 0.7625}   C=1.0 {'log10_P': 0.175, 'log10_K': 0.92, 'e': 0.7625}
+  a=0.32  C=0.03 {'log10_P': 0.31, 'log10_K': 0.8975, 'e': 0.8425}   C=1.0 {'log10_P': 0.31, 'log10_K': 0.8975, 'e': 0.8425}
+=== end Thu 30 Jul 15:46:04 BST 2026 ===
