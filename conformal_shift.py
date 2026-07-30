@@ -682,9 +682,30 @@ def fit_vk_models(feats: np.ndarray, theta_bars: list, theta_stars: list,
 # ---------------------------------------------------------------------------
 
 
-def fit_weight_model(synth_feats: np.ndarray, real_feats: np.ndarray, seed: int):
+def fit_weight_model(synth_feats: np.ndarray, real_feats: np.ndarray, seed: int,
+                     C: float = 1.0):
     """Logistic real(1)-vs-fake(0) discriminator on standardized log-ish summary
-    features; w(x) = odds * class-balance correction = p_real/p_fake ratio."""
+    features; w(x) = odds * class-balance correction = p_real/p_fake ratio.
+
+    ``C`` is the inverse L2 strength. It defaults to 1.0, which is what every
+    result up to 2026-07-29 used, so the default changes nothing.
+
+    It is exposed because C=1.0 is measurably *not* the best operating point.
+    `scripts/check_discriminator_dim.py` sweeps it at d=74 (n_synth=400,
+    n_real=236, seed 0) and finds C=1.0 pays 26 points of effective sample size
+    for separation it does not actually generalise:
+
+        C      AUC out-of-fold    ESS
+        0.01       0.6401       87.7%
+        0.03       0.6520       72.7%
+        0.10       0.6526       56.5%
+        1.00       0.6477       46.7%   <- current default
+
+    C=0.03 dominates C=1.0 on both axes at once -- higher cross-fitted AUC and
+    1.56x the ESS, with max raw weight 7.5 instead of 16.9. Adopting it changes
+    the weighted quantiles, so it needs a full CP re-run before it becomes the
+    default; until then this argument makes that run a one-flag change.
+    """
     from sklearn.linear_model import LogisticRegression
     from sklearn.pipeline import make_pipeline
     from sklearn.preprocessing import StandardScaler
@@ -692,7 +713,7 @@ def fit_weight_model(synth_feats: np.ndarray, real_feats: np.ndarray, seed: int)
     X = np.vstack([synth_feats, real_feats])
     y = np.r_[np.zeros(len(synth_feats)), np.ones(len(real_feats))]
     clf = make_pipeline(StandardScaler(),
-                        LogisticRegression(max_iter=2000, C=1.0, random_state=seed))
+                        LogisticRegression(max_iter=2000, C=C, random_state=seed))
     clf.fit(X, y)
     n0, n1 = float(len(synth_feats)), float(len(real_feats))
 
@@ -1136,6 +1157,13 @@ def main() -> None:
     ap.add_argument("--n-tune", type=int, default=100)
     ap.add_argument("--n-weight-synth", type=int, default=400,
                     help="fresh synthetic sample size for the weight discriminator")
+    ap.add_argument("--weight-c", type=float, default=1.0, metavar="C",
+                    help="inverse L2 strength of the likelihood-ratio "
+                         "discriminator. 1.0 (the default) is every result up to "
+                         "2026-07-29. C=0.03 measures strictly better -- "
+                         "out-of-fold AUC 0.652 vs 0.648 and ESS 72.7%% vs 46.7%% "
+                         "at d=74 -- so it is the value to try when re-running; "
+                         "see scripts/check_discriminator_dim.py")
     ap.add_argument("--grid", type=int, default=33,
                     help="resolution of the empirical histogram grids (support)")
     ap.add_argument("--gd-steps", type=int, default=200,
@@ -1454,9 +1482,22 @@ def main() -> None:
     # real test). Deliberately kept on the 74-dim summary FEATURES (s["features"])
     # rather than psi's possibly 586-dim set: a 586-dim discriminator on ~700
     # points separates the classes too well and degenerates the weights.
+    #
+    # Measured 2026-07-30 (scripts/check_discriminator_dim.py), and the picture is
+    # more awkward than the paragraph above admits: the degeneracy is already
+    # well advanced *at* 74-D. Sweeping d over the summary features at C=1.0,
+    # ESS holds at ~92% for d = 5/10/20/40 (out-of-fold AUC ~0.558, i.e. those
+    # first 40 columns carry almost no shift signal) and then falls to 46.7% at
+    # d=74, where out-of-fold AUC jumps to 0.648. So 74-D is not a safe middle
+    # ground -- it is the point where real separation and weight degeneracy both
+    # arrive. The 586-D comparison the comment rests on has still never been run;
+    # it needs the LSP dataset's feature set, which s["features"] does not carry.
+    #
+    # Most of that degeneracy is a regularisation artefact rather than an
+    # intrinsic cost -- see fit_weight_model's docstring for the C sweep.
     w_fn, _ = fit_weight_model(np.vstack([s["features"] for s in wsynth]),
                                np.vstack([s["features"] for s in real_train]),
-                               args.seed)
+                               args.seed, C=args.weight_c)
     clip = args.clip_weights
     w_cal_raw = w_fn(np.vstack([s["features"] for s in calib]))
     w_real_raw = w_fn(np.vstack([s["features"] for s in test_real]))
@@ -1695,7 +1736,8 @@ def main() -> None:
         "gamma_tune_on": args.gamma_tune_on,
         "gamma_reg": gamma_reg,
         "weights": {"ess": ess, "frac_clipped": frac_clipped,
-                    "clip_lo": 1.0 / clip, "clip_hi": clip},
+                    "clip_lo": 1.0 / clip, "clip_hi": clip,
+                    "C": float(args.weight_c)},
         "cal_score_median": {s: {c: float(np.median(cal_scores[s][c])) for c in COORDS}
                              for s in STRATEGIES},
         "vk_median": {k: {c: float(np.median(vk[k][c])) for c in COORDS}
