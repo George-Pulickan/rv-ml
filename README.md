@@ -11,12 +11,19 @@ only; and the calibration quantile is reweighted by a real-vs-synthetic
 likelihood ratio (Tibshirani et al. 2019) so the coverage guarantee transfers to
 real observations that were never used for calibration.
 
-**Headline result** (committed, reproducible from this repo — see
+**Headline result** (`pke_20260726/gamma_real_val_1perhost`, ψ =
+`checkpoints/psi_20260726/mlp74_s42.pt`, surrogate score + papernorm — see
 [Verifying the results](#verifying-the-results)): at nominal 90% joint coverage
-over the four physical coordinates, the intervals achieve **0.89 on held-out
-synthetic** and **0.97 on real held-out systems**, with 1.8% of real systems
-receiving an infinite (vacuous) interval. The intervals are honest but wide —
-that trade-off, and its cause, is documented in [Limitations](#limitations).
+over `(log10_P, log10_K, e)`, the intervals achieve **0.93 on held-out synthetic**
+and **1.00 on the 34 held-out real hosts**, with **no** vacuous intervals. The
+intervals are honest but wide, and on real data conservative — that trade-off,
+and its cause, is documented in [Limitations](#limitations).
+
+> ⚠️ The numbers **committed under `synthetic_generation/regression/mlp_psi/`
+> are superseded** (0.89/0.97, 1.8% vacuous, d = 4). They came from an earlier ψ
+> checkpoint that was never reproducible from `main`, and their 1.8% vacuous rate
+> was a float32 time-quantisation bug, now fixed. Do not mix pre- and
+> post-2026-07-27 numbers; see [Reproducibility status](#reproducibility-status).
 
 ---
 
@@ -67,6 +74,8 @@ see [Reproducibility status](#reproducibility-status).
  uncertainty quantification  ◄── the paper's contribution
    └─ conformal_shift.py ─────────────────────────► coverage/width tables, per-system widths
    └─ scripts/paper_rv_figures.py ────────────────► Fig 1, Fig 2, Earth-like table
+   └─ scripts/paper_tables.py ────────────────────► cp_ablation.tex, cp_assumptions.tex
+   └─ scripts/diagnostics/assumption_hessian.py ──► Assumption 3.2 (lambda_min, PD fraction)
    └─ scripts/bayesian_interval_comparison.py ────► CP vs catalog "Bayesian" intervals
 ```
 
@@ -79,9 +88,19 @@ discriminator. Real `val`/`test` systems are used **only** to test intervals.
 **Parameter vector.** θ = `[log10_P, log10_K, e, cos ω, sin ω]`. Periastron time
 `t_peri` is deliberately excluded — it is an epoch-dependent phase offset that is
 refit analytically inside the decoder, and including it would restrict the corpus
-to the ~43% of systems with a catalog value. CP operates on the four *physical*
+to the ~43% of systems with a catalog value. CP operates on the *physical*
 coordinates `(log10_P, log10_K, e, ω)`, since `(cos ω, sin ω)` redundantly encode
 one angle.
+
+**ω is estimated but no longer reported** (Nicolò, 2026-07-26), so the paper's
+reported dimension is **d = 3**: `(log10_P, log10_K, e)`. It is not identifiable
+at this SNR: on the d = 4 runs its half-width ran from 3.9 rad up to 8.7 rad
+against a 2π support, i.e. at or past the point where the interval wraps the
+whole circle and says nothing. It
+stays inside the model because e is parameterised through `(k, h) = (e cos ω,
+e sin ω)`, and pinning an unidentifiable angle would bias the two coordinates
+that *are* reported. `conformal_shift.py` still computes and prints all four;
+the PKe-vs-PKew control is in `slurm/nicolo_20260726.sbatch`.
 
 ---
 
@@ -149,6 +168,8 @@ Feature sets: **74-D** = 64 spectral power bins + 10 observation summaries ·
 | `conformal.py` | *Unsupervised* CP via the reconstruction residual ‖Kepler(θ) − y‖ (E1 coverage, E2 monotonicity, profiled scores). **Descoped from the paper** (Nicolò, 2026-07-14) but still runnable; it also supplies the shared `Scorer` / `make_real` / `make_synthetic` / `histogram_grids` helpers |
 | `scripts/paper_rv_figures.py` | All paper deliverables, selectable with `--only`: `phasefold`, `predtrue`, `table`, plus three added 2026-07-25 on Nicolò's request — `mse` (per-planet reconstruction MSE, tabulated vs ours, with the GD θ\* floor), `boxes` (2-D conformal vs catalog regions), `trajectories` (unfolded RV time series). `--only boxes` needs no checkpoint; the rest do |
 | `scripts/bayesian_interval_comparison.py` | CP half-widths vs the tabulated NASA `*err1/err2` intervals for held-out hosts |
+| `scripts/paper_tables.py` | Emits `cp_ablation.tex` (strategy × normalisation, `naive`+`raw` as the plain split-CP baseline) and `cp_assumptions.tex` from a `conformal_shift_metrics.json`, so the LaTeX cannot drift from the run behind it |
+| `scripts/diagnostics/assumption_hessian.py` | Assumption 3.2 diagnostic: is θ\* a strict local minimum of eq (2)? Hessian λ_min, PD fraction and κ(H) over prior draws, in **physical** coordinates (`--coords PKew` or `PKe`) |
 
 ### Diagnostics and tests
 
@@ -160,6 +181,15 @@ Feature sets: **74-D** = 64 spectral power bins + 10 observation summaries ·
 | `scripts/diagnostics/diagnostics.py`, `init_experiment.py` | Corpus-level plots; least-squares corrections to tabulated parameters |
 | `scripts/legacy/random_forest_regressor.py` | Real-only, raw-spectrum RF (R² = −0.16) — kept as a cautionary baseline |
 | `tests/` | 51 unit tests (see [Verifying the results](#verifying-the-results)) |
+
+### Write-up and vendored material
+
+| Path | Purpose |
+|---|---|
+| `paper/methodology_as_implemented.md` | What the pipeline actually does, written against the code rather than the draft. Where it disagrees with the Overleaf draft, **the draft is what needs changing** |
+| `paper/end_to_end_pipeline.tex` | Draft §-subsection on the end-to-end pipeline. Numbers marked `[RERUN]` are placeholders — do not paste those into Overleaf |
+| `paper/pendulum_simulated_experiment{,_supplement}.tex` | Draft write-up of the pendulum experiment |
+| `pendulum/` | **Snapshot, not a fork to edit.** Nicolò's perturbed-pendulum toy experiment ([Exoplanets_2026](https://github.com/nicoloRHUL/Exoplanets_2026) @ `7db4c62`, taken 2026-07-27), plus the forced-pendulum and Bayesian variants added here. Re-sync by re-copying over the top; there is no shared history. **Its committed `Data/` matches neither committed script** (28 embedding columns implies `n_components = 10`; the scripts use 20 and 40), so the data and plots predate both and are not reproducible from the snapshot — see `pendulum/README.md` |
 
 ---
 
@@ -211,25 +241,46 @@ classifier), `--e-head dual` (separate circular/eccentric MLPs + gate).
 strategies plus one adjustment:
 
 - `naive` — `s_c = |ψ(y)_c − θ̄_c|` against the data-generating θ̄ (synthetic only);
-- `surrogate` — `s_c = |ψ(y)_c − θ*_c|`, where θ* minimises the **L1**
-  reconstruction error `E_t|y_t − Kepler(θ, t)|` by Adam through the
-  differentiable decoder, initialised at θ̄ (synthetic) / tabulated (real).
-  Computable on real curves, hence usable under shift;
+- `surrogate` — `s_c = |ψ(y)_c − θ*_c|`, where θ* minimises the **squared**
+  reconstruction error `Σ_t (y_t − Kepler(θ, t))²` — eq (2), the same loss whose
+  Hessian Assumption 3.2 talks about — by Adam through the differentiable
+  decoder, initialised at θ̄ (synthetic) / tabulated (real). Computable on real
+  curves, hence usable under shift. An earlier L1 objective was inconsistent
+  with eq (2); switching to squared error did **not** tighten the intervals;
 - `naive_adj` — `naive` with the quantile shifted by the worst observed
   surrogate gap Δ_c (paper eq. 41).
 
 Four score normalisations `s' = s/(γ + ·)`, with γ tuned per variant to minimise
 support-normalised median width: `raw`, `vnorm` (GP predictive std), `v2norm`
 (+ per-coordinate surrogate-label error model), `papernorm` (re-encode residual
-δ_c + reconstruction residual δ_y, computed pointwise). Coverage under shift uses
+δ_c and reconstruction residual δ_y, computed pointwise and combined by eq (17)'s
+**convex** combination — the tuner selects mix = 1.0, i.e. δ_y contributes
+nothing at the current settings). Coverage under shift uses
 the Tibshirani et al. (2019) weighted quantile with likelihood ratios from a
 logistic real-vs-synthetic discriminator on the 74-D summaries (deliberately not
 ψ's 586-D set, which separates the classes too well and degenerates the weights);
 weights are clipped to [1/20, 20] and the effective sample size is reported.
 
-Two assumptions from the draft are checked empirically: **2.1** (bounded noise) —
+Two assumptions from the draft are checked empirically: **3.1** (bounded noise) —
 synthetic draws exceeding the real-train reconstruction bound are discarded; and
-**2.3** — κ(H) and ‖∇h‖ are estimated on prior draws and reported.
+**3.2** (θ\* is a strict local minimum of eq 2) — λ_min, the positive-definite
+fraction and κ(H) are estimated on prior draws by
+`scripts/diagnostics/assumption_hessian.py`.
+
+> ⚠️ Two numbering traps. **The draft renumbered these 2.1 → 3.1 and 2.3 → 3.2;
+> `conformal_shift.py` still prints the old numbers** in its report. And **ε
+> means three different things** — `noise_filter.bound_rv_std` (a pointwise sup
+> in rv_std units, the only ε any output records, ≈ 6.1) is *not* the loss-scale
+> ε ≤ ‖y − h(θ)‖² that Theorem 3.6 and Lemma 3.3 need (≈ 504). Using the sup-norm
+> value makes the theorem look fine; on the loss scale √(C_H·ε) ≈ 4.1, several
+> times the log₁₀P half-width and beyond the support of e, so **Theorem 3.6 is
+> vacuous at the measured constants.** Nothing reports √(C_H·ε) — re-derive it,
+> on the loss scale.
+
+The Hessian diagnostic must be run in the **physical** coordinates. In the
+5-vector the decoder sees ω only through `atan2(sin ω, cos ω)`, so `(cos ω,
+sin ω)` has an exact null direction along its radius and H is singular by
+construction — an earlier κ(H) ~ 1e6 figure was that artefact, not physics.
 
 ---
 
@@ -275,30 +326,43 @@ pretraining priors are deliberately broader than the catalog.) These predate the
 switch to empirical P/K histogram priors, so a fresh run will not match to three
 decimals; the held-out figure should still sit near 0.5.
 
-**3. The conformal intervals cover.** The paper's run is committed under
-`synthetic_generation/regression/mlp_psi/` (n_cal = 400, ψ = MLP, surrogate
-score, papernorm):
+**3. The conformal intervals cover.** The paper's runs live under
+`synthetic_generation/regression/pke_20260726/`, all at n_cal = 400, ψ =
+`checkpoints/psi_20260726/mlp74_s42.pt`, coords `(log10_P, log10_K, e)`,
+surrogate score + papernorm (tuner selects mix = 1.0), γ tuned on real val.
+Joint coverage at nominal 0.90, and median half-widths at the same level:
 
-| Test domain | Joint coverage @ nominal 0.90 | Vacuous intervals |
-|---|---|---|
-| synthetic (in-distribution) | 0.890 | 0% |
-| real, unweighted | 0.965 | 1.8% |
-| real, likelihood-ratio weighted | 0.965 | 1.8% |
+| Real test set | synthetic | real | real (LR-weighted) | %inf | ESS | half-widths (real, weighted) |
+|---|---|---|---|---|---|---|
+| 51 series (`gamma_real_val`) | 0.922 | 0.980 | 0.961 | 0% | 289/400 | P 2.10 dex · K 0.97 dex · e 0.86 |
+| **34 hosts, one series each** (`…_1perhost`) | 0.925 | 1.000 | 1.000 | 0% | 263/400 | P 1.82 dex · K 1.04 dex · e 0.82 |
 
-Median α = 0.1 half-widths: `log10_P` 1.81 dex · `log10_K` 0.65 dex · `e` 0.63 ·
-`ω` 3.02 rad. Weight ESS 203/400, 0% clipped. The Assumption-2.1 filter rejected
-47% of synthetic draws (bound ≈ 6.5 rv_std) — it is cutting the Student-t
-heavy-tail realisations that real data never shows, and it truncates the
-calibration distribution relative to pre-2026-07-14 runs.
+The one-series-per-host variant is the headline: the corpus stores one row per RV
+file, so the 51 surviving test series come from only 34 distinct stars (HD 179949
+contributes four, 51 Peg three), and treating correlated repeats of one star as
+independent test points overstates the evidence.
 
-Read the full tables with:
+The Assumption-3.1 filter rejected 48% of synthetic draws (bound 6.29 rv_std
+units) — it is cutting the Student-t heavy-tail realisations that real data never
+shows, and it truncates the calibration distribution relative to pre-2026-07-14
+runs.
+
+> ⚠️ **Those output directories are not on `main`** — they are on branch
+> `rhul-results-20260727-mlp`. What is committed here is the **superseded**
+> `mlp_psi/` run from the older checkpoint (0.890 / 0.965, 1.8% vacuous, ESS
+> 203/400, d = 4). Kept for the record, structurally identical, but **not
+> comparable** to the table above and not to be quoted.
 
 ```bash
-less synthetic_generation/regression/mlp_psi/conformal_shift_report.txt
+git show origin/rhul-results-20260727-mlp:synthetic_generation/regression/pke_20260726/gamma_real_val_1perhost/conformal_shift_report.txt
 ```
 
-Re-running end to end needs the ψ checkpoint — see
-[Reproducibility status](#reproducibility-status).
+Two traps when re-running. `conformal_shift.py` writes to
+`synthetic_generation/regression/` **by default**, so a local smoke run silently
+creates a low-`n_cal` directory that looks like a real result — always check
+`n_cal`, `psi` and `checkpoint` in the report header and metrics JSON before
+quoting anything. And the report still prints the draft's **old** assumption
+numbers (2.1, 2.3) where the text above uses 3.1 and 3.2.
 
 **4. CP vs the tabulated "Bayesian" intervals.**
 
@@ -306,11 +370,27 @@ Re-running end to end needs the ψ checkpoint — see
 python scripts/bayesian_interval_comparison.py
 ```
 
-Reproduces the median width ratios CP / catalog-90%: **P 549× · K 15.7× ·
-e 6.5× · ω 3.1×**. The script prints its own caveats: the CP half-width is nearly
-constant across systems (CV < 0.1), so the ratio reflects a fixed near-vacuous
-width rather than per-system adaptivity, and the point predictor is one-sided on
-K and e.
+CP intervals are **two to three orders of magnitude wider than the catalog's**
+for P, and roughly one order wider for K and e.
+
+> ⚠️ **Do not quote a ratio from the committed files without re-running.**
+> `figures/paper/` holds two sets, from two *different* and now-superseded ψ
+> trainings — neither is `mlp74_s42.pt`, the checkpoint behind every reported CP
+> number:
+>
+> | Source | P | K | e | ω |
+> |---|---|---|---|---|
+> | `figures/paper/*` (pre-07-26 ψ) | 549× | 15.7× | 6.5× | 3.1× |
+> | `figures/paper/regenerated_pinned/*` (07-26 ψ, since retracted) | 808× | 12.1× | 9.8× | 6.5× |
+>
+> Re-run the script against `checkpoints/psi_20260726/mlp74_s42.pt` to get the
+> number the paper should carry. The ω row is moot either way now that d = 3.
+
+The script prints its own caveats: the CP half-width is nearly constant across
+systems (CV < 0.1), so the ratio reflects a fixed near-vacuous width rather than
+per-system adaptivity, and the point predictor is one-sided on K and e. It also
+reports ψ **systematically over-predicting e on 100% of held-out hosts** —
+noticed 2026-07-26, still unexamined.
 
 **5. Unit tests.**
 
@@ -332,9 +412,9 @@ State these plainly in the paper; they are properties of the problem, not bugs.
 - **ω is not recovered without a periastron epoch.** Real systems lack catalog
   `t_peri`, and the epoch-free phase-fold anchor did not restore absolute ω
   (e R² ≈ 0.08 epoch-free vs ≈ 0.50 with oracle `t_peri`). The CP interval for ω
-  is correspondingly near-vacuous (~3.0 rad of a 2π support) — valid, but
-  uninformative.
-- **The intervals are valid but wide.** For `log10_P` the 1.81 dex half-width
+  was correspondingly vacuous — 3.9 to 8.7 rad against a 2π support — which is
+  why ω is estimated but **not reported** as a CP coordinate.
+- **The intervals are valid but wide.** For `log10_P` the ~1.8–2.2 dex half-width
   spans most of the prior support. The width is set by the weak nuisance point
   estimate the univariate CP conditions on, and by period aliasing — not by the
   noise scale. A σ-normalised (χ²) score did *not* tighten them, and profiling
@@ -350,6 +430,21 @@ State these plainly in the paper; they are properties of the problem, not bugs.
 - **The empirical priors couple the model to the current catalog** and will not
   generalise beyond it. This is a deliberate choice (all distributional
   assumptions come from H, not ad-hoc priors) with a real cost.
+- **The surrogate label's contribution is currently unevidenced**, on three
+  fronts: real coverage (n = 57 cannot resolve a one-system difference), a
+  mean-structure misspecification test (`--test-f-multi`, confounded — companion
+  injection drifts θ\* from θ̄ by construction, 1.5–3.5×), and a correlated-noise
+  test (`--test-noise-frac`/`--test-noise-tau`), where naive and surrogate
+  degrade identically. Per the paper's framing the argument is that the surrogate
+  makes the shift *estimable*, not that it improves coverage — so coverage may
+  never have been the right evidence.
+- **Assumption 3.2 does not hold everywhere.** The Hessian at θ\* is
+  positive-definite on ~88% of prior draws, and the measured rate is currently
+  **inconsistent between runs** (an earlier WIP tree reported 0.64/0.76,
+  degrading with GD steps; the full-scale sweep reports 0.88 flat across
+  200/1000/4000 steps with λ_min median ~30). `assumption_hessian.py` never
+  touches ψ, so this is a code-version difference, not the checkpoint. Resolve
+  which is right before either number appears in the paper.
 
 ---
 
@@ -357,23 +452,61 @@ State these plainly in the paper; they are properties of the problem, not bugs.
 
 **Committed and directly checkable:** `data/` (raw curves, labels, splits,
 stats), `models/gp_residual_svgp.pt`, the 74-D and phase-fold regression CSVs,
-and the paper's CP outputs in `synthetic_generation/regression/mlp_psi/`.
+**the six ψ checkpoints in `checkpoints/psi_20260726/`**, the (superseded) CP
+outputs in `synthetic_generation/regression/mlp_psi/`, and `figures/paper/`.
 
-**Not committed** (gitignored, regenerable): `checkpoints/`, the pretrain caches,
+⚠️ `figures/paper/` is a **mix of three ψ generations** — the top-level
+`earthlike_top10.*` is current (d = 3, from `mlp74_s42.pt`), the top-level
+`bayesian_interval_comparison.*` is the oldest, and `regenerated_pinned/` is the
+retracted 07-26 training. Check each file's provenance before quoting it.
+
+**Not committed** (gitignored, regenerable): the rest of `checkpoints/`, the
+pretrain caches,
 `synthetic_generation/datasets/synthetic_lsp_regression_10000.csv`.
 
-Three traps for anyone re-running things:
+Traps for anyone re-running things:
 
-> ⚠️ **The ψ checkpoint that produced the paper table is not in the repo.**
-> `checkpoints/` is gitignored, and `figures/paper/mlp_cp_quantiles.json` records
-> `checkpoint: 'checkpoints\regression_mlp_74.pt'` — a Windows path, i.e. a
-> collaborator's machine. Re-running `scripts/paper_rv_figures.py` with a
-> *different* local `regression_mlp_74.pt` silently produces different numbers
-> (observed: GJ 649 `P_pred` 714.6 d vs 40.1 d, all hosts collapsing toward the
-> mean) and overwrites the paper's table. Until that checkpoint is pinned, use
-> `paper_rv_figures.render_earthlike_tex(rows)` to re-render the LaTeX from the
-> committed CSV instead. Tracked as
-> [issue #10](https://github.com/George-Pulickan/rv-ml/issues/10).
+> ✅ **ψ is committed** (2026-07-27), so Table 1 is reproducible from a clone
+> alone. `checkpoints/psi_20260726/` holds the six seeds trained by
+> `slurm/nicolo_20260726.sbatch` step 1 (~76 KB each, 454 KB total, deliberately
+> excepted from the `*.pt` ignore rule). **Seed 42 is the paper's**; the spread
+> across seeds is what gets reported, and no single seed is presented as the
+> model. `figures/paper/psi_checkpoint_provenance.txt` records every sha256, the
+> training command, the commit (`d323631`), and the source-CSV hash.
+> `regression.py` is deterministic per seed, so retraining at that commit
+> reproduces the files. This closes
+> [issue #10](https://github.com/George-Pulickan/rv-ml/issues/10), still open on
+> GitHub and closable against that file.
+>
+> Two earlier pins from 2026-07-26 exist **outside** the repo and describe
+> different trainings (sha `4c09059a…`, `30f40259…`). An earlier provenance note
+> named the first of them as the paper checkpoint; that was wrong, and no
+> reported number came from it.
+
+> ⚠️ **Identify a checkpoint by sha256 and pass `--checkpoint` explicitly.**
+> `checkpoints/regression_mlp_74.pt` — same naming, different file — is a
+> 15-epoch smoke artifact that is a degenerate near-mean predictor (R² +0.055 /
+> +0.112 / +0.002 on `log10_P`/`log10_K`/`e`, predictions varying at 5–29% of the
+> spread of the truth, overall MSE 0.536 against a predict-the-mean baseline of
+> 0.467). It is not on `main` — it lives on the `laptop-sync` transport branch —
+> but on any checkout where it does exist, a `--psi mlp` run that omitted
+> `--checkpoint` used to calibrate against it and still exit 0.
+> `conformal_shift.py` now **requires** `--checkpoint` with `--psi mlp`, and every
+> CP run records the path it used in `conformal_shift_metrics.json` — that record,
+> not any prose, is the authority on what produced a given number.
+
+> ⚠️ **The committed GP checkpoint is stale.** `models/gp_residual_svgp.pt` on
+> `main` (1077253 bytes) predates the LS-γ, σ-conditioning and train-only-H
+> changes, so the committed CSVs were drawn from full-corpus priors H rather than
+> train-only H. The retrained σ-conditioned SVGP (1081541 bytes) lives on branch
+> `cluster-wip-20260726`. `conformal_shift.py` loads this sampler for the CP noise
+> draws, so **which one sits in `models/` changes the results** — and a
+> `git reset --hard origin/main` silently reinstates the stale one. Check the
+> byte size during preflight, not merely that the file exists.
+
+> ⚠️ **Verify artifact freshness by mtime, not existence.** Several helper
+> scripts guard themselves with existence checks that pass happily on stale
+> outputs. Check what a file *is*, not that it is there.
 
 Two further artifacts were **deleted** rather than left to mislead, and are
 regenerated by the cluster jobs below:
@@ -389,7 +522,16 @@ regenerated by the cluster jobs below:
 
 Checkpoints record only normalisation arrays and dimensions in `norm_stats` — no
 seed, epoch count, or source CSV — so two checkpoints cannot be told apart from
-the files alone. Stamping the training config at save time is the durable fix.
+the files alone. `psi_checkpoint_provenance.txt` patches this by hand for the one
+checkpoint that matters; stamping the training config at save time is still the
+durable fix.
+
+One more schema trap: `papernorm` has been recorded under two different key
+layouts. Runs from the 2026-07-26 WIP tree write `{"gamma0": …, "mix": 1.0}`;
+current runs write `papernorm_weight` with `selected`/`tuned`/`grid`. Same
+substance (mix = 1.0 ≡ selected 1.0), different keys — anything parsing
+`papernorm_weight` finds **nothing** in the older files and may silently fall
+back to a default. Do not diff old against new runs key-by-key.
 
 ---
 
@@ -402,14 +544,33 @@ Heavy runs go to the RHUL cluster, never a laptop. Submit from the repo root.
 | `slurm/gp_conformal.sbatch` | SVGP retrain (LS-γ + σ-conditioning) → regenerate both regression CSVs → `conformal_shift.py` at n_cal = 400 | 6–14 h, CPU |
 | `slurm/regression_benchmark.sbatch` | Regenerate phase-fold CSV → replay guard → Gates A/B/C + ablations → two-step → 109-D diagnostics → e-head ablation | 3–6 h, CPU |
 | `slurm/train_encoder.sbatch` | Two-phase encoder training (needs `data/pretrain_cache_v3.pt` and CUDA) | ~8 h, GPU |
+| `slurm/nicolo_20260726.sbatch` | Everything from Nicolò's 2026-07-26 reply: multi-seed ψ retrain (skip with `RVML_SKIP_PSI=1` to reuse the committed checkpoints), full-scale CP on the PKe coordinates (four ways: γ on synthetic vs real-val × series-level vs one-series-per-host), the PKew control, and the Assumption-3.2 Hessian sweep at 200/1000/4000 GD steps | ~24 h, CPU |
+| `slurm/run_cp_rerun.sh` | CP step only — assumes the GP checkpoint and CSVs are already regenerated on the box. Waits for any active runner, so it can be launched and left | ~2 h, CPU |
+| `slurm/run_campus_followup.sh` | One-shot driver: `run_cp_rerun.sh`, then `regression_benchmark` with `srun` stripped | ~4 h, CPU |
 
 Run `gp_conformal` **before** `regression_benchmark` — the latter consumes the
 refreshed checkpoint. Set `--partition` (and `--account` if required) from
-`sinfo` first; both files mark those lines `ADJUST`.
+`sinfo` first; those files mark the lines `ADJUST`.
 
-Still outstanding: the full-scale SVGP retrain + CP run (the committed checkpoint
-and CSVs predate the LS-γ, σ-conditioning and train-only-H changes), and a
-full-scale encoder run evaluated with `injection_recovery.py`.
+**There is no Slurm on the boxes actually reachable**, so the `.sbatch` files are
+run with `srun` stripped. The `#SBATCH` headers are kept for the day a real
+scheduler appears. The sed must handle indentation — some `srun` calls sit inside
+`for` loops, and a column-0 anchor leaves them in place, which is exit 127 and,
+under `set -e`, a job that dies at the first seed:
+
+```bash
+sed "s/^\([[:space:]]*\)srun /\1/" slurm/nicolo_20260726.sbatch | bash
+```
+
+Note `nohup` does **not** survive logout on those boxes; use an `at now` pattern.
+Cluster host, account and access details are deliberately **not** in this public
+repo — see `handover.md`.
+
+Status: the 07-25, 07-26 and 07-27 jobs are **done** (all exit 0); the 07-27
+seed sweep produced the committed ψ checkpoints and the `pke_20260726/` results
+quoted above, on branch `rhul-results-20260727-mlp`. Still outstanding: a full-scale
+encoder run evaluated with `injection_recovery.py` — it needs a GPU allocation
+separate from the CPU jobs and is not on the paper's critical path.
 
 ---
 
