@@ -26,6 +26,10 @@ checkpoints/*
 # See figures/paper/psi_checkpoint_provenance.txt.
 !checkpoints/psi_20260726/
 !checkpoints/psi_20260726/*.pt
+# Dual e-head ablation (not Table 1). See checkpoints/ablations/PROVENANCE.txt.
+!checkpoints/ablations/
+!checkpoints/ablations/*.pt
+!checkpoints/ablations/PROVENANCE.txt
 *.pdf
 # The paper draft and its extracted text. main is public and this is an
 # anonymised submission under review -- deliberately kept out (2026-07-27).

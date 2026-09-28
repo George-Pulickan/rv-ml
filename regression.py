@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
+import subprocess
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 import matplotlib
@@ -102,6 +105,7 @@ def _bundle_with_targets(bundle: DatasetBundle, targets: str) -> DatasetBundle:
         has_t_peri=bundle.has_t_peri,
         has_ecc=bundle.has_ecc,
         df=bundle.df,
+        source_csv=getattr(bundle, "source_csv", None),
     )
 
 
@@ -260,6 +264,7 @@ class DatasetBundle:
         has_t_peri: np.ndarray,
         has_ecc: np.ndarray,
         df: pd.DataFrame,
+        source_csv: Path | None = None,
     ):
         self.X = X
         self.y = y
@@ -268,6 +273,7 @@ class DatasetBundle:
         self.has_t_peri = has_t_peri
         self.has_ecc = has_ecc
         self.df = df
+        self.source_csv = Path(source_csv) if source_csv is not None else None
 
 
 def load_from_csv(csv_path: Path, feature_set: str, *, max_rows: int | None = None) -> DatasetBundle:
@@ -307,6 +313,7 @@ def load_from_csv(csv_path: Path, feature_set: str, *, max_rows: int | None = No
         has_t_peri=tp_v,
         has_ecc=ecc_v,
         df=df,  # keep full CSV for replay indexing
+        source_csv=Path(csv_path),
     )
 
 
@@ -513,6 +520,7 @@ def rebuild_bundle_phasefold(
         has_t_peri=bundle.has_t_peri.copy(),
         has_ecc=bundle.has_ecc.copy(),
         df=bundle.df,
+        source_csv=getattr(bundle, "source_csv", None),
     )
 
 
@@ -904,6 +912,46 @@ def _fit_mlp_loop(
     return model
 
 
+def _file_sha256(path: Path | None) -> str | None:
+    if path is None:
+        return None
+    p = Path(path)
+    if not p.is_file():
+        return None
+    h = hashlib.sha256()
+    with p.open("rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def _git_sha() -> str | None:
+    try:
+        out = subprocess.check_output(
+            ["git", "rev-parse", "HEAD"],
+            cwd=ROOT,
+            stderr=subprocess.DEVNULL,
+            text=True,
+        )
+        return out.strip() or None
+    except (OSError, subprocess.CalledProcessError):
+        return None
+
+
+def _train_config_stamp(*, source_csv: Path | None = None, **hyper) -> dict:
+    """How this model was trained: CLI, CSV hash, git sha, hyperparams, time."""
+    stamp = {
+        "argv": " ".join(sys.argv),
+        "torch_version": torch.__version__,
+        "saved_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "git_sha": _git_sha(),
+        "csv_path": str(source_csv) if source_csv is not None else None,
+        "csv_sha256": _file_sha256(source_csv),
+    }
+    stamp.update({k: v for k, v in hyper.items() if v is not None})
+    return stamp
+
+
 def _target_norm_stats(y: np.ndarray, *, target_norm: bool) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Return (y_mean, y_std, y_fit) for a specialist subset."""
     if target_norm:
@@ -1207,6 +1255,20 @@ def train_dual_e_models(
         "gate_threshold": float(chosen_threshold),
         "e_zero_classifier": clf,
     }
+
+    norm_stats["train_config"] = _train_config_stamp(
+        source_csv=getattr(bundle, "source_csv", None),
+        seed=seed,
+        epochs=epochs,
+        batch_size=batch_size,
+        lr=lr,
+        val_frac=val_frac,
+        patience=patience,
+        targets=targets,
+        e_head="dual",
+        feature_set=feature_set,
+        n_train=int(len(train_idx)),
+    )
 
     if checkpoint_path is not None:
         checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1523,6 +1585,20 @@ def train_model(
     else:
         pred_zero = val_pred[:, 2] <= 1e-3
         metrics["e_zero_classifier"] = _zero_class_metrics(true_zero, pred_zero, has_ecc_val)
+
+    norm_stats["train_config"] = _train_config_stamp(
+        source_csv=getattr(bundle, "source_csv", None),
+        seed=seed,
+        epochs=epochs,
+        batch_size=batch_size,
+        lr=lr,
+        val_frac=val_frac,
+        patience=patience,
+        targets=targets,
+        e_head=e_head,
+        feature_set=feature_set,
+        n_train=int(len(train_idx)),
+    )
 
     if checkpoint_path is not None:
         checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
